@@ -49,9 +49,11 @@ import {
 
 </InBrief>
 
-Once collections are paginated, the next request is always some version of "only the shipped orders from last week, newest first, just the IDs and totals". If every endpoint answers that with its own parameter names, every client reads every page of docs. With a small shared vocabulary, clients guess, and they guess right.
+Once collections are paginated, the next request is always some version of "the shipped orders from last week, newest first, IDs and totals only". At Fernhill, orders answered with `orderCol`, products with `sort_by` and returns with `order`. Every client developer read every page of the docs, and the mobile app still shipped sorting returns backwards.
 
 ## Use one small vocabulary everywhere
+
+With a small shared vocabulary, clients guess, and guess right. This set covers almost every collection:
 
 | Parameter                                         | Meaning                              | Example                               |
 | ------------------------------------------------- | ------------------------------------ | ------------------------------------- |
@@ -78,14 +80,14 @@ GET /orders?status=shipped&sort=-created_at&limit=20
 GET /orders?filterBy=state&filterVal=2&orderDir=DESC&orderCol=ts&pgSz=20
 ```
 
-A dialect every client has to learn.
+A dialect every client has to learn, and nobody can guess.
 
 </Avoid>
 </Compare>
 
 ## Pick one multi-value format
 
-For "any of these values", both forms are common:
+"Shipped or delivered" needs two values for one parameter. Both forms are common:
 
 ```http
 GET /orders?status=shipped,delivered            # OpenAPI style: form, explode: false
@@ -94,13 +96,17 @@ GET /orders?status=shipped&status=delivered     # OpenAPI style: form, explode: 
 
 Comma-separated is shorter and easier to type. Repeated parameters need no escaping when values themselves contain commas. Either is fine. Mixing them in one API is the mistake, and so is leaving the `explode` setting unspecified in the spec, because code generators then guess.
 
-`sort=-price,name` means price descending, then name ascending. Zalando also allows `+` for ascending, but a literal `+` in a query string decodes to a space, so clients have to send `%2B`. Leaving the prefix off for ascending avoids that.
+Sorting has its own small trap. `sort=-price,name` means price descending, then name ascending. Zalando also allows `+` for ascending, but a literal `+` in a query string decodes to a space, so clients have to send `%2B`. Leaving the prefix off for ascending avoids that.
 
 ## Allow-list fields, and index what you allow
 
-Every filterable or sortable field is a query plan you have promised to keep fast. Allow-list them explicitly, return <code>422</code> with the allowed list for anything else, and make sure each one is covered by an index that also works with your pagination order. Append the primary key to every sort internally so [pagination](/collections/pagination/) stays stable.
+Letting clients sort by any column is one line in the ORM. Then a partner sorts two million orders by an unindexed column every five minutes, and Priya gets paged. Every filterable or sortable field is a query plan you have promised to keep fast.
+
+So allow-list them explicitly, return <code>422</code> with the allowed list for anything else, and make sure each one is covered by an index that also works with your pagination order. Append the primary key to every sort internally so [pagination](/collections/pagination/) stays stable.
 
 _Assumes:_ SQLAlchemy 2 for FastAPI, django-filter 24 for DRF, Zod for Hono.
+
+Here's the orders endpoint in each stack. Notice where the allow-list lives, and the `id` quietly appended as the last sort key.
 
 <Tabs syncKey="stack">
 <TabItem label="FastAPI">
@@ -191,11 +197,11 @@ app.get("/orders", zValidator("query", OrderQuery), async (c) => {
 
 ## Trim responses with fields and embed
 
-`fields` lets a mobile client ask for three properties instead of forty, and `embed` lets it inline related resources to save round trips. Both multiply the response shapes you must test and cache, so support them where measurements show they matter: large resources and chatty mobile screens. Unknown names should produce <code>422</code>, not be silently ignored, so typos are caught. Caching implications are covered in [Caching](/collections/caching/).
+On a train, the mobile app wants three properties, not forty, and one round trip, not four. `fields` gives it the first and `embed` the second. Both multiply the response shapes you must test and cache, so support them where measurements show they matter: large resources and chatty mobile screens. Unknown names should produce <code>422</code>, not be silently ignored, so typos are caught. Caching implications are covered in [Caching](/collections/caching/).
 
 ## Move complex and sensitive queries into a body
 
-When a query needs nested AND/OR, long ID lists, or many ranges, the query string becomes unreadable, and some proxies cap URLs at a few kilobytes. Model the search as a resource:
+Query parameters handle "status is shipped" well and "shipped, and either over €100 or from a gold customer" badly. Nested AND/OR becomes unreadable, and long ID lists exceed the few kilobytes some proxies allow in a URL. Model the search as a resource instead:
 
 ```http
 POST /orders/search
@@ -211,19 +217,19 @@ Content-Type: application/json
 }
 ```
 
-This gives up HTTP caching and safe-method retries, which is why simple queries stay on `GET`, and why the [`QUERY` method](/http/methods/) is worth watching. Google takes a different route with AIP-160: a single `filter` string in a small, specified expression language (`status = "shipped" AND total > 100`), which keeps `GET` at the cost of a parser on both sides.
+The cost is real: `POST` gives up HTTP caching and safe-method retries. That's why simple queries stay on `GET`, and why the [`QUERY` method](/http/methods/) is worth watching. Google takes a different route with AIP-160: a single `filter` string in a small, specified expression language (`status = "shipped" AND total > 100`), which keeps `GET` at the cost of a parser on both sides.
 
-The same move applies to sensitive filters. URLs end up in access logs, proxy logs, browser history, APM tools and `Referer` headers. An email address or a national ID used as a filter belongs in a body.
+Sensitive filters need the same move, for a different reason. URLs end up in access logs, proxy logs, browser history, APM tools and `Referer` headers. An email address or a national ID used as a filter belongs in a body. A US government site learnt this in public.
 
 <Note kind="incident" title="HealthCare.gov" year="2015" source="https://www.eff.org/deeplinks/2015/01/healthcare.gov-sends-personal-data">
 
-The EFF found that HealthCare.gov was passing details such as age, income, ZIP code, smoking status and pregnancy to third-party analytics and advertising services, partly because those values sat in URLs that tracking scripts and `Referer` headers carried along. Treat every query string as something that will be logged and shared, because eventually it will be.
+In January 2015, the EFF found HealthCare.gov sending details such as age, income, ZIP code, smoking status and pregnancy to analytics and advertising services, partly because those values sat in URLs that tracking scripts and `Referer` headers carried along. Nobody had decided to share them; the URL did it. Treat every query string as something that will be logged and shared, because eventually it will be.
 
 </Note>
 
 ## Document implicit filtering
 
-`GET /orders` returning only the caller's orders is normal. Leaving it undocumented means an admin and a customer calling the same URL see different results, and nobody can tell whether it's a bug. State the implicit scope in the endpoint description, and consider making it explicit for privileged callers (`?customer_id=…`).
+`GET /orders` returning only the caller's orders is normal. Leaving it undocumented is not. A support agent and a customer call the same URL, see different results, and file a bug that nobody can confirm or close. State the implicit scope in the endpoint description, and consider making it explicit for privileged callers (`?customer_id=…`).
 
 <RuleGroup>
 
@@ -244,6 +250,10 @@ The EFF found that HealthCare.gov was passing details such as age, income, ZIP c
 <Rule guide="zalando" id="226" level="MUST" title="Document implicit response filtering" />
 
 </RuleGroup>
+
+## What to take away
+
+A small, shared vocabulary lets clients guess right, and an allow-list keeps every guess fast. When a query outgrows the URL, or carries something that shouldn't be logged, move it into a body. Every new parameter is also a new cache key, which matters as soon as a CDN sits in front of these collections. That's [caching](/collections/caching/).
 
 <SelfCheck>
 

@@ -50,13 +50,13 @@ import {
 
 </InBrief>
 
-Changing a design on a whiteboard costs five minutes. Changing it after three teams have integrated costs a quarter, two migration guides and an awkward meeting. Every principle below exists to move mistakes to the cheap end of that curve.
+A Fernhill developer renames a column from `stat_cd` to `status_code` on a Tuesday. On Wednesday, Larkspur Logistics stops booking shipments, because their integration reads `stat_cd` straight from the response. On a whiteboard, that rename cost five minutes; now it costs a quarter, two migration guides and an awkward meeting. Every principle below moves mistakes to the cheap end of that curve.
 
 ## Design for the consumer's job, not your schema
 
-The moment someone outside your team calls your endpoint, the API has users, a learning curve, a support channel and a lifecycle. Product questions come before code: who calls this, what are they trying to get done, and what is the smallest surface that lets them do it?
+The moment someone outside your team calls your endpoint, the API has users, a learning curve, a support channel and a lifecycle. So the product questions come before code: who calls this, what are they trying to get done, and what is the smallest surface that lets them do it?
 
-The most common way to fail those questions is to expose storage. Both responses below describe the same order:
+The commonest way to fail those questions is to hand over your storage and call it an interface. Both responses below describe the same order; read the right-hand one as Larkspur would, without your schema:
 
 <Compare caption="The right-hand version makes every consumer learn your internal codes and couples your contract to your column names.">
 <Prefer label="Designed for the consumer">
@@ -88,9 +88,11 @@ The most common way to fail those questions is to expose storage. Both responses
 
 ## Keep an explicit API model between storage and the wire
 
-Frameworks make it trivial to serialise a model straight to JSON, and that convenience is how schemas leak. A separate API model costs a mapping function per resource. In exchange, you can rename a column, split a table or add a sensitive field without a public change.
+Nobody decides to leak their schema. Frameworks make serialising a model straight to JSON a one-liner, and one-liners win on a Friday afternoon. A separate API model costs one mapping function per resource. In exchange, you can rename a column, split a table or add a sensitive field, and the wire never notices.
 
 _Assumes:_ Pydantic v2, Django REST Framework 3.15, Hono 4. `Order` rows come from your persistence layer.
+
+Here is the mapping. Notice that `status` becomes a word, not a code, and the total a decimal string with its currency.
 
 <Tabs syncKey="stack">
 <TabItem label="FastAPI">
@@ -154,18 +156,18 @@ const toApi = (row: OrderRow): OrderOut => ({
 </TabItem>
 </Tabs>
 
-`fields = "__all__"` or `return c.json(row)` in a public handler is a design decision made by accident: every future migration becomes a potential breaking change.
+So `fields = "__all__"` or `return c.json(row)` in a public handler is a design decision made by accident. From that day on, every migration is a potential breaking change.
 
 ## Review the contract before the implementation
 
-API first means the contract is a deliberate artefact, reviewed by people who will call it, before the code exists. It does not require hand-written YAML. Two workflows reach the same place:
+Otherwise the mobile team discovers your pagination scheme the week before their release, and the fix becomes a special case in an app that takes weeks to reach every phone. API first means the contract is a deliberate artefact, reviewed by the people who will call it, before the code exists. It does not require hand-written YAML. Two workflows reach the same place:
 
 | Approach     | How                                                                   | Fits                                                       |
 | ------------ | --------------------------------------------------------------------- | ---------------------------------------------------------- |
 | Design first | Write OpenAPI, review it, generate mocks, then implement against it   | Public APIs, several consuming teams, long-lived contracts |
 | Code first   | Write typed route stubs, generate the spec, review the generated diff | Small teams, internal APIs, fast iteration                 |
 
-What both need is a review step where consumers see the contract while changing it is still cheap, and a spec that is checked in, versioned and linted in CI ([Specs in CI](/evolution/specs-in-ci/) covers the tooling). A generated spec is only as good as the types and descriptions behind it, so treat a missing `description` the way you'd treat a missing test.
+Both need a review where consumers see the contract while changing it is still cheap, and a spec that is checked in, versioned and linted in CI ([Specs in CI](/evolution/specs-in-ci/) covers the tooling). A generated spec is only as good as the types and descriptions behind it, so treat a missing `description` the way you'd treat a missing test. A useful one looks like this:
 
 ```yaml title="openapi.yaml (excerpt)"
 paths:
@@ -180,19 +182,21 @@ paths:
         "409": { $ref: "#/components/responses/Problem" }
 ```
 
-The description is where the useful knowledge lives: preconditions, the alternative path, and which error a client should expect. "Cancel order endpoint" tells the reader nothing the path didn't.
+The description carries what the path can't: the precondition, the alternative route for shipped orders, and the error a client should expect. "Cancel order endpoint" tells the reader nothing the path didn't.
+
+Amazon turned this into an order two decades ago.
 
 <Note kind="history" title="The Bezos API mandate" year="2002" source="https://courses.cs.washington.edu/courses/cse452/22wi/papers/yegge-platform-rant.html">
 
-As Steve Yegge retold it in a 2011 Google+ post he accidentally made public, Jeff Bezos ordered that every Amazon team expose its data only through service interfaces designed to be externalisable, with no back doors into each other's databases. Teams that did so could later be sold to outsiders, which is roughly what AWS became. Designing internal APIs as if strangers will call them keeps that option open.
+Steve Yegge retold it in a 2011 Google+ post he accidentally made public. Jeff Bezos had ordered every Amazon team to expose its data only through service interfaces designed to be externalisable, with no back doors into each other's databases. Those interfaces could later be sold to outsiders, which is roughly what AWS became. Design internal APIs as if strangers will call them, and you keep that option open.
 
 </Note>
 
 ## Optimise for consistency over local elegance
 
-Consumers learn your API by pattern-matching. If one collection paginates with `cursor` and another with `page`, if one resource uses `created_at` and another `creationDate`, each endpoint has to be learned separately and every client library grows special cases. A slightly worse convention applied everywhere beats a better one applied in one place. That's the real job of a style guide: it settles arguments once so reviews can focus on the domain.
+Consumers learn your API by pattern-matching. Once Priya has called two Fernhill collections, she should be able to guess the third. If one paginates with `cursor` and another `page`, or one resource says `created_at` and another `creationDate`, every endpoint has to be learned on its own and every client library grows special cases. A slightly worse convention applied everywhere beats a better one applied in one place. That is the real job of a style guide: it settles arguments once, so reviews can focus on the domain.
 
-The qualities most guidelines aim for are much the same. The API should be easy to understand from names alone and easy to use correctly. It should be hard to misuse, so mistakes produce clear errors rather than corrupt data. It should be consistent and abstract from the backend. And it should be able to evolve for years without breaking anyone.
+Most guidelines aim for the same handful of qualities. The API should be understandable from names alone and easy to use correctly. It should be hard to misuse, so mistakes produce clear errors rather than corrupt data. It should be consistent and abstract from the backend. And it should evolve for years without breaking anyone, which is harder than it sounds:
 
 <Note kind="aside" title="Hyrum's Law" source="https://www.hyrumslaw.com/">
 
@@ -208,6 +212,8 @@ The qualities most guidelines aim for are much the same. The API should be easy 
 <Rule guide="zalando" id="103" level="MUST" title="Write APIs using U.S. English" />
 
 </RuleGroup>
+
+The leak usually starts with a reasonable request and a deadline.
 
 <WorkedProblem kind="Review" title="A new field for the mobile team">
 
@@ -232,6 +238,10 @@ Add `estimated_delivery` to the explicit field list, with a type and description
 
 </Solution>
 </WorkedProblem>
+
+## What to take away
+
+Users depend on everything they can see, so decide what they see on purpose: an explicit API model, a contract reviewed before the code, conventions that hold everywhere. Next comes the style of that contract, and whether REST is the right shape. That's [REST and alternatives](/foundations/rest-and-alternatives/).
 
 <SelfCheck>
 

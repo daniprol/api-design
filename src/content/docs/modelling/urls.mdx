@@ -49,9 +49,11 @@ import {
 
 </InBrief>
 
-None of these conventions is deep. Their value is that consumers can guess a URL they've never seen, and that a reviewer can spot an inconsistent one at a glance. An API that mixes `/userProfiles`, `/order_items` and `/Shipment/` makes every endpoint a separate thing to learn.
+Larkspur's integration has a 404 problem. Their developer, long gone, guessed `/order_items` because the neighbouring endpoint was `/userProfiles`, and Fernhill had shipped `/order-items`. None of the conventions on this page is deep. Their value is that consumers can guess a URL they've never seen, and a reviewer can spot an odd one at a glance. An API that mixes `/userProfiles`, `/order_items` and `/Shipment/` makes every endpoint a separate thing to learn.
 
 ## Anatomy, and one convention per part
+
+Each part of a URL deserves exactly one convention. Here are the parts, labelled:
 
 ```text
 https://order-management.api.example.com/sales-orders/ord_42/line-items?sort=-created_at&limit=20
@@ -67,13 +69,15 @@ https://order-management.api.example.com/sales-orders/ord_42/line-items?sort=-cr
 | JSON property   | one casing everywhere (see [JSON conventions](/representations/json/)) | `"created_at"`                     |
 | Header          | Hyphenated-Pascal-Case                                                 | `Idempotency-Key`                  |
 
-Paths are case-sensitive after the host, which is why lowercase kebab-case is the safe choice: nobody has to remember whether it was `lineItems` or `LineItems`.
+Paths are case-sensitive after the host, so lowercase kebab-case is the safe choice: nobody has to remember whether it was `lineItems` or `LineItems`.
 
 ## Make trailing slashes and prefixes boring
 
-`/orders` and `/orders/` are different URLs to HTTP, to caches and to your routing table. Pick one, then redirect or reject the other so clients don't end up with two cache keys for one resource. For APIs the common choice is no trailing slash. Frameworks default differently, so set it explicitly.
+`/orders` and `/orders/` look identical to a human and are different URLs to HTTP, to caches and to your routing table. Allow both and you get two cache keys for one resource. Pick one, then redirect or reject the other. For APIs the common choice is no trailing slash. Frameworks default differently, so set it explicitly.
 
 _Assumes:_ FastAPI 0.110+, DRF 3.15 routers, Hono 4.
+
+The comments say which default you're overriding.
 
 <Tabs syncKey="stack">
 <TabItem label="FastAPI">
@@ -114,11 +118,11 @@ app.get("/shipping-addresses", (c) => c.json({ items: listAddresses(c.req.query(
 </TabItem>
 </Tabs>
 
-Leave `/api` out of the path. Everything on an API host is an API, and a path prefix tends to leak deployment details (`/api/v2/internal/…`) into the contract. A dedicated host also lets you route, rate-limit and cache API traffic separately from the website. RFC 8820 makes a related point for standards authors: the path belongs to the API owner, so don't build designs that require fixed paths on other people's hosts.
+The same thinking applies to the start of the path: leave `/api` out. Everything on an API host is an API, and a path prefix tends to collect deployment details (`/api/v2/internal/…`) until they become contract. A dedicated host also lets you route, rate-limit and cache API traffic separately from the website. RFC 8820 makes a related point for standards authors: the path belongs to the API owner, so don't build designs that require fixed paths on other people's hosts.
 
 ## Use opaque, prefixed identifiers
 
-Identifiers appear in URLs, logs, support tickets and other people's databases. Good ones need no escaping (roughly `[A-Za-z0-9._~-]`, plus `:` if you use compound keys), say what they are, and reveal nothing.
+When Priya greps a log at 3 a.m., the line says `1842`. Is that an order, a customer or a line item? Identifiers turn up in URLs, logs, support tickets and other people's databases, so they have to work in all of them. Good ones need no escaping (roughly `[A-Za-z0-9._~-]`, plus `:` if you use compound keys), say what they are, and reveal nothing.
 
 <Compare>
 <Prefer>
@@ -145,11 +149,11 @@ Emails and names change and need escaping. Sequential integers reveal volume and
 </Avoid>
 </Compare>
 
-Sequential IDs are not a vulnerability by themselves, because authorisation should stop enumeration. In practice they turn a missing authorisation check into a full data export, and they tell competitors how many orders you take per day.
+Sequential IDs are not a vulnerability by themselves, because authorisation should stop enumeration. In practice, they turn one missing authorisation check into a full data export, and they tell competitors how many orders you take per day.
 
 ## Nest only what can't exist without its parent
 
-Line items belong to exactly one order and mean nothing without it, so nesting makes ownership visible:
+Nesting is tempting because it reads like a sentence. Sometimes the sentence is true. Line items belong to exactly one order and mean nothing without it, so nesting makes that ownership visible:
 
 ```http
 GET    /orders/ord_42/line-items
@@ -157,7 +161,7 @@ POST   /orders/ord_42/line-items
 DELETE /orders/ord_42/line-items/li_3
 ```
 
-A customer exists independently of any order. Nesting it gives one customer as many URLs as they have orders, and every client must know an order ID to find a customer.
+A customer, though, exists independently of any order. Nest it and one customer has as many URLs as orders, and the mobile app needs an order ID before it can show a profile.
 
 <Compare>
 <Prefer>
@@ -179,13 +183,13 @@ GET /stores/sto_3/orders/ord_42/customer/addresses
 </Avoid>
 </Compare>
 
-The test is whether the thing can be looked up without its parent. If it has a globally unique ID, give it a top-level URL and relate it through filters. Stop at two or three levels. Anything deeper usually has its own identity and should be promoted.
+The test is whether the thing can be looked up without its parent. If it has a globally unique ID, give it a top-level URL and relate it through filters. Stop at two or three levels; anything deeper usually has its own identity and should be promoted.
 
 For resources that really are identified by two keys, such as stock of a product in a warehouse, both shapes work: `/warehouses/ber-1/stocks/sku-123` or a compound ID like `/stocks/ber-1:sku-123`.
 
 ## Scope every nested lookup by its parent and the caller
 
-The classic bug is `GET /orders/ord_42/line-items/li_3` returning `li_3` even though it belongs to `ord_99`, which belongs to someone else. The handler looked up the line item by its own ID and ignored the path. Broken object-level authorisation is first on the OWASP API Security Top 10. Query through the parent, and through the caller's permissions, every time:
+Nesting has a trap. `GET /orders/ord_42/line-items/li_3` returns `li_3` even though it belongs to `ord_99`, which belongs to someone else. The handler looked up the line item by its own ID and treated the rest of the path as decoration. Broken object-level authorisation is first on the OWASP API Security Top 10. Query through the parent, and through the caller's permissions, every time. Notice that the filter comes before the lookup:
 
 ```python
 item = (LineItem.objects
@@ -195,9 +199,11 @@ item = (LineItem.objects
 
 More on this in [Authentication and authorization](/security/auth/).
 
+If all this seems fussy for a URL, consider the most famous URL decision of all.
+
 <Note kind="curiosity" title="The regretted double slash" year="2009" source="https://bits.blogs.nytimes.com/2009/10/12/the-webs-inventor-regrets-one-small-thing/">
 
-Tim Berners-Lee said in 2009 that the `//` after `http:` was unnecessary, and that he would drop it if he could design URLs again. It has since been printed and typed more times than anyone can count. URL conventions are permanent once published, so choose yours before the first consumer bookmarks one.
+In 2009, Tim Berners-Lee admitted that the `//` after `http:` was unnecessary, and that he would drop it if he could design URLs again. By then it had been printed and typed more times than anyone can count, and it is still there. URL conventions are permanent once published, so choose yours before the first consumer bookmarks one.
 
 </Note>
 
@@ -224,6 +230,10 @@ Tim Berners-Lee said in 2009 that the `//` after `http:` was unnecessary, and th
 <Rule guide="zalando" id="241" level="MAY" title="Expose compound keys as resource identifiers" />
 
 </RuleGroup>
+
+## What to take away
+
+A good URL is guessable, boring and permanent: plural kebab-case nouns, opaque prefixed IDs, shallow nesting, and every nested lookup scoped by its parent and caller. The URL says which thing; the method says what happens to it, and choosing the wrong one has consequences for every retry and cache. That's [methods](/http/methods/).
 
 <SelfCheck>
 

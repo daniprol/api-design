@@ -57,11 +57,11 @@ import {
 
 </InBrief>
 
-"REST" is the most used and least precise word in API design. Most APIs that claim it are JSON over HTTP with resource-shaped URLs, and that's usually a fine place to be. What matters is knowing which properties you get from the style, which you've given up, and when another style is the better tool.
+Fernhill's architecture review has three proposals on the table: "make it RESTful", "use GraphQL like everyone else", and "gRPC, obviously". Nobody in the room means the same thing by the first one. "REST" is the most used and least precise word in API design; most APIs that claim it are JSON over HTTP with resource-shaped URLs, and that's usually a fine place to be. What matters is knowing which properties a style buys you, which you've given up, and when another style is the better tool.
 
 ## REST is a set of constraints, and the useful ones are about intermediaries
 
-Roy Fielding defined REST in chapter 5 of his 2000 dissertation as the architectural style behind the web, which he had helped specify as an author of HTTP/1.1. The constraints read like a list of things that let software you don't own help you:
+Roy Fielding defined REST in chapter 5 of his 2000 dissertation as the architectural style behind the web, which he had helped specify as an author of HTTP/1.1. Read that way, the constraints stop looking academic: each lets software you don't own help you:
 
 | Constraint                | What it buys an API                                                                 |
 | ------------------------- | ----------------------------------------------------------------------------------- |
@@ -72,11 +72,11 @@ Roy Fielding defined REST in chapter 5 of his 2000 dissertation as the architect
 | Layered system            | Gateways, proxies and load balancers can sit in between, invisible to clients       |
 | Code on demand (optional) | Rarely relevant to APIs                                                             |
 
-The uniform interface is the one that pays daily. A small, fixed set of methods with known semantics is what allows retry middleware, caches and observability tools to work on your API without configuration.
+The uniform interface is the one that pays daily. When the mobile app's retry middleware sees a `GET`, it knows retrying is safe without reading a line of your docs. A small, fixed set of methods with known semantics lets retry logic, caches and observability tools work without configuration.
 
 ## Aim for level 2 of the Richardson maturity model
 
-Leonard Richardson's model, popularised by Martin Fowler in 2010, grades an API by how much of HTTP it uses. Here is "cancel order 42" at each level:
+"RESTful" settles no arguments, so you need a finer ruler. Leonard Richardson's model, popularised by Martin Fowler in 2010, grades an API by how much of HTTP it uses. Here is "cancel order 42" at each level; watch where the meaning moves out of the body and into the protocol:
 
 ```http
 # Level 0: one endpoint, everything in the body
@@ -95,17 +95,19 @@ GET  /orders/ord_99                   → 404 Not Found
  "links": {"cancellation": {"href": "https://api.example.com/orders/ord_42/cancellation"}}}
 ```
 
-Level 2 is where the intermediary benefits arrive, which is why most guidelines mandate it. Level 3 adds discoverability, but fully hypermedia-driven clients remain rare outside the browser. The practical middle ground is covered in [Links](/representations/links/): absolute links for pagination, related resources and state-dependent actions.
+Level 2 is where the intermediary benefits arrive, which is why most guidelines mandate it. Level 3 adds discoverability, but fully hypermedia-driven clients remain rare outside the browser; Larkspur's integration will never follow a link it wasn't hard-coded to follow. The practical middle ground is in [Links](/representations/links/): absolute links for pagination, related resources and state-dependent actions.
+
+The man who coined the term has views on all this.
 
 <Note kind="history" title="REST APIs must be hypertext-driven" year="2008" source="https://roy.gbiv.com/untangled/2008/rest-apis-must-be-hypertext-driven">
 
-Fielding wrote a blog post objecting that APIs without hypermedia controls were being called REST, which by his definition they are not. The industry kept the word anyway, which is why "RESTful" now usually means "level 2". Use the levels when you need precision: "level 2 with links for pagination" says more than "REST".
+By 2008, Fielding had watched one too many hypermedia-free APIs call themselves REST, and wrote a blog post saying so: by his definition, they are not. The industry listened politely and kept the word, which is why "RESTful" now usually means "level 2". Use the levels when you need precision: "level 2 with links for pagination" says more than "REST".
 
 </Note>
 
 ## Compare the alternatives by their trade-offs, not their popularity
 
-Each style optimises for something different. None is a successor to the others; large organisations commonly run all of them.
+Back to that review meeting. Each proposal optimises for something different, and none is a successor to the others; large organisations commonly run all of them. The table is the honest argument:
 
 |                     | REST (level 2)                        | RPC over HTTP                  | GraphQL                                      | gRPC                          | Async messaging               |
 | ------------------- | ------------------------------------- | ------------------------------ | -------------------------------------------- | ----------------------------- | ----------------------------- |
@@ -117,7 +119,7 @@ Each style optimises for something different. None is a successor to the others;
 | Streaming           | SSE, chunked responses                | Rare                           | Subscriptions                                | Native, bidirectional         | Native                        |
 | Typical home        | Public and partner APIs               | Internal actions, simple tools | Product frontends with varied screens        | Internal service mesh         | Integration between domains   |
 
-Some trade-offs only show up in production:
+Some trade-offs only show up in production, usually on Priya's watch:
 
 - **GraphQL moves cost control to the server.** A single query can fan out into thousands of resolver calls, so you need depth and complexity limits, and caching moves from HTTP into the client and resolvers. It works best when the same organisation owns the schema and its main clients.
 - **gRPC requires HTTP/2 end to end**, generated stubs on both sides, and tooling that can read binary payloads. In return you get strict contracts, compact messages and deadlines that propagate across calls.
@@ -126,7 +128,7 @@ Some trade-offs only show up in production:
 
 ## Keep the level 2 discipline in code
 
-Frameworks make level 2 the path of least resistance; the work is in not escaping it.
+Frameworks make level 2 the path of least resistance; the work is in not escaping it. Here is the order resource in three stacks. Notice that cancellation is a `POST` that creates a resource and answers 201, not a verb hiding in the URL.
 
 _Assumes:_ `OrderOut`, `CancellationIn` and an `orders.cancel()` service defined elsewhere; the `problem()` helper from [Errors](/http/errors/).
 
@@ -175,6 +177,8 @@ app.route("/orders", orders);
 </TabItem>
 </Tabs>
 
+The escape usually happens one endpoint at a time, and it looks like this:
+
 <Compare>
 <Prefer label="Level 2">
 
@@ -198,6 +202,8 @@ Caches, proxies and retry logic can't tell reads from writes.
 </Avoid>
 </Compare>
 
+gRPC's own assumptions make more sense once you know where it came from.
+
 <Note kind="curiosity" title="Why it's called gRPC" source="https://github.com/grpc/grpc/blob/master/doc/g_stands_for.md">
 
 The "g" officially stands for something different in every release: "good", "green", "gorgeous", "glamorous" and so on, listed in the repository. It grew out of Stubby, Google's internal RPC system, which is why its design assumes generated clients, deadlines and a controlled network.
@@ -210,6 +216,10 @@ The "g" officially stands for something different in every release: "good", "gre
 <Rule guide="zalando" id="163" level="MAY" title="Use REST maturity level 3 - HATEOAS" />
 
 </RuleGroup>
+
+## What to take away
+
+Pick a style for what it lets other software do for you: level 2 REST for public and partner APIs, gRPC inside the mesh, GraphQL when you own varied clients, events when the producer shouldn't wait. Level 2 only pays off if your URLs name things rather than actions, which is where [resources and actions](/modelling/resources/) comes in.
 
 <SelfCheck>
 

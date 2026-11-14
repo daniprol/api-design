@@ -52,9 +52,11 @@ import {
 
 </InBrief>
 
-Most of us learned to program by writing functions: `cancelOrder()`, `sendInvoice()`, `approveRefund()`. A resource-oriented API asks a different question: what thing is created, read, changed or removed? Asked consistently, it stops you inventing endpoints and starts you discovering them. Twenty nouns with the same five methods are learnable; a hundred bespoke verbs aren't.
+A Fernhill customer's order says "cancelled", nobody knows who cancelled it or why, and the refund never went out. Priya traces it to `POST /cancelOrder`, which flipped a flag and recorded nothing. We learned to program writing functions, so endpoints like that feel natural. A resource-oriented API asks a different question: what thing is created, read, changed or removed? Asked consistently, it stops you inventing endpoints and starts you discovering them.
 
 ## Name things in the URL and let the method say what happens
+
+Twenty nouns with the same five methods are learnable; a hundred bespoke verbs aren't.
 
 <Compare>
 <Prefer>
@@ -77,13 +79,13 @@ POST /removeItemFromCart
 </Avoid>
 </Compare>
 
-The verb-in-URL style looks harmless at five endpoints. At fifty, every endpoint has its own naming quirks, its own idea of which method to use, and no shared semantics that a cache or retry policy can rely on.
+The verb-in-URL style looks harmless at five endpoints. At fifty, every endpoint has its own naming quirks and its own idea of which method to use, and nothing has shared semantics a cache or retry policy can rely on. Is `POST /removeItemFromCart` safe to retry? Only its author knows.
 
 ## Turn actions into one of three resource shapes
 
-Businesses are full of actions: cancel, approve, publish, ship, refund. Each one maps onto one of three shapes.
+So what do you do with the verbs? Businesses are full of them: cancel, approve, publish, ship, refund. Each turns out to be one of three shapes.
 
-**A field changes.** If the action only moves a field to a new value and carries no data of its own, update the resource.
+**A field changes.** If "publishing" an article only moves a field to a new value and carries no data of its own, it isn't really an action. Update the resource:
 
 ```http
 PATCH /articles/art_42
@@ -92,7 +94,7 @@ Content-Type: application/merge-patch+json
 { "visibility": "public" }
 ```
 
-**A record is created.** Cancellations, refunds, shipments and approvals have their own data (who, when, why), their own validation rules and often their own lifecycle. Make them resources.
+**A record is created.** Cancellations, refunds, shipments and approvals have their own data (who, when, why), their own validation rules and often their own lifecycle. That is the record Priya's support call was missing. Make them resources, and notice the `Location` header pointing at the new one:
 
 ```http
 POST /orders/ord_42/cancellation
@@ -102,7 +104,7 @@ HTTP/1.1 201 Created
 Location: https://api.example.com/orders/ord_42/cancellation
 ```
 
-**A result is computed.** Quotes, previews and validations are things too: a price quote has an ID, a price and an expiry.
+**A result is computed.** Quotes, previews and validations are things too. When Larkspur asks what a parcel to Spain will cost, the answer has an ID, a price and an expiry:
 
 ```http
 POST /shipping-quotes
@@ -114,11 +116,13 @@ HTTP/1.1 201 Created
 
 ## Prefer a sub-resource over a status PATCH for real state transitions
 
-`PATCH /orders/ord_42 {"status": "cancelled"}` is tempting because it's one endpoint. It breaks down when the transition has rules. Which status values may a client set, from which states? Where does the reason go? How does the client learn that cancelling triggered a refund? A status field that is writable through `PATCH` turns the state machine into an input validation problem.
+`PATCH /orders/ord_42 {"status": "cancelled"}` is tempting because it's one endpoint. It breaks down the moment the transition has rules. Which status values may a client set, and from which states? Where does the reason go? How does the client learn that cancelling triggered a refund? A writable status field turns your state machine into an input validation problem.
 
 A sub-resource keeps the transition explicit. `POST /orders/ord_42/cancellation` can require a reason, return <Status code={409} /> with a precise problem type when the order has shipped, and later be read back to show who cancelled and when. Keep `status` read-only and let transitions happen through resources that describe them.
 
 _Assumes:_ FastAPI with Pydantic v2, DRF 3.15, Hono 4 with Zod. `orders.cancel()` raises `OrderNotCancellable` for shipped orders.
+
+Here is the endpoint. Watch the 409: the client gets a problem type it can act on, not a generic validation error.
 
 <Tabs syncKey="stack">
 <TabItem label="FastAPI">
@@ -176,23 +180,25 @@ app.post("/orders/:id/cancellation", zValidator("json", CancellationIn), async (
 
 The singular `cancellation` is deliberate: an order is cancelled at most once. A repeatable action, such as partial refunds, gets a plural collection: `POST /orders/ord_42/refunds`.
 
+Even a toggle benefits, as GitHub's stars show.
+
 <Note kind="practice" title="GitHub stars" source="https://docs.github.com/en/rest/activity/starring">
 
-GitHub has no "star" verb. `PUT /user/starred/{owner}/{repo}` stars a repository, `DELETE` removes the star, and `GET` returns <Status code={204} /> if starred or <Status code={404} /> if not. A toggle modelled as a resource gets idempotency for free: double-clicking the button can't double-star.
+GitHub needed a star button and resisted adding a "star" verb. Instead, `PUT /user/starred/{owner}/{repo}` stars a repository, `DELETE` removes the star, and `GET` returns <Status code={204} /> if starred or <Status code={404} /> if not. Because the star is a resource, idempotency came for free: double-clicking the button can't double-star.
 
 </Note>
 
 ## Accept a custom method when no honest noun exists
 
-Some operations resist nouns: `send` on an email draft, `translate` on a text, `reboot` on a machine. Inventing `/emails/eml_1/sendings` is nounification for its own sake. Guidelines split on this, as the table below shows. Whatever your rule, apply it consistently, use `POST`, and document the operation's idempotency.
+Push this too far and you get `/emails/eml_1/sendings`, which helps nobody. Some operations genuinely resist nouns: `send` on an email draft, `translate` on a text, `reboot` on a machine. Guidelines split on this, as the table below shows. Whatever your rule, apply it consistently, use `POST`, and document the operation's idempotency.
 
 <GuidesDiffer id="custom-methods" />
 
 ## Use the business's words, and model the whole process
 
-Resource names should come from the people who run the domain. `/shipments` beats `/data`, `/ledger-entries` beats `/entries`, and `/orders/ord_42/cancellation` beats `/objects/42/state`. When engineers and the business use the same nouns, support tickets and specs read the same way.
+Resource names should come from the people who run the domain. `/shipments` beats `/data`, `/ledger-entries` beats `/entries`, and `/orders/ord_42/cancellation` beats `/objects/42/state`. When engineers and the business use the same nouns, a support ticket and a spec read the same way.
 
-Model complete processes, not just the happy path. A `/payments` resource that can be created but never refunded, listed or reconciled forces consumers into back channels. Before publishing, walk each resource through its full lifecycle and check that every transition a consumer needs is in the API.
+The happy path is the easy half. A `/payments` resource that can be created but never refunded, listed or reconciled sends consumers to back channels, and Larkspur will end up emailing a spreadsheet to your finance team every month. Before publishing, walk each resource through its full lifecycle and check that every transition a consumer needs is in the API.
 
 Keep each API small enough to hold in your head. Guidelines suggest somewhere around four to eight resource types; past that, look for a domain boundary to split along.
 
@@ -224,6 +230,10 @@ Approvals are records with an author, a time and a comment, and there can be sev
 
 </Solution>
 </WorkedProblem>
+
+## What to take away
+
+When you catch yourself writing a verb, ask what record that action leaves behind; usually it's a field change, a new sub-resource or a computed result, and the record is what support will need later. Once you have the nouns, you have to spell them in URLs that stay stable for years. That's [URL design](/modelling/urls/).
 
 <SelfCheck>
 

@@ -4,6 +4,9 @@ Dated record of content changes. The three most recent entries appear on the hom
 
 ## 2026-11-14
 
+- New look: Geist type, an indigo accent, and coloured cards for notes, comparisons and folded sections.
+- Every Guide page rewritten to open with a concrete scenario and follow the Fernhill team through the problem, with a closing "What to take away" that leads to the next topic.
+
 - Reorganised the site as a reference: Guide, Reference, Guidelines and About. Old course URLs redirect to their new topics.
 - Added topics: REST and alternatives, Files and large payloads, Webhooks, Specs in CI; added Appendix A, an annotated design review.
 - Added reference pages: Headers, Media types, RFC index, Rule index and the design review checklist.

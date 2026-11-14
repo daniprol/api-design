@@ -58,39 +58,41 @@ import {
 
 </InBrief>
 
-Headers are HTTP's envelope. The body is your format; headers are a shared language that every proxy, CDN, client library and tracing system already speaks. Using registered headers gets you behaviour for free. Inventing your own gets you behaviour nobody else implements.
+Monday morning: the mobile app asked for JSON and got a spreadsheet. Priya spends an hour in the logs before she finds it. The CDN cached a CSV response and served it to everyone, because nothing told it the response depended on `Accept`.
 
-The [Headers reference](/reference/headers/) lists the ones that matter for APIs. This page covers the decisions behind them.
+Headers are a language every proxy, CDN, client library and tracer already speaks. Use the registered ones and you get their behaviour for free; invent your own and you get behaviour nobody implements. The [Headers reference](/reference/headers/) lists them; this page covers the decisions.
 
-## Use registered headers before inventing your own
+## Borrow a registered header before inventing one
 
-Most metadata an API needs already has a standard or draft-standard header: `Location` for where a created resource lives, `Retry-After` for when to try again, `ETag` and `If-Match` for versions, `Idempotency-Key` for retries, `RateLimit` and `RateLimit-Policy` for quotas (an IETF draft that many gateways already implement). Each comes with defined semantics and, often, existing client support.
+The temptation is to mint `X-Fernhill-Retry-In`. Resist it. Most metadata an API needs already has a standard or draft-standard header: `Location` for where a created resource lives, `Retry-After` for when to try again, `ETag` and `If-Match` for versions, `Idempotency-Key` for retries, `RateLimit` and `RateLimit-Policy` for quotas (an IETF draft that many gateways already implement). Each comes with defined semantics and, often, existing client support.
 
-When nothing fits, define a header with a plain name and a value that follows Structured Field syntax (RFC 9651): a list, dictionary or item with defined parsing rules, instead of yet another ad hoc comma-separated format.
+When nothing fits, give the new header a plain name and a value in Structured Field syntax (RFC 9651): a list, dictionary or item with defined parsing rules. The alternative is another ad hoc comma-separated format, and someone at Larkspur Logistics writing a regex for it.
 
 <Note kind="history" title="The end of X-" year="2012" source="https://www.rfc-editor.org/rfc/rfc6648">
 
-For years, experimental headers were prefixed `X-` so they wouldn't collide with standard ones. The trouble was that successful experiments became de facto standards that couldn't be renamed: `X-Forwarded-For` is still everywhere, its standard replacement `Forwarded` far less so. RFC 6648 deprecated the convention in 2012. Name new headers as if they might succeed.
+For years, experimental headers wore an `X-` prefix so they wouldn't collide with standard ones. Then the experiments succeeded, and by then they couldn't be renamed: `X-Forwarded-For` is still everywhere, while its standard replacement `Forwarded` is far rarer. RFC 6648 deprecated the convention in 2012. The lesson: name new headers as if they might succeed.
 
 </Note>
 
-## Keep Location and Content-Location apart
+## Location and Content-Location mean different things
 
-`Location` points somewhere else: the resource just created (with <Status code={201} />), a status monitor (with <Status code={202} />) or a redirect target. `Content-Location` says that the enclosed body is a representation of the given URL. You rarely need the latter. Its one useful API case is a `POST` that returns the full state of another resource, which then becomes cacheable under that URL.
+`Location` points somewhere else: the resource just created (with <Status code={201} />), a status monitor (with <Status code={202} />) or a redirect target. `Content-Location` says the enclosed body is a representation of the given URL. You'll rarely need it; its one useful API case is a `POST` that returns the full state of another resource, which then becomes cacheable under that URL.
 
-Make `Location` absolute. Relative references are allowed since RFC 7231, but clients resolve them against whatever URL they used, and behind a gateway that may not be the URL you think.
+Make `Location` absolute. Relative references have been allowed since RFC 7231, but clients resolve them against whatever URL they used, and behind a gateway that may not be the URL you think.
 
-## Propagate W3C Trace Context on every hop
+## Carry the trace ID on every hop
 
-One checkout can trigger thirty internal calls. A correlation ID carried through all of them is what lets you find the logs for one failing request. The standard is W3C Trace Context: a `traceparent` header carrying trace ID, parent span ID and flags, plus an optional `tracestate`. OpenTelemetry instrumentations read and write it automatically for most HTTP clients and servers, so the work is mostly making sure nothing drops it, such as a hand-rolled HTTP client or a message queue hop.
+One Fernhill checkout can trigger thirty internal calls. When it fails, the only thing that ties Priya's logs together is a correlation ID carried through every hop. The standard is W3C Trace Context: a `traceparent` header carrying trace ID, parent span ID and flags, plus an optional `tracestate`. OpenTelemetry instrumentations read and write it automatically for most HTTP clients and servers, so the real work is making sure nothing drops it, such as a hand-rolled HTTP client or a message queue hop. The trace ID is the second field:
 
 ```http
 traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
 ```
 
-Older organisations often have their own header, like Zalando's `X-Flow-ID`. If you have one, propagate both during migration, and put the trace ID into every [error body](/http/errors/) so a support ticket leads straight to the trace.
+Older organisations often have their own header, like Zalando's `X-Flow-ID`. If you have one, propagate both during migration. And put the trace ID into every [error body](/http/errors/), so a support ticket leads straight to the trace.
 
 _Assumes:_ OpenTelemetry auto-instrumentation is not available, so propagation is done by hand.
+
+Here's the middleware. Notice that a missing or malformed `traceparent` never fails the request: it mints a fresh ID.
 
 <Tabs syncKey="stack">
 <TabItem label="FastAPI">
@@ -143,7 +145,7 @@ app.use(async (c, next) => {
 
 ## Honour Prefer where it saves work
 
-`Prefer` (RFC 7240) lets a client state optional preferences. The server may ignore them, and confirms the ones it applied with `Preference-Applied`.
+The mobile app on a train doesn't need the full order echoed back after a `PATCH` whose result it already knows. `Prefer` (RFC 7240) lets a client state optional preferences like that. The server may ignore them, and confirms the ones it applied with `Preference-Applied`:
 
 ```http
 PATCH /orders/ord_42
@@ -153,26 +155,28 @@ POST /reports
 Prefer: respond-async, wait=10      → 202 Accepted after 10 s if not finished
 ```
 
-`return=minimal` saves bandwidth for clients that already know the new state. `respond-async` with `wait` lets one endpoint serve both quick and slow requests: synchronous when the work is fast, <Status code={202} /> when it isn't. That's more useful than two endpoints. `handling=strict` versus `handling=lenient` is the third common one, for clients that want unknown fields rejected rather than ignored.
+`return=minimal` saves bandwidth for clients that already know the new state. `respond-async` with `wait` is the cleverer one: a single endpoint answers synchronously when the work is fast and with <Status code={202} /> when it isn't, which beats maintaining two endpoints. The third common preference is `handling=strict` versus `handling=lenient`, for clients that want unknown fields rejected rather than ignored.
 
-## Negotiate formats and languages with Accept
+## Let Accept pick the format and the language
 
-If a resource has several representations (JSON, CSV, PDF), let the client choose with `Accept` rather than inventing `/orders.csv` or `?format=csv`:
+Finance wants orders as CSV; the apps want JSON. The quick fix is `/orders.csv` or `?format=csv`, and soon every resource grows a suffix. Let the client choose with `Accept` instead:
 
 ```http
 GET /orders?created_after=2026-11-01
 Accept: text/csv
 ```
 
-Answer <Status code={406} /> if you can't produce any acceptable type, or fall back to your default type. RFC 9110 allows both, and the fallback is friendlier to browsers. Then add `Vary: Accept` so caches store the variants separately. Forgetting `Vary` is the classic bug: a CDN serves a cached CSV to the next client that asked for JSON.
+Answer <Status code={406} /> if you can't produce any acceptable type, or fall back to your default type. RFC 9110 allows both, and the fallback is friendlier to browsers. Then add `Vary: Accept` so caches store the variants separately. Forget it and you get Priya's Monday morning: a CDN serving a cached CSV to the next client that asked for JSON.
 
-Languages work the same way. `Accept-Language: es-ES, es;q=0.9, en;q=0.5` uses BCP 47 tags with quality values, the response says what it chose in `Content-Language`, and `Vary: Accept-Language` keeps caches honest. Translate human-facing text such as problem `title` and `detail`, but never machine-facing values: enum values, problem `type` URIs and field names stay in one language.
+Languages work the same way. `Accept-Language: es-ES, es;q=0.9, en;q=0.5` uses BCP 47 tags with quality values, the response names its choice in `Content-Language`, and `Vary: Accept-Language` keeps caches honest. Translate text meant for people, such as problem `title` and `detail`. Never translate what code reads: enum values, problem `type` URIs and field names stay in one language.
 
-For data that legitimately exists in several languages at once, like product names in a catalogue, put a language map in the body instead of negotiating:
+Some data legitimately exists in several languages at once, like product names in a catalogue. There, put a language map in the body instead of negotiating:
 
 ```json
 { "id": "sku-123", "name": { "en": "Linen shirt", "es": "Camisa de lino", "de": "Leinenhemd" } }
 ```
+
+In short, the protocol carries the negotiation and the URL stays the same:
 
 <Compare>
 <Prefer>
@@ -193,6 +197,8 @@ X-Response-Language: es
 
 </Avoid>
 </Compare>
+
+Choose header names carefully; HTTP carries a reminder in every browser request.
 
 <Note kind="curiosity" title="Referer" year="1996" source="https://www.rfc-editor.org/rfc/rfc1945#section-10.13">
 
@@ -224,6 +230,10 @@ The `Referer` header is misspelled, and has been since HTTP/1.0 in RFC 1945. Nob
 />
 
 </RuleGroup>
+
+## What to take away
+
+Headers are a vocabulary that every proxy, cache and tracer already understands, so speak it before inventing words of your own, and always tell caches what you negotiated on with `Vary`. The body is the other half of the contract, and its conventions are where most API arguments start: casing, envelopes, `null` versus absent. That's [JSON conventions](/representations/json/).
 
 <SelfCheck>
 

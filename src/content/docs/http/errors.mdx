@@ -53,11 +53,11 @@ import {
 
 </InBrief>
 
-Your API will spend a surprising part of its life saying no, and errors are where developers form their strongest opinions about it. A precise error saves an hour of debugging. A vague one becomes a support ticket, and an inconsistent one becomes a special case in every client. There's a standard format for this, and adopting it is mostly a matter of one exception handler per framework.
+Larkspur's integration starts failing on Monday. Their logs say `400 Bad Request` and nothing else; two days and three forwarded emails later, Priya finds a postcode one character too long. Your API spends much of its life saying no, and errors are where developers form their strongest opinions about it. A vague error becomes a support ticket, and an inconsistent one becomes a special case in every client. There's a standard format, and adopting it is mostly one exception handler per framework.
 
 ## Use Problem Details for every error
 
-RFC 9457 (which replaced RFC 7807 in 2023) defines a small JSON object with its own media type:
+RFC 9457 (which replaced RFC 7807 in 2023) defines a small JSON object with its own media type. Notice that it answers the client's next question, how many are available, in a field code can read:
 
 ```http
 HTTP/1.1 422 Unprocessable Content
@@ -83,7 +83,7 @@ Content-Type: application/problem+json
 | `instance` | Support: identifies this occurrence                    | Per occurrence                                                |
 | extensions | Code: machine-readable context (`available`, `errors`) | Part of the contract, per type                                |
 
-When there's nothing to add beyond the status code, `type` defaults to `about:blank` and `title` should be the standard reason phrase. Use that for generic <Status code={404} /> and <Status code={500} /> responses rather than inventing a type for each.
+Code reads `type` and the extensions; people read `title` and `detail`. Once clients parse `detail`, you can never reword a message again. When there's nothing to add beyond the status code, `type` defaults to `about:blank` and `title` should be the standard reason phrase. Use that for generic <Status code={404} /> and <Status code={500} /> responses rather than inventing a type for each.
 
 The non-obvious requirement is coverage. Framework 404s for unknown routes, 405s, 413s from the body-size limit and 502s from the gateway all need the same format, or clients end up with two parsers anyway. Test the error paths you didn't write.
 
@@ -91,7 +91,7 @@ The non-obvious requirement is coverage. Framework 404s for unknown routes, 405s
 
 ## Report all validation failures at once, with pointers
 
-A form that reveals one error per submission is a tax on every integrator. Collect all failures and point at each field with a JSON Pointer (RFC 6901) so clients can highlight it:
+A customer on a train fixes their email in the mobile app's sign-up form; now the postcode is wrong. Then the phone number. Three round trips on patchy signal, and they give up. A form that reveals one error per submission is a tax on every integrator. Collect all failures and point at each field with a JSON Pointer (RFC 6901) so clients can highlight it:
 
 ```json
 {
@@ -108,6 +108,8 @@ A form that reveals one error per submission is a tax on every integrator. Colle
 RFC 9457 itself uses an `errors` array with `pointer` and `detail` in its examples, which makes this shape about as standard as it gets.
 
 _Assumes:_ FastAPI with Pydantic v2, DRF 3.15 with a custom exception handler, Hono 4 with `@hono/zod-validator`. Every other page uses the helper defined here: `raise problem(status, slug, **extensions)` in FastAPI, `return problem(status, slug, ...)` in DRF, and `return problem(c, status, slug, ...)` in Hono.
+
+Each stack does two jobs here: it renders validation errors as pointers, and it catches the framework's own errors so they share the format.
 
 <Tabs syncKey="stack">
 <TabItem label="FastAPI">
@@ -208,6 +210,8 @@ app.notFound((c) =>
 
 ## Never expose internals; return a trace ID instead
 
+A stack trace is the most detailed error there is, written for exactly the wrong audience. Compare what each tells an attacker:
+
 <Compare>
 <Prefer>
 
@@ -236,13 +240,13 @@ Database, table, column and file layout, in one line.
 </Avoid>
 </Compare>
 
-Stack traces usually escape through defaults: `DEBUG=True` in a Django settings file that reached production, or an unhandled exception in a framework whose development error page is on. Add a test that triggers an unhandled exception against a production-configured app and asserts the body contains nothing but a problem object.
+Nobody writes code that returns stack traces. They escape through defaults: `DEBUG=True` in a Django settings file that reached production, or an unhandled exception in a framework whose development error page is on. So test the default, not your intentions: trigger an unhandled exception against a production-configured app and assert the body contains nothing but a problem object.
 
-Be careful with `detail` for authentication failures too. "No account with this email" versus "wrong password" tells an attacker which emails are registered. Return one message for both.
+Authentication failures need the same care in `detail`. "No account with this email" versus "wrong password" tells an attacker which emails are registered. Return one message for both.
 
 ## Write details that say what to do next
 
-A good `detail` answers what happened, why, and what the caller can do about it.
+Larkspur's two-day thread needed one sentence in the right place. A good `detail` answers what happened, why, and what the caller can do about it:
 
 | Unhelpful         | Helpful                                                                                |
 | ----------------- | -------------------------------------------------------------------------------------- |
@@ -250,9 +254,11 @@ A good `detail` answers what happened, why, and what the caller can do about it.
 | `Forbidden`       | `This API key is read-only. Create a key with the orders:write scope to place orders.` |
 | `Unsupported`     | `Currency BTC is not supported. Supported: EUR, USD, GBP.`                             |
 
+Stripe goes one step further, and the idea transfers directly.
+
 <Note kind="practice" title="Stripe's doc_url" source="https://docs.stripe.com/api/errors">
 
-Stripe errors carry a machine-readable `code` such as `card_declined`, a `decline_code` such as `insufficient_funds`, a `param` naming the offending field, and a `doc_url` that links to a page about that specific error. That last field is what RFC 9457's `type` URI is for: make every problem type resolve to its own documentation page.
+A Stripe error carries a machine-readable `code` such as `card_declined`, a `decline_code` such as `insufficient_funds`, a `param` naming the offending field, and a `doc_url` linking to a page about that specific error. A developer stuck at midnight follows the link instead of opening a ticket. That last field is exactly what RFC 9457's `type` URI is for: make every problem type resolve to its own documentation page.
 
 </Note>
 
@@ -282,6 +288,10 @@ Each type gets a documentation page at its URI. The first three are fixable by t
 
 </Solution>
 </WorkedProblem>
+
+## What to take away
+
+An error is an interface too: one format everywhere, a stable `type` for code to branch on, every validation failure at once, and nothing internal in the body. A problem response is recognised by its media type, and media types, tracing and much else are negotiated in headers. That's [headers and content negotiation](/http/headers/).
 
 <SelfCheck>
 

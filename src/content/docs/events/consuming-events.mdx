@@ -49,7 +49,7 @@ import {
 
 </InBrief>
 
-Every event system eventually delivers the same event twice. Nothing is broken when it happens: a consumer processed an event, crashed before it recorded the fact, and the broker did its job by redelivering. Networks give you a choice between at-most-once (sometimes lose events) and at-least-once (sometimes repeat them), and nobody wants to lose a payment. So consumers are built to make repetition harmless. Once that's in place, retries, replays and redeliveries become boring, which is the goal.
+Tuesday, 3 a.m. Fernhill's loyalty service is redeployed mid-batch, and by breakfast a few hundred customers have double points. Priya reads the logs and finds nothing broken: the consumer processed each event, died before recording that it had, and the broker did its job by redelivering. Networks offer at-most-once (sometimes lose events) or at-least-once (sometimes repeat them), and nobody wants to lose a payment. So the consumer makes repetition harmless. The incident, in three lines:
 
 ```text
 1. Consumer receives event e-1 and adds 100 loyalty points
@@ -57,9 +57,13 @@ Every event system eventually delivers the same event twice. Nothing is broken w
 3. Broker redelivers e-1 to the restarted consumer → another 100 points
 ```
 
-## Deduplicate by event ID, in the same transaction
+Get this right and retries, replays and redeliveries become boring, which is the goal.
 
-Keep a table of processed `eid`s. Insert the ID and perform the effect in one transaction, and commit the broker offset (or answer the webhook) only after that transaction commits. If the insert conflicts, you've seen the event before: skip the effect and acknowledge anyway, so the broker stops redelivering.
+## Record the event ID in the same transaction as the effect
+
+The obvious fix, a cache of seen IDs checked before acting, has the same hole: a crash between the effect and the record reopens it. So keep a table of processed `eid`s, insert the ID and perform the effect in one transaction, and commit the broker offset (or answer the webhook) only after that transaction commits. If the insert conflicts, you've seen the event before: skip the effect and acknowledge anyway, so the broker stops redelivering.
+
+Watch the order: claim the ID, apply the effect, commit, then acknowledge.
 
 _Assumes:_ the consumer's own database holds both the effect and a `processed_events(eid primary key)` table; `OrderPlaced` is the schema from [Event design](/events/event-design/).
 
@@ -118,11 +122,11 @@ consumer.on("shop.order-placed", async (message) => {
 </TabItem>
 </Tabs>
 
-Processed-ID tables grow forever unless you prune them. Keep IDs at least as long as the broker's retention plus the longest replay you'd run, and no longer.
+Prune as you go: processed-ID tables grow forever unless you prune them. Keep IDs at least as long as the broker's retention plus the longest replay you'd run, and no longer.
 
-## Prefer effects that are safe to repeat
+## Write effects a duplicate can't hurt
 
-A deduplication table is a safety net. Better still is an effect that a duplicate can't hurt, because it states a result instead of a change.
+A deduplication table is a safety net. Better still is an effect that states a result instead of a change. "Set the price to 79" applied twice leaves the price at 79. "Add 100 points" applied twice is Tuesday morning.
 
 <Compare>
 <Prefer label="Repeatable">
@@ -144,11 +148,11 @@ UPDATE stock SET quantity = quantity - 1 WHERE sku = 'sku-1042';
 </Avoid>
 </Compare>
 
-Some effects can't be made repeatable: an email, a charge, an SMS. For those, the deduplication table is not optional, and the external call should carry its own idempotency key, derived from the `eid`.
+Some effects can't be made repeatable: an email, a charge, an SMS. For those, the deduplication table is not optional, and the external call should carry its own idempotency key derived from the `eid`, so even the slow payment provider can recognise the second attempt.
 
-## Ignore stale events
+## Let newer revisions win, and drop the rest
 
-Events for one entity can arrive out of order after a retry, a replay or a repartition. Use the producer's ordering field and apply only what is newer than what you hold:
+Harder than duplicates is revision 7 arriving after revision 9, which retries, replays and repartitions all eventually produce. Apply it and your copy goes back in time. So use the producer's ordering field and apply only what is newer than what you hold. The `WHERE` clause does all the work:
 
 ```sql
 UPDATE product_copies
@@ -156,11 +160,11 @@ SET name = :name, price = :price, revision = :revision
 WHERE sku = :sku AND revision < :revision;
 ```
 
-This is last-writer-wins by revision, and it absorbs exact duplicates for free, because a duplicate has the same revision. It only works if the producer provides the number. A consumer that sorts by `occurred_at` is trusting clocks on different machines, and clocks are worse at ordering than counters.
+This is last-writer-wins by revision, and it absorbs exact duplicates for free, because a duplicate has the same revision. It only works if the producer provides the number. So why not sort by `occurred_at`? Because then you're trusting clocks on different machines, and clocks are worse at ordering than counters.
 
-## Keep personal data out of events
+## Send identifiers, not personal data
 
-Events are copied to every consumer, retained for days or forever, replayed into new services and archived in data lakes. When a customer exercises their right to erasure, every copy of every event that names them is now your problem. Send identifiers, and let authorised consumers fetch the details through an API that checks permissions and can forget.
+Events are copied to every consumer, retained for days or forever, replayed into new services and archived in data lakes. When a Fernhill customer exercises their right to erasure, every copy of every event that names them is your problem. Send identifiers instead, and let authorised consumers fetch the details through an API that checks permissions and can forget.
 
 <Compare>
 <Prefer>
@@ -184,15 +188,17 @@ Events are copied to every consumer, retained for days or forever, replayed into
 </Avoid>
 </Compare>
 
+You may have heard that exactly-once delivery solves all this. It solves part of it.
+
 <Note kind="curiosity" title="Exactly-once, with fine print" year="2017" source="https://www.confluent.io/blog/exactly-once-semantics-are-possible-heres-how-apache-kafka-does-it/">
 
-Kafka 0.11 introduced exactly-once semantics in 2017, with an announcement whose title argued against years of conference talks saying it was impossible. The feature is real: idempotent producers and transactions make a read-process-write cycle within Kafka atomic. The fine print is the boundary. Once your consumer sends an email or charges a card, the side effect sits outside Kafka's transaction, and deduplication is your job again.
+In 2017, Kafka 0.11 introduced exactly-once semantics, announced under a title that argued with years of conference talks calling it impossible. The feature is real: idempotent producers and transactions make a read-process-write cycle within Kafka atomic. The fine print is the boundary. The moment your consumer sends an email or charges a card, the side effect sits outside Kafka's transaction, and deduplication is your job again.
 
 </Note>
 
 <Note kind="practice" title="Stripe says it out loud" source="https://docs.stripe.com/webhooks">
 
-Stripe's webhook documentation tells integrators that endpoints might receive the same event more than once and should log processed event IDs and skip duplicates. It also says Stripe doesn't guarantee delivery in the order events were generated, warns against using timestamps to order them, and suggests retrieving missing objects from the API instead. Saying this in the docs is a design decision: consumers who are told to expect duplicates write code that survives them.
+Stripe's webhook documentation tells integrators, up front, that endpoints might receive the same event more than once and should log processed event IDs and skip duplicates. It goes on: delivery order isn't guaranteed, timestamps aren't for ordering, and missing objects should be fetched from the API. Saying it is a design decision: consumers who are told to expect duplicates write code that survives them.
 
 </Note>
 
@@ -214,6 +220,10 @@ Stripe's webhook documentation tells integrators that endpoints might receive th
 <Rule guide="zalando" id="209" level="MUST" title="Maintain backwards compatibility for events" />
 
 </RuleGroup>
+
+## What to take away
+
+Duplicates and stale events are the normal case, so make the effect and the record of it one transaction, prefer effects that state a result, and let revisions decide what's new. All this assumed a broker you control. When the consumer is a partner's server across the internet, such as Larkspur's, you run the delivery yourself: [webhooks](/events/webhooks/).
 
 <SelfCheck>
 

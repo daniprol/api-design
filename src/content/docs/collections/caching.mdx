@@ -52,11 +52,11 @@ import {
 
 </InBrief>
 
-Your API is fast on a laptop on office Wi-Fi. Your users are on a train with one bar of signal, where each round trip costs hundreds of milliseconds. HTTP has decades of performance machinery built in: compression, conditional requests and shared caches. Used deliberately, it makes an API feel instant without touching the database. Used carelessly, it serves one customer's data to another.
+Fernhill's API feels instant on office Wi-Fi. The mobile app lives on a train with one bar of signal, where every round trip costs hundreds of milliseconds. HTTP has decades of performance machinery built in: compression, conditional requests and shared caches. Used deliberately, it makes the app feel quick without touching the database. Used carelessly, it serves one customer's data to another, and Priya hears about it from a support ticket.
 
-## Make every endpoint's caching an explicit decision
+## Decide caching per endpoint, or caches decide for you
 
-With no `Cache-Control`, caches may apply heuristic freshness to some responses. RFC 9111 allows it for responses with a `Last-Modified` header and certain status codes. So "no header" doesn't mean "not cached". Send a header on every response:
+It's tempting to assume a response without `Cache-Control` isn't cached. Caches may apply heuristic freshness to some responses: RFC 9111 allows it for responses with a `Last-Modified` header and certain status codes. Silence is a decision you didn't make, so send a header on every response:
 
 | Data                   | Header                                                                       | Meaning                                                            |
 | ---------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------ |
@@ -70,9 +70,9 @@ Two subtleties catch experienced teams:
 - **`no-cache` doesn't mean "don't cache".** It means "store, but revalidate with the origin before every use". Only `no-store` prevents storage.
 - **`Authorization` keeps responses out of shared caches** unless the response explicitly says `public`, `s-maxage` or `must-revalidate` (RFC 9111 §3.5). Adding `public` to an authenticated endpoint therefore turns on CDN caching for per-user data. Never do it on anything user-specific.
 
-## Validate cheaply with ETags and version columns
+## Make revalidation cheap with a version column
 
-An `ETag` is a validator for the current version of a representation. The client sends it back in `If-None-Match`. If nothing changed, the server answers <Status code={304} /> with no body.
+The app already holds yesterday's copy of a product; it only needs to know whether that copy is still good. An `ETag` is a validator for the current version of a representation. The client sends it back in `If-None-Match`, and if nothing changed, the server answers <Status code={304} /> with no body. Notice that the second response below carries no product at all.
 
 ```http
 GET /products/sku-123                        GET /products/sku-123
@@ -83,11 +83,13 @@ GET /products/sku-123                        GET /products/sku-123
   { …12 KB of product… }
 ```
 
-Generic middleware computes the ETag by hashing the rendered body, which saves bandwidth but not work: the server still loads, serialises and hashes everything before discovering nothing changed. A version column (or `updated_at` plus ID) lets you answer 304 before touching the full row. The same ETag then serves [optimistic concurrency](/reliability/concurrency/) with `If-Match`, so one mechanism covers both.
+The obvious implementation is generic middleware that hashes the rendered body. It saves bandwidth but not work: the server still loads, serialises and hashes everything before discovering nothing changed. A version column (or `updated_at` plus ID) lets you answer 304 before touching the full row. The same ETag then serves [optimistic concurrency](/reliability/concurrency/) with `If-Match`, so one mechanism covers both.
 
 Weak ETags (`W/"v42"`) mean "semantically equivalent", not byte-identical. They're fine for `If-None-Match`, but `If-Match` requires strong comparison, so a weak ETag can never satisfy it. Some proxies weaken ETags when they compress responses, which quietly breaks conditional writes behind them.
 
 _Assumes:_ each resource row has an integer `version` incremented on every write.
+
+Here's the read path. Watch the order: one indexed lookup for the version, the 304 decision, and only then the full product.
 
 <Tabs syncKey="stack">
 <TabItem label="FastAPI">
@@ -151,17 +153,19 @@ app.get("/products/:sku", async (c) => {
 
 ## Compress everything that isn't already compressed
 
-JSON repeats every field name on every object and typically compresses by 70 to 90 percent. Enable Brotli or gzip at the proxy or in the framework for responses over about 1 KB, send `Vary: Accept-Encoding`, and skip formats that are already compressed (images, archives, PDFs).
+JSON repeats every field name on every object, which a compressor loves: it typically shrinks by 70 to 90 percent. Enable Brotli or gzip at the proxy or in the framework for responses over about 1 KB, send `Vary: Accept-Encoding`, and skip formats that are already compressed (images, archives, PDFs).
+
+Compression has one sharp edge, found in 2013.
 
 <Note kind="incident" title="BREACH" year="2013" source="https://www.breachattack.com/">
 
-Researchers showed that when a compressed HTTPS response contains both a secret, such as a CSRF token, and text the attacker can influence, the attacker can recover the secret byte by byte by watching the compressed size. For APIs the mitigation is structural: don't reflect request input in the same compressed body as a secret, and keep tokens in headers.
+Three researchers showed at Black Hat that when a compressed HTTPS response contains both a secret, such as a CSRF token, and text the attacker can influence, the attacker can recover the secret byte by byte, watching the compressed size shrink each time a guess matches. The lesson for APIs is structural: don't reflect request input in the same compressed body as a secret, and keep tokens in headers.
 
 </Note>
 
 ## Cut bytes and round trips with fields and embed
 
-`?fields=id,name,price` lets a list screen take 3 properties instead of 60. `?embed=customer,line_items` lets a detail screen fetch an order and its relations in one request instead of N+1. Both increase the number of representations per URL, so they interact with caching: the query string is part of the cache key, and too many shapes means low hit rates. Offer them where traces show the cost, not by default.
+Compression shrinks what you send; it can't fix sending the wrong things. `?fields=id,name,price` lets a list screen take 3 properties instead of 60. `?embed=customer,line_items` lets a detail screen fetch an order and its relations in one request instead of N+1. Both multiply the representations per URL, and the query string is part of the cache key, so too many shapes means low hit rates. Offer them where traces show the cost, not by default. On a mobile network the difference looks like this:
 
 <Compare caption="31 round trips on a mobile network is several seconds of spinner.">
 <Prefer>
@@ -187,7 +191,7 @@ GET /orders/ord_42/line-items/li_30
 
 <Note kind="history" title="Why GraphQL happened" year="2012" source="https://engineering.fb.com/2015/09/14/core-infra/graphql-a-data-query-language/">
 
-Facebook built GraphQL while rewriting its iOS News Feed natively. Each screen needed different fields from many resources over slow mobile networks, and their resource endpoints meant many round trips and lots of unused data. GraphQL let the client declare the exact shape it needed. `fields` and `embed` are the lightweight REST answer to the same problem, and are often enough.
+Facebook hit this problem at scale while rewriting its iOS News Feed natively. Each screen needed different fields from many resources over slow mobile networks, and the resource endpoints meant many round trips and lots of unused data. Their answer was GraphQL, which lets the client declare the exact shape it needs. `fields` and `embed` are the lightweight REST answer to the same problem, and are often enough.
 
 </Note>
 
@@ -211,6 +215,8 @@ Facebook built GraphQL while rewriting its iOS News Feed natively. Each screen n
 
 </RuleGroup>
 
+This change ships more often than anyone admits, usually on a Friday.
+
 <WorkedProblem kind="Review" title="A CDN in front of the account endpoint">
 
 To cut load, a team puts a CDN in front of the whole API and adds this to every `GET`:
@@ -229,6 +235,10 @@ Fix: `Cache-Control: private, no-store` (or `private, no-cache` with an `ETag`) 
 
 </Solution>
 </WorkedProblem>
+
+## What to take away
+
+Every response gets a caching decision, and anything with a user in it gets `no-store` or `private`, never `public`. A version column then pays twice: cheap 304s on reads and safe conditional writes. Caching makes reads cheap to repeat; the next problem is making writes safe to repeat, which is [idempotency](/reliability/idempotency/).
 
 <SelfCheck>
 

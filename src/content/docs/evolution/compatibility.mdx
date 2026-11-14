@@ -55,9 +55,11 @@ import {
 
 </InBrief>
 
-Shipping an API is easy. Changing it without breaking anyone is the real craft. You often can't see your clients, can't force them to upgrade, and can't know which harmless-looking detail they depend on. Getting compatibility right is what lets an API live for ten years instead of being rewritten every two.
+Priya renames `zip` to `postal_code` on a Tuesday. It's tidier, and the tests pass. On Wednesday morning Larkspur Logistics stops booking deliveries, because their 2019 integration reads `zip`, finds nothing, and nobody there remembers how it works. You often can't see your clients, can't force them to upgrade, and can't know which harmless-looking detail they depend on. Getting compatibility right is what lets an API live for ten years instead of being rewritten every two.
 
-## Know which changes break clients
+## Learn which changes break someone
+
+A change is safe when every existing client keeps working untouched. Intuition is unreliable here, so use the table:
 
 | Compatible                                             | Breaking                                                      |
 | ------------------------------------------------------ | ------------------------------------------------------------- |
@@ -71,7 +73,9 @@ Shipping an API is easy. Changing it without breaking anyone is the real craft. 
 |                                                        | Change a field's meaning, units or default                    |
 |                                                        | Change the status code or problem type of an existing failure |
 
-Two rows deserve emphasis. A rename is a removal plus an addition, so it's breaking even when it feels like tidying. And changing what a field means without changing its shape is the most dangerous break of all, because no schema diff or contract test catches it. Prices that silently switch from gross to net will be wrong in every client until someone notices the money.
+Two rows deserve emphasis. A rename is a removal plus an addition, so it's breaking even when it feels like tidying, as Larkspur demonstrated. And changing what a field means without changing its shape is the most dangerous break of all, because no schema diff or contract test catches it. Prices that silently switch from gross to net will be wrong in every client until someone notices the money.
+
+Same new information, opposite outcomes:
 
 <Compare>
 <Prefer label="Additive">
@@ -98,9 +102,9 @@ Two rows deserve emphasis. A rename is a removal plus an addition, so it's break
 </Avoid>
 </Compare>
 
-## Design so that growth stays additive
+## Shape version one so it can grow
 
-The cheapest compatibility problem is the one the first version doesn't create:
+Most breaking changes aren't decided in a release meeting. They were decided years earlier, when someone returned a bare number where an object would have fitted. The cheapest compatibility problem is the one the first version doesn't create:
 
 - **Return objects, not primitives, where growth is likely.** `"price": {"amount": "19.99", "currency": "EUR"}` can gain `tax_included`. `"price": 19.99` can't.
 - **Return an object at the top level** so a list can gain pagination (see [JSON conventions](/representations/json/)).
@@ -108,11 +112,13 @@ The cheapest compatibility problem is the one the first version doesn't create:
 - **Don't return fields "just in case".** Each field is a promise you'll have to keep.
 - **Document enums as open-ended.** Say in the spec that new values may appear and what clients should do with unknown ones.
 
-## Write clients as tolerant readers
+## Write clients that shrug at surprises
 
-Postel's robustness principle ("be conservative in what you send, liberal in what you accept") applied to APIs means: servers are strict with input and careful with output, and clients tolerate additions. A tolerant reader ignores fields it doesn't know, maps unknown enum values to a sensible fallback, and never depends on field order or on the exact text of messages.
+Additive changes are compatible only if clients let them be. A client that validates responses against a closed schema turns your new `tracking_url` into a crash, and the mobile app version with that bug will be on phones for weeks. Postel's robustness principle ("be conservative in what you send, liberal in what you accept") applied to APIs means: servers are strict with input and careful with output, and clients tolerate additions. A tolerant reader ignores fields it doesn't know, maps unknown enum values to a sensible fallback, and never depends on field order or on the exact text of messages.
 
 _Assumes:_ these are client-side models consuming the shop API.
+
+Notice that strictness and tolerance live side by side: strict on what the server accepts, tolerant in what the client reads.
 
 <Tabs syncKey="stack">
 <TabItem label="FastAPI">
@@ -170,13 +176,15 @@ const OrderIn = z.object({ line_items: z.array(LineItemIn) }).strict();
 
 <Note kind="history" title="Postel's Law, revisited" year="2023" source="https://www.rfc-editor.org/rfc/rfc9413">
 
-Jon Postel wrote the robustness principle into the TCP specification in 1980. It helped the early internet interoperate, but decades of being liberal in what you accept meant protocols accumulated everyone's bugs as de facto features, and some of them became security holes. RFC 9413 revisits it and recommends active maintenance and strictness over indefinite tolerance. For APIs: tolerant readers, yes; lenient servers, no.
+Jon Postel wrote the robustness principle into the TCP specification in 1980, and it helped the early internet interoperate. Then the bill arrived. Decades of being liberal in what you accept meant protocols accumulated everyone's bugs as de facto features, and some of them became security holes. RFC 9413 revisits the principle and recommends active maintenance and strictness over indefinite tolerance. For APIs: tolerant readers, yes; lenient servers, no.
 
 </Note>
 
-## Accept that everything observable becomes contract
+## Everything clients can observe becomes contract
 
-Hyrum's Law says that with enough users, every observable behaviour will be depended on by someone, whatever the documentation promises. Field order, the wording of `detail`, how long a slow endpoint takes, the order of an unsorted list. You can't prevent this, but you can limit the surface. Expose less, sort lists explicitly, keep error `type` values stable and treat `detail` text as free to change, and say all of this in the docs, so that when a client's assumption breaks, you know who was wrong.
+Hyrum's Law says that with enough users, every observable behaviour will be depended on by someone, whatever the documentation promises: field order, the wording of `detail`, how long a slow endpoint takes, the order of an unsorted list. Somewhere, a Larkspur parser is matching on the English text of your error messages. You can't prevent this, but you can limit the surface. Expose less, sort lists explicitly, keep error `type` values stable and treat `detail` text as free to change. Say all of this in the docs, so that when a client's assumption breaks, you know who was wrong.
+
+The best-known illustration is a cartoon.
 
 <Note kind="curiosity" title="Spacebar heating" source="https://xkcd.com/1172/">
 
@@ -204,6 +212,8 @@ XKCD 1172 shows a user complaining that an update fixed a bug where holding the 
 
 </RuleGroup>
 
+Each of these looked harmless to its author.
+
 <WorkedProblem kind="Review" title="A release note">
 
 The next release of the orders API lists these changes. Which are breaking?
@@ -224,6 +234,10 @@ For 3, keep the old default and add `?exclude_cancelled=true`, or make the new b
 
 </Solution>
 </WorkedProblem>
+
+## What to take away
+
+A change is compatible when every existing client keeps working untouched, and the riskiest breaks are the ones that keep the shape and change the meaning. Design version one to grow by addition, and you'll rarely face the question of what to do when a break is unavoidable. When you do, that's [versioning](/evolution/versioning/).
 
 <SelfCheck>
 

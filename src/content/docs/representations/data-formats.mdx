@@ -57,11 +57,15 @@ import {
 
 </InBrief>
 
-Every developer eventually loses a day to a time zone, a rounding error on an invoice, or an ID that changed when JavaScript touched it. The fix is never clever code. It's choosing the dull, standard formats that thousands of people have already debugged.
+A customer in Boston orders a tent for delivery on 20 March. The mobile app says it arrives on the 19th, because the API sent the date as midnight UTC and her phone helpfully converted it to Eastern time.
+
+Everyone eventually loses a day to a time zone, a rounding error or an ID JavaScript mangled. The fix is never clever code. It's the dull, standard formats thousands of people have already debugged.
 
 ## Send instants in UTC as RFC 3339, and dates as dates
 
-RFC 3339 is a strict profile of ISO 8601: `2026-03-14T09:26:53Z` or `2026-03-14T10:26:53+01:00`. Always include the offset, and prefer `Z`. A timestamp without an offset is ambiguous by construction, and every client will guess differently.
+The tent bug treats two things as one. An instant is a point on the global timeline; a calendar date is a square on a wall calendar, with no time zone at all. For instants, use RFC 3339, a strict profile of ISO 8601: `2026-03-14T09:26:53Z` or `2026-03-14T10:26:53+01:00`. Always include the offset, and prefer `Z`. A timestamp without an offset is ambiguous by construction, and every client will guess differently.
+
+Here is the difference on the wire:
 
 <Compare caption="A birthday stored as midnight UTC shows the previous day for every user west of Greenwich.">
 <Prefer>
@@ -89,18 +93,21 @@ RFC 3339 is a strict profile of ISO 8601: `2026-03-14T09:26:53Z` or `2026-03-14T
 </Avoid>
 </Compare>
 
-- Suffix instants with `_at` (`created_at`, `shipped_at`) and calendar dates with `_date` (`birth_date`). The name then tells the client which parser to use.
-- Use the right type. A birthday, an invoice date or a delivery date is a calendar date with no time zone.
-- For a local time that must stay local, such as a shop opening at 09:00 Europe/Madrid regardless of DST, send the local time with an IANA zone name. RFC 9557 standardises the suffix form `2026-03-14T09:00:00+01:00[Europe/Madrid]`, which is also what JavaScript's Temporal API emits.
-- Durations use ISO 8601 (`PT1H30M`, `P14D`). Intervals use either `start`/`end` fields or the ISO form `start/end`.
+A birthday, an invoice date or a delivery date is a calendar date, so send it as one. Suffix instants with `_at` (`created_at`, `shipped_at`) and calendar dates with `_date` (`birth_date`), and the name tells the client which parser to use.
+
+Some times must stay local. A shop opening at 09:00 Europe/Madrid does so whatever DST is doing, so send the local time with an IANA zone name. RFC 9557 standardises the suffix form `2026-03-14T09:00:00+01:00[Europe/Madrid]`, which is also what JavaScript's Temporal API emits. Durations use ISO 8601 (`PT1H30M`, `P14D`). Intervals use either `start`/`end` fields or the ISO form `start/end`.
+
+Integer timestamps have one more problem, with a date attached.
 
 <Note kind="history" title="2038" source="https://en.wikipedia.org/wiki/Year_2038_problem">
 
-Systems that store time as seconds since 1970 in a signed 32-bit integer overflow on 19 January 2038 at 03:14:07 UTC and wrap to December 1901. Most platforms have moved to 64-bit time, but embedded devices, old database columns and file formats haven't. RFC 3339 strings don't have this problem, and they're readable in logs.
+Systems that store time as seconds since 1970 in a signed 32-bit integer overflow on 19 January 2038 at 03:14:07 UTC and wrap to December 1901. Most platforms have moved to 64-bit time, but embedded devices, old database columns and file formats haven't. RFC 3339 strings don't have this problem, and Priya can read them in a log without a converter.
 
 </Note>
 
 ## Send money as a decimal with its currency
+
+Every developer has met this line once:
 
 ```python
 >>> 0.1 + 0.2
@@ -114,30 +121,34 @@ Binary floating point can't represent most decimal fractions exactly, which is f
 | Decimal string + currency      | `{"amount": "19.99", "currency": "EUR"}` | No float can sneak in; clients need a decimal type to compute                                      |
 | Integer minor units + currency | `{"amount": 1999, "currency": "EUR"}`    | Integer arithmetic; clients must know each currency's exponent (`JPY` has 0 decimals, `KWD` has 3) |
 
-Stripe uses minor units. Zalando uses a JSON number declared as `format: decimal`, which works if every client parses it as a decimal, an assumption that's hard to enforce in JavaScript. This guide uses decimal strings.
+Stripe uses minor units. Zalando uses a JSON number declared as `format: decimal`, which works if every client parses it as a decimal, an assumption that's hard to enforce in JavaScript. This guide uses decimal strings: the client you can't audit is the one that calls `Number()`.
 
-## Make identifiers strings
+## Make identifiers strings, even when they're numbers
 
-JavaScript numbers are IEEE 754 doubles, so integers above 2⁵³ − 1 (about 9 × 10¹⁵) silently lose precision when parsed. RFC 7493 (I-JSON) tells protocol designers not to expect interoperability beyond that range.
+Your IDs are `bigint` in Postgres, so why not send numbers? Because JavaScript numbers are IEEE 754 doubles, and integers above 2⁵³ − 1 (about 9 × 10¹⁵) silently lose precision when parsed. RFC 7493 (I-JSON) tells protocol designers not to expect interoperability beyond that range. Watch the last digits:
 
 ```js
 JSON.parse('{"id": 1234567890123456789}').id;
 // 1234567890123456800  (a different ID)
 ```
 
-Send IDs as strings even when they're 64-bit integers in your database. That also lets you change the generation scheme later. As for the scheme:
+No error, no warning: a different order. Send IDs as strings even when they're 64-bit integers in your database; that also lets you change the generation scheme later. As for the scheme:
 
 - **Prefixed opaque IDs** (`ord_8xK2`, `cus_7Hq2`) are readable in logs, self-describing and short.
 - **UUIDv7** (RFC 9562) is time-ordered, which keeps B-tree indexes compact; random UUIDv4 keys scatter inserts across the index. Use it when IDs are generated in many places without coordination.
 - **Never** expose an ID that encodes something you might want to hide or change, such as a sequence number or a shard.
 
+Twitter learnt this at a scale few APIs reach.
+
 <Note kind="incident" title="Twitter's id_str" year="2010" source="https://docs.x.com/fundamentals/x-ids">
 
-When Twitter moved tweet IDs to Snowflake, 64-bit integers generated across many machines, the new IDs were too large for JavaScript numbers, which silently round anything above 2⁵³. Twitter added a second field, `id_str`, carrying the same ID as a string, and told JavaScript clients to use it. For over a decade every tweet in the API carried its ID twice. Strings from day one would have cost nothing.
+In 2010 Twitter moved tweet IDs to Snowflake: 64-bit integers generated across many machines. The new IDs were too large for JavaScript numbers, which silently round anything above 2⁵³,. Twitter's fix was a second field, `id_str`, carrying the same ID as a string, and a request that JavaScript clients use it. For over a decade every tweet in the API carried its ID twice. Strings from day one would have cost nothing.
 
 </Note>
 
 ## Use ISO codes instead of inventing values
+
+One client sends `"Germany"`, another `"Deutschland"`. Standards already settle it:
 
 | What                | Standard           | Example                       |
 | ------------------- | ------------------ | ----------------------------- |
@@ -147,15 +158,17 @@ When Twitter moved tweet IDs to Snowflake, 64-bit integers generated across many
 | Duration            | ISO 8601           | `"P14D"`                      |
 | Phone number        | E.164              | `"+34911234567"`              |
 
-Never `"Germany"`, `"german"` or `"€"`: they can't be validated and they differ by locale.
+Free text such as `"Germany"`, `"german"` or `"€"` can't be validated and differs by locale.
 
 ## Declare number formats, and keep binary out of JSON
 
-JSON has one number type. Your spec should say what each one really is with `format` (`int32`, `int64`, `float`, `double`, `decimal`), so code generators choose `Long` over `Integer` and validators can reject overflow.
+JSON has one number type, so a code generator has to guess what each one is. Tell it with `format` (`int32`, `int64`, `float`, `double`, `decimal`) in your spec, so generators choose `Long` over `Integer` and validators can reject overflow.
 
 When small binary values must travel inside JSON, such as a signature or a thumbnail, use base64. Prefer the URL-safe alphabet (base64url, RFC 4648 §5) so the value can also appear in a URL. For anything larger, use a real media type or a download URL ([Files and large payloads](/representations/files/)).
 
 _Assumes:_ Pydantic v2, DRF 3.15 with `USE_TZ = True`, Zod 3.23 or later.
+
+Here's an order with money, an ID and both kinds of time. Notice where each stack turns the database integer into a string.
 
 <Tabs syncKey="stack">
 <TabItem label="FastAPI">
@@ -251,6 +264,10 @@ const toApi = (row: OrderRow) => ({ ...row, id: row.id.toString() }); // bigint 
 <Rule guide="zalando" id="144" level="SHOULD" title="Only use UUIDs if necessary" />
 
 </RuleGroup>
+
+## What to take away
+
+These formats are deliberately boring, because every client already parses them correctly: UTC instants, dates as dates, money with its currency, IDs as strings. Once fields hold the right values, the next question is how one resource points at another. That's [links](/representations/links/).
 
 <SelfCheck>
 

@@ -56,17 +56,21 @@ import {
 
 </InBrief>
 
-JSON is simple enough that everyone uses it and loose enough that everyone uses it differently. RFC 8259 says almost nothing about naming, nesting, numbers or nulls, so each API makes those choices itself, consciously or not. The conventions below are small. Their value is that payloads become predictable and can grow without breaking anyone.
+Fernhill adds a `partially_shipped` order status on a Tuesday. By Wednesday the mobile app is crashing on the order screen, because a `switch` statement written two years ago throws on any status it doesn't recognise, and the fixed release will take weeks to reach every phone. The change was fine. The contract around it was never written down.
+
+JSON is loose enough that everyone uses it differently: RFC 8259 says almost nothing about naming, nesting, numbers or nulls. The conventions below are small; their value is payloads that are predictable and can grow without breaking anyone.
 
 ## Pick one casing and never mix
 
-Both `snake_case` and `camelCase` are defensible, and the major guidelines split on it. What's never defensible is mixing: a client that maps fields automatically fails on the one field that doesn't follow the pattern.
+Both `snake_case` and `camelCase` are defensible, and the major guidelines split on it. What's never defensible is mixing. A client that maps fields automatically works on every field but one, and that one fails silently as `undefined`.
 
 <GuidesDiffer id="json-casing" />
 
 The casing has to match the query parameters (`?created_after=` for a `created_after` field) and your event payloads. This guide uses `snake_case`. Python serialises it naturally, and TypeScript code maps at the edge or adopts it in its API types.
 
-## Return an object at the top level
+## Return an object, never a bare array
+
+A bare array looks cleaner on day one. On day ninety you need a `next` link, and there is nowhere to put it without changing the root type:
 
 <Compare>
 <Prefer>
@@ -92,15 +96,17 @@ Adding pagination later means changing the root type, which breaks every client.
 </Avoid>
 </Compare>
 
-Name arrays in the plural (`items`, `line_items`, `tags`), and use an object with dynamic keys when the keys are data, such as language codes or SKUs, documented with `additionalProperties`.
+Name arrays in the plural (`items`, `line_items`, `tags`). When the keys themselves are data, such as language codes or SKUs, use an object with dynamic keys and document it with `additionalProperties`.
 
 ## Use string enums, and expect them to grow
 
-Enum values are strings, not integers that need a lookup table: `"status": "partially_shipped"`, not `"status": 4`. This guide uses lowercase `snake_case` values, which match the field names; Zalando and Google use `UPPER_SNAKE_CASE`. Either works if applied everywhere.
+Enum values are strings, not integers that need a lookup table: `"status": "partially_shipped"`, not `"status": 4`. Nobody reading a log at 2 a.m. remembers what 4 means. This guide uses lowercase `snake_case` values, which match the field names; Zalando and Google use `UPPER_SNAKE_CASE`. Either works if applied everywhere.
 
-The decision that matters more is what clients do with a value they don't know. Adding `"partially_shipped"` to an order's status is one of the most common changes an API makes. If clients use exhaustive `switch` statements that throw on unknown values, it's a breaking change. Document every enum as open-ended, and make sure your own SDKs map unknown values to a fallback ([Compatibility](/evolution/compatibility/) covers this).
+The decision that matters more is what clients do with a value they don't know. Adding `"partially_shipped"` is one of the most common changes an API makes, and as the mobile app showed, an exhaustive `switch` that throws on unknown values turns it into a breaking change. Document every enum as open-ended, and make sure your own SDKs map unknown values to a fallback ([Compatibility](/evolution/compatibility/) covers this).
 
 _Assumes:_ Pydantic v2, DRF 3.15, Zod 3 with `@hono/zod-openapi` for schema metadata.
+
+Here are the order schemas in each stack. Notice the list type: a named `items` field inside an object, never a list on its own.
 
 <Tabs syncKey="stack">
 <TabItem label="FastAPI">
@@ -160,11 +166,11 @@ app.get("/orders", async (c) => {
 
 ## Give nothing a single meaning
 
-JSON has at least four ways to say nothing: an absent field, `null`, `""` and `[]`. If each carries a different private meaning, every client has to learn it. Make three of them boring.
+JSON has at least four ways to say nothing: an absent field, `null`, `""` and `[]`. Give each a private meaning and every client must learn all four; Larkspur Logistics will learn three. Make them boring.
 
-**`null` and absent mean the same in responses.** Many languages can't tell them apart after deserialisation. Pick one style, either always include optional fields as `null` or always omit them, and apply it everywhere. The single, well-known exception is JSON Merge Patch on requests, where absent means "leave alone" and `null` means "remove" (see [Methods](/http/methods/)).
+**`null` and absent mean the same in responses.** Many languages can't tell them apart after deserialisation, so a distinction you draw on the server vanishes on the client. Pick one style, either always include optional fields as `null` or always omit them, and apply it everywhere. The single, well-known exception is JSON Merge Patch on requests, where absent means "leave alone" and `null` means "remove" (see [Methods](/http/methods/)).
 
-**Booleans are never `null`.** A nullable boolean is a three-state enum that doesn't name its third state. Does `"newsletter_consent": null` mean declined, never asked, or not loaded? For consent, the difference is a legal question.
+**Booleans are never `null`.** A nullable boolean is a three-state enum too shy to name its third state. Does `"newsletter_consent": null` mean declined, never asked, or not loaded? For consent, the difference is a legal question, so give it a name:
 
 <Compare>
 <Prefer>
@@ -189,15 +195,17 @@ Three states, each with a name: `granted`, `declined`, `not_asked`.
 
 **`""` is a real empty string,** not a stand-in for "no value". Otherwise every client has to check for both.
 
+Null's inventor regrets it, and one Californian driver paid for it.
+
 <Note kind="history" title="The billion-dollar mistake" year="2009" source="https://www.infoq.com/presentations/Null-References-The-Billion-Dollar-Mistake-Tony-Hoare/">
 
-Tony Hoare called his 1965 invention of the null reference in ALGOL W his "billion-dollar mistake": it was added "simply because it was so easy to implement". Kotlin, Swift, Rust and TypeScript with `strictNullChecks` spend real complexity making null explicit. An API that makes null mean one specific thing gives its clients the same benefit.
+In 2009, Tony Hoare called his 1965 invention of the null reference in ALGOL W his "billion-dollar mistake": he added it "simply because it was so easy to implement". Kotlin, Swift, Rust and TypeScript with `strictNullChecks` now spend real complexity making null explicit. An API that makes null mean one specific thing gives its clients the same benefit.
 
 </Note>
 
 <Note kind="incident" title="A licence plate reading NULL" year="2019" source="https://www.wired.com/story/null-license-plate-landed-one-hacker-ticket-hell/">
 
-A security researcher registered the California vanity plate "NULL" and began receiving parking fines for vehicles whose plate had never been recorded: a system had stored missing plates as the string `NULL`. He was billed thousands of dollars. Absence must be represented as absence, never as a sentinel string that a real value can collide with.
+A security researcher registered the California vanity plate "NULL" as a joke. Then the parking fines arrived, for vehicles whose plate had never been recorded: a system had stored missing plates as the string `NULL`, and his real plate matched them all. He was billed thousands of dollars. Absence must be represented as absence, never as a sentinel string that a real value can collide with.
 
 </Note>
 
@@ -272,6 +280,10 @@ List every convention this breaks and propose a corrected payload.
 
 </Solution>
 </WorkedProblem>
+
+## What to take away
+
+Each convention here lets a payload grow without surprising its readers: one casing, an object at the root, open-ended enums, one meaning for nothing. The values inside need the same discipline, because timestamps, money and IDs each fail in their own way. That's [data formats](/representations/data-formats/).
 
 <SelfCheck>
 

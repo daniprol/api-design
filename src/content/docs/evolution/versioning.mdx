@@ -54,13 +54,15 @@ import {
 
 </InBrief>
 
-Versioning is the topic where API designers argue loudest. Experienced teams mostly agree on the uncomfortable part: the best version is the one you never ship. Every version you publish is a second API you build, test, document, support and eventually retire. The strategy you pick decides how painful the rare unavoidable break will be.
+Fernhill ships `/v2/` to fix one awkward field. Two years later, Priya is on call for v1 and v2, patching the same security bug twice, and Larkspur Logistics is still on v1. Designers argue loudest about versioning, yet mostly agree on the uncomfortable part: every version you publish is a second API you build, test, document, support and eventually retire.
 
-## Evolve compatibly first
+## The cheapest version is the one you never ship
 
 Following [Compatibility](/evolution/compatibility/) removes the need for most versions: add fields, add endpoints, add optional inputs, and make enums open-ended. Many large APIs go years between breaking changes. A breaking change should cost a deliberate decision, with a list of affected clients and a migration plan, not appear as a side effect of a refactoring.
 
-## Choose where the version lives by what you can afford
+## Put the version where you can afford to run it
+
+When a break is unavoidable, the scheme you picked on day one decides how much it hurts. Each option moves the cost somewhere different, and the guides disagree:
 
 <GuidesDiffer id="versioning" />
 
@@ -74,9 +76,11 @@ Following [Compatibility](/evolution/compatibility/) removes the need for most v
 
 None is wrong. What matters is that the cost profile fits your organisation. A team of five can't run Stripe's model, and a platform with ten thousand integrators can't run on URL majors and annual rewrites.
 
-Use the media type tree correctly if you version that way: `vnd.` is the vendor tree for types registered with IANA (`application/vnd.github+json`), and `x.` is for unregistered, private types (`application/x.shop.order+json`).
+If you version by media type, use the tree correctly: `vnd.` is the vendor tree for types registered with IANA (`application/vnd.github+json`), and `x.` is for unregistered, private types (`application/x.shop.order+json`).
 
 _Assumes:_ two representations of an order, `OrderV1` and `OrderV2`, built from the same domain object.
+
+Here's media-type versioning in each stack. Notice the `Vary: Accept` header: without it, a cache can hand a v2 body to a client that asked for v1.
 
 <Tabs syncKey="stack">
 <TabItem label="FastAPI">
@@ -131,7 +135,9 @@ app.get("/orders/:id", async (c) => {
 </TabItem>
 </Tabs>
 
-## Keep versions major-only, and give each one an end date
+## Major versions only, each with an end date
+
+Whatever the scheme, the identifiers themselves go wrong in predictable ways:
 
 <Compare caption="The preferred lines are three alternative schemes. An API uses one of them, not all three.">
 <Prefer>
@@ -154,9 +160,11 @@ GET /orders?version=latest
 </Avoid>
 </Compare>
 
-Minor and patch numbers describe compatible changes, which by definition need no client action, so they don't belong in a request. `latest` defeats the point of versioning: a client that asks for it gets broken by the next release. Pre-release channels (`v1beta1` in Google's scheme) are fine if their weaker stability promise is explicit.
+Minor and patch numbers describe compatible changes, which by definition need no client action, so they don't belong in a request. `latest` defeats the point of versioning: a client that asks for it has volunteered to be broken by the next release. Pre-release channels (`v1beta1` in Google's scheme) are fine if their weaker stability promise is explicit.
 
-When you launch a version, publish how long the previous one will be supported, for example "v1 is supported until 12 months after v2 reaches general availability". The [deprecation](/evolution/deprecation/) process then runs on a known clock.
+The other half is the end date. A version without one becomes a version you run forever, because nobody migrates off something that still works. When you launch a version, publish how long the previous one will be supported, for example "v1 is supported until 12 months after v2 reaches general availability". The [deprecation](/evolution/deprecation/) process then runs on a known clock.
+
+Stripe built the most elaborate scheme in public use:
 
 <Note kind="practice" title="Stripe's version change modules" year="2017" source="https://stripe.com/blog/api-versioning">
 
@@ -164,9 +172,11 @@ Stripe pins each account to the API version current at its first request, identi
 
 </Note>
 
+GitHub, meanwhile, learnt what it costs to change your mind:
+
 <Note kind="practice" title="GitHub switches schemes" year="2022" source="https://github.blog/developer-skills/github/to-infinity-and-beyond-enabling-the-future-of-githubs-rest-api-with-api-versioning/">
 
-GitHub's REST API used media types for years, `application/vnd.github.v3+json` plus "preview" media types for experiments. In 2022 it moved to date-based versions in a header, `X-GitHub-Api-Version: 2022-11-28`, with a 24-month support promise for each. Changing the scheme took a long transition with both mechanisms running side by side. That's why choosing well on day one matters.
+GitHub's REST API used media types for years, `application/vnd.github.v3+json` plus "preview" media types for experiments. In 2022 it moved to date-based versions in a header, `X-GitHub-Api-Version: 2022-11-28`, with a 24-month support promise for each. The switch meant a long transition with both mechanisms running side by side, which is the bill for not choosing well on day one.
 
 </Note>
 
@@ -178,6 +188,10 @@ GitHub's REST API used media types for years, `application/vnd.github.v3+json` p
 <Rule guide="zalando" id="116" level="MUST" title="Use semantic versioning" />
 
 </RuleGroup>
+
+## What to take away
+
+Every version is a second API with its own on-call rota, so earn each one with a break you couldn't avoid, and pick the scheme whose cost you can carry for years. Give every version an end date the day it launches. Making that end date stick without stranding Larkspur is [deprecation](/evolution/deprecation/).
 
 <SelfCheck>
 

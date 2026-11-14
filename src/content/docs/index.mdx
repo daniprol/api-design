@@ -12,13 +12,13 @@ import HomeSearch from "@components/HomeSearch.astro";
 
 <div class="fg-hometop">
   <h1>HTTP API Design</h1>
-  <p class="fg-hometop__sub">A practitioner's reference</p>
+  <p class="fg-hometop__sub">A practitioner's guide</p>
   <div class="fg-hometop__scope">
-    The decisions behind HTTP and event APIs that stay usable for years: resource modelling,
-    protocol semantics, representations, pagination, retries, concurrency, security and change.
-    Written for engineers who already ship APIs. Every page leads with its recommendations, cites
-    the RFC or original source, and shows where major company guidelines disagree. Examples are in
-    FastAPI, Django REST Framework and Hono.
+    Every API decision looks harmless on the day you make it. The cost arrives later: the retry that
+    charges a card twice, the renamed field that breaks a partner at 2 a.m., the endpoint you can't
+    remove because nobody knows who calls it. This guide follows one shop's team through those
+    moments and shows the design that avoids each one, with the RFC behind it and code in FastAPI,
+    Django REST Framework and Hono.
   </div>
   <div class="not-content">
     <HomeSearch />

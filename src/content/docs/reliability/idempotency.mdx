@@ -56,11 +56,11 @@ import {
 
 </InBrief>
 
-A client sends `POST /payments`. The payment succeeds, and then the connection drops before the response arrives. From the client's side, it has no idea whether the customer paid. Retrying may charge twice; not retrying may leave the order unpaid. Networks will put every client in that position eventually, so the server has to make "retry" the safe answer.
+Black Friday, 11 p.m. A Fernhill customer taps Pay on a train. The mobile app sends `POST /payments`, the charge succeeds, and then the train enters a tunnel. The response is lost. Retry, and the customer may pay twice; give up, and a paid order may sit unpaid. Either way, Priya reads about it in the morning. Networks put every client here eventually, so the server's job is to make "retry" the safe answer.
 
-## Assume the client can't distinguish failure from success
+## A timeout tells the client nothing
 
-A timeout covers three different situations:
+From the app's side, a timeout is one event. From the server's side, it's one of three:
 
 ```text
 1. The request never arrived             → retrying is safe
@@ -68,11 +68,11 @@ A timeout covers three different situations:
 3. It succeeded and the response was lost → retrying duplicates the effect
 ```
 
-The client sees the same thing in all three. `GET`, `PUT` and `DELETE` are idempotent by definition, so retrying them is fine. `POST` and `PATCH` are not, and those are usually the requests that create orders and move money.
+The client sees the same thing in all three. For `GET`, `PUT` and `DELETE` that's fine: they're idempotent by definition. `POST` and `PATCH` make no such promise, and they're exactly the methods that create orders and move money.
 
-## Prefer natural keys where the domain has one
+## Let the domain supply the key when it can
 
-The cheapest idempotency needs no extra machinery. If the client generates the resource's ID, creation becomes a `PUT` to a known URL, which is idempotent by definition:
+The cheapest idempotency is the kind you don't build. If the client generates the order's ID, creation becomes a `PUT` to a known URL, which is idempotent by definition. Notice how `If-None-Match: *` turns it into a strict create:
 
 ```http
 PUT /orders/ord_01JCX3N4Q8
@@ -82,17 +82,19 @@ PUT /orders/ord_01JCX3N4Q8
 → 412 Precondition Failed  (repeat sent with If-None-Match: *, which makes PUT create-only)
 ```
 
-A unique business reference does the same for `POST`: a merchant's `order_reference` with a unique constraint turns a duplicate into a <Status code={409} /> or a <Status code={303} /> to the existing order. Use these when they fit, and fall back to idempotency keys when they don't.
+A unique business reference does the same for `POST`. Put a unique constraint on a partner's `order_reference`, and the duplicate Larkspur Logistics will eventually send becomes a <Status code={409} /> or a <Status code={303} /> to the existing order, not a second shipment. When the domain offers a key, take it. When it doesn't, ask the client for one.
 
 ## Use an Idempotency-Key for everything else
 
-The client generates a unique key per logical operation, typically a UUID, and sends it with every attempt. The server records the key with the outcome and replays the outcome on a retry.
+A payment rarely has a natural key, so the client mints one per logical operation, typically a UUID, and sends it with every attempt. It's a cloakroom ticket: hand it in twice and you get the same coat back, not a second one. The server records the key with the outcome and replays that outcome on a retry.
 
 ```http
 POST /payments
 Idempotency-Key: 6d0d3a8e-7f5c-4c71-9a5b-0f3c1e2d4b9a
 { "amount": "49.00", "currency": "EUR", "order_id": "ord_42" }
 ```
+
+Every arrival falls into one of five cases:
 
 | Situation                                   | Response                                                                                  |
 | ------------------------------------------- | ----------------------------------------------------------------------------------------- |
@@ -102,13 +104,15 @@ Idempotency-Key: 6d0d3a8e-7f5c-4c71-9a5b-0f3c1e2d4b9a
 | Known key, still in progress                | <Status code={409} />: try again shortly                                                  |
 | Missing key on an endpoint that requires it | <Status code={400} />, as the IETF draft specifies (an exception to this site's 422 rule) |
 
-Keep keys for at least as long as clients might retry. Stripe keeps them for 24 hours. Scope keys per account, so one customer's key can't collide with or reveal another's response.
+Keep keys for at least as long as clients might retry; Stripe keeps them for 24 hours. Scope them per account, or one customer's key can collide with, and replay, another's response.
 
-## Store the outcome in the same transaction as the effect
+## Store the outcome with the effect, or not at all
 
-The subtle part is atomicity. If you record "key done" in Redis and write the payment to Postgres, a crash between the two leaves them disagreeing: either the payment exists without a key, so a retry pays again, or the key exists without a payment, so a retry replays a success that never happened. Put the key row and the effect in one database transaction. When the effect is an external call, such as a card network, record progress in recovery points around it so a retry resumes rather than repeats, and pass your own idempotency key downstream.
+This is where most implementations go wrong, quietly. Say you record "key done" in Redis and write the payment to Postgres. A crash between the two leaves them disagreeing: either the payment exists without the key, so the retry pays again, or the key exists without the payment, so the retry confidently replays a success that never happened. The fix is unglamorous: one database transaction for the key row and the effect. An external call, such as the card network, can't join that transaction, so record recovery points around it so a retry resumes rather than repeats, and pass your own idempotency key downstream.
 
 _Assumes:_ PostgreSQL; an `idempotency_keys` table with a unique `(account_id, key)`, a fingerprint, a nullable response and a `locked_until` lease column.
+
+Here's the handler. Watch where the transaction opens: the claim, the payment and the stored response all sit inside it, so they commit together or not at all.
 
 <Tabs syncKey="stack">
 <TabItem label="FastAPI">
@@ -184,17 +188,17 @@ app.post("/payments", zValidator("json", PaymentIn), async (c) => {
 
 <Note kind="practice" title="Stripe's recovery points" year="2017" source="https://brandur.org/idempotency-keys">
 
-Brandur Leach, then at Stripe, described an idempotency key design where each request moves through named recovery points ("started", "ride created", "charge created", "finished") stored on the key row in Postgres. A retry picks up from the last completed point instead of starting over or replaying blindly. It's the most complete public write-up of the pattern and worth reading before building your own.
+Brandur Leach, then at Stripe, wrote up a design in which every request walks through named recovery points ("started", "ride created", "charge created", "finished") recorded on the key row in Postgres. When a worker dies halfway, the retry carries on from the last completed point, neither starting over nor replaying blindly. It's still the most complete public write-up of the pattern; read it before building your own.
 
 </Note>
 
-## Retry with capped, jittered backoff
+## Retry with jitter, because you're never the only client
 
-Servers make retries safe; clients still have to retry well. A thousand clients that all retry after exactly one second turn a brief outage into a synchronised second outage.
+Servers make retries safe; clients still have to retry well. Say the payment provider wobbles for five seconds. Every Fernhill app times out, waits exactly one second and retries at the same instant, and the provider recovers straight into a wall of synchronised traffic. Your retry loop has scheduled a second outage.
 
-- Retry only idempotent requests, or requests with an idempotency key, and only on transient failures: connection errors, <Status code={429} />, <Status code={502} />, <Status code={503} />, <Status code={504} />. Never retry 4xx validation errors.
-- Use exponential backoff with full jitter: `sleep = random(0, min(cap, base × 2^attempt))`. AWS's 2015 analysis showed full jitter cuts total work and completion time compared with plain exponential backoff.
-- Honour `Retry-After` when the server sends it, and cap attempts. Retry budgets, such as at most 10 percent extra load from retries, protect the server from your fleet.
+So be choosy. Retry only idempotent requests, or requests with an idempotency key, and only on transient failures: connection errors, <Status code={429} />, <Status code={502} />, <Status code={503} />, <Status code={504} />. A 4xx validation error fails the same way every time; never retry it.
+
+Then break the lockstep with exponential backoff and full jitter: `sleep = random(0, min(cap, base × 2^attempt))`. AWS's 2015 analysis showed full jitter cuts total work and completion time compared with plain exponential backoff. Honour `Retry-After` when the server sends it, and cap attempts. A retry budget, such as at most 10 percent extra load from retries, stops your fleet becoming the outage. In code, the difference is one line:
 
 <Compare>
 <Prefer>
@@ -231,6 +235,8 @@ const delay = 1_000; // every client retries in lockstep
 
 </RuleGroup>
 
+Priya found this handler in review. It passed its tests, and it fails the first time a deploy lands at the wrong moment.
+
 <WorkedProblem kind="Review" title="The key that never comes back">
 
 ```python
@@ -259,6 +265,10 @@ Also missing: no request fingerprint, so the same key with a different amount re
 
 </Solution>
 </WorkedProblem>
+
+## What to take away
+
+The client can't know whether its request landed, so make the question irrelevant: one key per operation, stored in the same transaction as the effect, with a lease so a crash can't strand it. The next place this bites is two requests that aren't retries at all, such as the app and a support agent editing the same order at once. That's [concurrency](/reliability/concurrency/).
 
 <SelfCheck>
 
