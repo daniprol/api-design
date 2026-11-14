@@ -110,6 +110,8 @@ async def publish_order_placed(order: Order, flow_id: str):
     )
     # key = order id → all events of one order go to the same partition, in order
     await producer.send("shop.order-placed", key=order.id, value=event.model_dump_json())
+    # ⚠️ Saving the order and then publishing is a "dual write": if the process dies in
+    # between, the order exists but the event is lost. See the Django tab: transactional outbox.
 ```
 
 </TabItem>
@@ -157,6 +159,8 @@ const OrderPlaced = z.object({
 });
 
 app.post("/orders", async (c) => {
+  // ⚠️ dual write: DB save, then publish. A crash in between loses the event.
+  // In production, use a transactional outbox (see the Django tab).
   const order = await orders.place(await c.req.json());
   const event = OrderPlaced.parse({
     metadata: {

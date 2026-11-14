@@ -66,13 +66,19 @@ def get_product(pid: str, response: Response) -> Product:
     response.headers["ETag"] = f'"{product.version}"'
     return product
 
+def parse_version(if_match: str) -> int:
+    """Accepts '"7"'. Weak (W/"7"), '*' or garbage can't be used for a strong match."""
+    tag = if_match.strip()
+    if not (tag.startswith('"') and tag.endswith('"') and tag[1:-1].isdigit()):
+        raise Problem(412, "If-Match must be a strong ETag previously returned by this API")
+    return int(tag[1:-1])
+
 @app.put("/products/{pid}")
-def replace_product(pid: str, body: ProductIn,
-                    if_match: Annotated[str | None, Header()] = None,
-                    response: Response = None) -> Product:
+def replace_product(pid: str, body: ProductIn, response: Response,
+                    if_match: Annotated[str | None, Header()] = None) -> Product:
     if if_match is None:
         raise Problem(428, "This endpoint requires an If-Match header")
-    expected = int(if_match.strip('"'))
+    expected = parse_version(if_match)
     # Atomic compare-and-set in the database:
     # UPDATE products SET ..., version = version + 1 WHERE id = :pid AND version = :expected
     updated = repo.update_if_version(pid, body, expected_version=expected)
@@ -101,7 +107,10 @@ class ProductDetail(APIView):
         serializer.is_valid(raise_exception=True)
 
         # compare-and-set: only update if the version is still the one the client saw
-        updated = Product.objects.filter(pk=pk, version=int(if_match.strip('"'))).update(
+        version = if_match.strip().strip('"')
+        if not version.isdigit():  # W/"7", "*" or garbage: no strong match possible
+            return problem(412, "If-Match must be a strong ETag returned by this API")
+        updated = Product.objects.filter(pk=pk, version=int(version)).update(
             **serializer.validated_data, version=F("version") + 1
         )
         if not updated:
@@ -126,10 +135,13 @@ app.put("/products/:id", zValidator("json", ProductIn), async (c) => {
   if (!ifMatch) return c.json({ title: "If-Match header required" }, 428);
 
   // UPDATE ... WHERE id = $1 AND version = $2 RETURNING *
+  const match = /^"(\d+)"$/.exec(ifMatch.trim()); // strong ETag only: not W/"7" or *
+  if (!match) return c.json({ title: "If-Match must be a strong ETag from this API" }, 412);
+
   const updated = await repo.updateIfVersion(
     c.req.param("id"),
     c.req.valid("json"),
-    Number(ifMatch.replaceAll('"', "")),
+    Number(match[1]),
   );
   if (!updated) return c.json({ title: "Modified by someone else. Reload and retry." }, 412);
 

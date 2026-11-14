@@ -81,7 +81,12 @@ def handle_order_placed(event: dict):
 ```ts
 // e.g. a webhook receiver: same rules apply to HTTP-delivered events
 app.post("/webhooks/orders", async (c) => {
-  const event = OrderPlaced.parse(await c.req.json());
+  const raw = await c.req.text();
+  // Always verify the sender's signature (HMAC of the raw body) before trusting anything
+  if (!(await verifySignature(raw, c.req.header("Webhook-Signature"), WEBHOOK_SECRET))) {
+    return c.json({ title: "Invalid signature" }, 401);
+  }
+  const event = OrderPlaced.parse(JSON.parse(raw));
 
   const firstTime = await db.transaction(async (tx) => {
     const res = await tx.query(

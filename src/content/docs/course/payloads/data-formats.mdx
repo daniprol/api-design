@@ -273,7 +273,7 @@ Zalando's money object is `{"amount": <decimal number>, "currency": "<ISO 4217>"
   answer={2}
 >
 
-A decimal amount (here, a string so it's never parsed as a float) together with an ISO 4217 currency code. Locale-formatted strings can't be computed with, and a bare float has no currency and invites rounding bugs.
+A decimal amount together with an ISO 4217 currency code. Here the amount is a string so no client parses it as a float; Zalando uses a JSON number declared as `format: decimal` instead. Both are fine, as long as clients do decimal math. Locale-formatted strings can't be computed with, and a bare float has no currency and invites rounding bugs.
 
 </Quiz>
 

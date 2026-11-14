@@ -145,7 +145,8 @@ from django.views.decorators.http import condition
 from django.utils.decorators import method_decorator
 
 def product_etag(request, pk):
-    return Product.objects.filter(pk=pk).values_list("version", flat=True).first()
+    version = Product.objects.filter(pk=pk).values_list("version", flat=True).first()
+    return None if version is None else str(version)  # etag_func must return a str
 
 class ProductDetail(RetrieveAPIView):
     queryset = Product.objects.all()
@@ -162,7 +163,6 @@ class ProductDetail(RetrieveAPIView):
 ```ts
 import { compress } from "hono/compress";
 import { etag } from "hono/etag";
-import { cache } from "hono/cache"; // Cloudflare/Deno edge cache helper
 
 app.use("*", compress()); // gzip/deflate based on Accept-Encoding
 app.use("/products/*", etag()); // computes ETag, answers 304 automatically

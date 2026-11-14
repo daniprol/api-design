@@ -53,6 +53,8 @@ GET /report-jobs/job_91
   }
 ```
 
+Some APIs answer a finished job with <Status code={303} /> ("See Other") and a `Location` pointing straight at the result. It saves the client a step, but many HTTP clients follow it automatically, which can surprise people. A `result` link in the body is the simpler, more explicit choice.
+
 ```text
 PENDING ──► RUNNING ──► SUCCEEDED
                   └───► FAILED (with a problem object)
@@ -136,8 +138,8 @@ Batch endpoints save round trips: "create these 100 products". But what if 97 su
 Answer with <Status code={207} /> and a **per-item result**:
 
 ```http
-POST /products/batch
-[ {...}, {...}, {...} ]
+POST /product-batches
+{ "items": [ {...}, {...}, {...} ] }
 
 HTTP/1.1 207 Multi-Status
 {

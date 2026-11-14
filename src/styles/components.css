@@ -907,17 +907,6 @@
   display: none;
 }
 
-.dojo-rule-group summary::after {
-  content: "▸";
-  margin-inline-start: auto;
-  transition: transform 0.2s;
-  color: var(--sl-color-gray-3);
-}
-
-.dojo-rule-group[open] summary::after {
-  transform: rotate(90deg);
-}
-
 .dojo-rule-group__count {
   padding: 0.05rem 0.55rem;
   border-radius: 999px;

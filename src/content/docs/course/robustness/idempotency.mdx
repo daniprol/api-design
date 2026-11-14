@@ -79,7 +79,11 @@ async def create_payment(body: PaymentIn, idempotency_key: Annotated[str, Header
             raise Problem(409, "A request with this key is still being processed")
         return JSONResponse(saved.response, status_code=saved.status)  # replay
 
-    payment = await payments.charge(body)
+    try:
+        payment = await payments.charge(body)
+    except Exception:
+        await store.release(idempotency_key)  # failed before completing: allow a retry
+        raise
     await store.save_response(idempotency_key, 201, payment.model_dump(mode="json"))
     return payment
 ```
@@ -114,7 +118,11 @@ class PaymentCreate(APIView):
                 return problem(409, "Request with this key still in progress")
             return Response(record.response, status=record.status)
 
-        payment = charge(request.data)
+        try:
+            payment = charge(request.data)
+        except Exception:
+            record.delete()  # failed before completing: let the client retry
+            raise
         record.status, record.response = 201, PaymentSerializer(payment).data
         record.save(update_fields=["status", "response"])
         return Response(record.response, status=201)
@@ -142,6 +150,10 @@ const idempotent = createMiddleware(async (c, next) => {
 
   await kv.put(key, { fingerprint }, { ttl: 86_400 }); // use an atomic put-if-absent in prod!
   await next();
+  if (c.res.status >= 500) {
+    await kv.delete(key); // server failure: release the key so a retry can run
+    return;
+  }
   await kv.put(
     key,
     { fingerprint, response: { status: c.res.status, body: await c.res.clone().json() } },

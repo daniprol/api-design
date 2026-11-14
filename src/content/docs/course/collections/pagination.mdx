@@ -149,18 +149,21 @@ class OrderCursorPagination(CursorPagination):
 class OrderViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Order.objects.all()
     serializer_class = OrderSerializer
-    pagination_class = OrderCursorPagination  # cursors are opaque + base64 ✨
+    pagination_class = OrderCursorPagination  # DRF encodes the cursor as an opaque base64 token ✨
 ```
 
 </TabItem>
 <TabItem label="Hono" icon="seti:typescript">
 
 ```ts
-const encode = (o: object) => Buffer.from(JSON.stringify(o)).toString("base64url");
-const decode = (s: string) => JSON.parse(Buffer.from(s, "base64url").toString());
+// btoa/atob work everywhere (Node, Deno, Bun, Cloudflare Workers); make them URL-safe
+const encode = (o: object) =>
+  btoa(JSON.stringify(o)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+const decode = (s: string) => JSON.parse(atob(s.replaceAll("-", "+").replaceAll("_", "/")));
 
 app.get("/orders", async (c) => {
-  const limit = Math.min(Number(c.req.query("limit") ?? 20), 100);
+  const requested = Number.parseInt(c.req.query("limit") ?? "20", 10);
+  const limit = Number.isNaN(requested) ? 20 : Math.min(Math.max(requested, 1), 100);
   const cursor = c.req.query("cursor");
   const rows = await repo.ordersPage({
     after: cursor ? decode(cursor) : undefined,

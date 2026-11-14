@@ -99,7 +99,7 @@ const OrderView = z
     id: z.string(),
     status: z.string(), // not z.enum: tolerate values we don't know yet
   })
-  .passthrough(); // keep unknown fields instead of failing
+  .passthrough(); // keep unknown fields (by default zod silently strips them; only .strict() would fail)
 
 const statusLabel = (s: string) =>
   ({ PLACED: "Placed", SHIPPED: "On its way", DELIVERED: "Delivered" })[s] ?? "Processing"; // fallback!

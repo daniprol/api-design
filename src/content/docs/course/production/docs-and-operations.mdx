@@ -74,6 +74,9 @@ A spec that lives only in a repo isn't discoverable. Publish it to an **API port
 <TabItem label="FastAPI" icon="seti:python">
 
 ```python
+from fastapi import FastAPI
+from fastapi.openapi.utils import get_openapi
+
 app = FastAPI(
     title="Order Management API",
     version="1.4.2",

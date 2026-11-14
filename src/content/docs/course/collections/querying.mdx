@@ -62,7 +62,7 @@ Both are common. OpenAPI calls them `style: form, explode: false` and `explode: 
 GET /products?sort=-rating,price
 ```
 
-Sort by `rating` descending, then `price` ascending. Always add a unique tiebreaker internally (like `id`) so pagination is stable.
+Sort by `rating` descending, then `price` ascending. (Zalando also allows a `+` prefix for ascending, but remember that a raw `+` in a query string decodes to a space, so clients must send it as `%2B`.) Always add a unique tiebreaker internally (like `id`) so pagination is stable.
 
 ## In code
 
@@ -104,8 +104,11 @@ def list_orders(
 import django_filters
 from rest_framework.filters import OrderingFilter, SearchFilter
 
+class CharInFilter(django_filters.BaseInFilter, django_filters.CharFilter):
+    pass  # BaseInFilter must be combined with a concrete filter type
+
 class OrderFilter(django_filters.FilterSet):
-    status = django_filters.BaseInFilter(field_name="status")  # ?status=A,B
+    status = CharInFilter(field_name="status")  # ?status=A,B
     created_after = django_filters.IsoDateTimeFilter(field_name="created_at", lookup_expr="gt")
 
     class Meta:

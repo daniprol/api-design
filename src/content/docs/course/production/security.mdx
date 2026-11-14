@@ -124,7 +124,17 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
 import { jwk } from "hono/jwk";
 import { createMiddleware } from "hono/factory";
 
-app.use("/orders/*", jwk({ jwks_uri: "https://auth.example.com/.well-known/jwks.json" })); // 401 if invalid
+// Verifies signature + expiry → 401 if invalid
+app.use("/orders/*", jwk({ jwks_uri: "https://auth.example.com/.well-known/jwks.json" }));
+// …and check it was issued by YOUR auth server, for THIS API (iss/aud)
+app.use("/orders/*", async (c, next) => {
+  const { iss, aud } = c.get("jwtPayload");
+  const audiences = Array.isArray(aud) ? aud : [aud];
+  if (iss !== "https://auth.example.com" || !audiences.includes("orders-api")) {
+    return c.json({ title: "Token not valid for this API" }, 401);
+  }
+  await next();
+});
 
 const requireScope = (...needed: string[]) =>
   createMiddleware(async (c, next) => {

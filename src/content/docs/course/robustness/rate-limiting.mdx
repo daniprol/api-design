@@ -69,17 +69,20 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-limiter = Limiter(key_func=get_remote_address, headers_enabled=True)  # X-RateLimit-*
+# Better key than IP for authenticated APIs: the client id from the verified token
+def client_key(request: Request) -> str:
+    client = getattr(request.state, "client_id", None)  # set by your auth middleware
+    return client or get_remote_address(request)
+
+limiter = Limiter(key_func=client_key, headers_enabled=True)  # X-RateLimit-*
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # → 429
 
 @app.get("/search")
 @limiter.limit("100/minute")
-def search(request: Request, q: str): ...
-
-# Better key than IP for authenticated APIs: the API key / client id
-def client_key(request: Request) -> str:
-    return request.headers.get("Authorization", get_remote_address(request))
+def search(request: Request, response: Response, q: str):
+    # slowapi needs `response` in the signature to inject the headers
+    ...
 ```
 
 </TabItem>
@@ -117,8 +120,9 @@ app.use(
     windowMs: 60_000,
     limit: 100,
     standardHeaders: "draft-7", // IETF RateLimit header
-    keyGenerator: (c) =>
-      c.req.header("Authorization") ?? c.req.header("CF-Connecting-IP") ?? "anon",
+    // key by the verified client id (set by your auth middleware), never the raw token:
+    // you don't want bearer tokens sitting in the limiter store
+    keyGenerator: (c) => c.get("clientId") ?? c.req.header("CF-Connecting-IP") ?? "anon",
   }),
 );
 // Exceeding → 429 Too Many Requests
@@ -130,11 +134,19 @@ app.use(
 ## Client side: respect the signals
 
 ```ts
+// Retry-After is either seconds ("30") or an HTTP date ("Wed, 21 Oct 2026 07:28:00 GMT")
+function retryAfterMs(res: Response, attempt: number): number {
+  const header = res.headers.get("Retry-After");
+  if (header && /^\d+$/.test(header)) return Number(header) * 1000;
+  if (header && !Number.isNaN(Date.parse(header)))
+    return Math.max(0, Date.parse(header) - Date.now());
+  return 2 ** attempt * 1000; // no header: exponential backoff
+}
+
 async function call(url: string, attempt = 0): Promise<Response> {
   const res = await fetch(url);
   if (res.status === 429 && attempt < 5) {
-    const wait = Number(res.headers.get("Retry-After") ?? 2 ** attempt);
-    await new Promise((r) => setTimeout(r, wait * 1000 + Math.random() * 250)); // + jitter
+    await new Promise((r) => setTimeout(r, retryAfterMs(res, attempt) + Math.random() * 250)); // + jitter
     return call(url, attempt + 1);
   }
   return res;

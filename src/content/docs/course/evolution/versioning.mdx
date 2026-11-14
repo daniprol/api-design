@@ -29,12 +29,12 @@ If you follow the [compatibility rules](/course/evolution/compatibility/), most 
 
 ## When you must: the main strategies
 
-| Strategy      | Example                                             | Pros                                               | Cons                                                   |
-| ------------- | --------------------------------------------------- | -------------------------------------------------- | ------------------------------------------------------ |
-| URL path      | `GET /v2/orders/42`                                 | Obvious, easy to route and test in a browser       | Versions the _whole API_; same order now has two URLs  |
-| Media type    | `Accept: application/vnd.shop.order+json;version=2` | Versions a single representation; URLs stay stable | Less visible; needs content negotiation                |
-| Custom header | `Api-Version: 2`                                    | Stable URLs, simple                                | Non-standard; caches need `Vary`                       |
-| Date-based    | `Stripe-Version: 2024-06-20`                        | Fine-grained, per-client pinning                   | Needs serious infrastructure to maintain many versions |
+| Strategy      | Example                                           | Pros                                               | Cons                                                   |
+| ------------- | ------------------------------------------------- | -------------------------------------------------- | ------------------------------------------------------ |
+| URL path      | `GET /v2/orders/42`                               | Obvious, easy to route and test in a browser       | Versions the _whole API_; same order now has two URLs  |
+| Media type    | `Accept: application/x.shop.order+json;version=2` | Versions a single representation; URLs stay stable | Less visible; needs content negotiation                |
+| Custom header | `Api-Version: 2`                                  | Stable URLs, simple                                | Non-standard; caches need `Vary`                       |
+| Date-based    | `Stripe-Version: 2024-06-20`                      | Fine-grained, per-client pinning                   | Needs serious infrastructure to maintain many versions |
 
 ## Media type versioning, in practice
 
@@ -46,6 +46,8 @@ HTTP/1.1 200 OK
 Content-Type: application/x.shop.order+json;version=2
 Vary: Accept
 ```
+
+About the names: `vnd.` is the IANA "vendor tree" for media types that are registered (or meant to be, like `application/vnd.github+json`), while `x.` is the tree for unregistered, private types. Zalando uses `x.`; many public APIs use `vnd.`. We use `x.` here.
 
 Clients that send plain `application/json` (or `version=1`) keep getting the old shape. Only the **order** representation changed, not every endpoint.
 

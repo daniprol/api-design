@@ -117,6 +117,8 @@ translations:
 
 Avoid separate `OrderCreate`, `OrderUpdate`, `OrderResponse` shapes that drift apart. Prefer **one resource schema**, marking server-generated fields as `readOnly` (`id`, `created_at`) and secrets as `writeOnly` (`password`).
 
+It's a trade-off, not a law: with one schema, code generators and validators must honour `readOnly`/`writeOnly`, otherwise clients are asked to send an `id` on create. Many teams (and frameworks) pragmatically keep a separate _input_ model for `POST`, as long as both describe the same resource with the same field names.
+
 <Tabs syncKey="stack">
 <TabItem label="FastAPI" icon="seti:python">
 
@@ -164,11 +166,12 @@ REST_FRAMEWORK = {
 ```ts
 const OrderStatus = z.enum(["PLACED", "PAID", "SHIPPED", "PARTIALLY_SHIPPED"]);
 
+// With @hono/zod-openapi, readOnly is spec metadata (zod's .readonly() is only a TS type)
 const Order = z.object({
-  id: z.string().readonly(),
+  id: z.string().openapi({ readOnly: true }),
   status: OrderStatus,
   line_items: z.array(LineItem),
-  created_at: z.string().datetime().readonly(),
+  created_at: z.string().datetime().openapi({ readOnly: true }),
 });
 
 // TS code loves camelCase, the API speaks snake_case: map at the edge.

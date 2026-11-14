@@ -147,16 +147,28 @@ def problem_exception_handler(exc, context):
     }
     if isinstance(exc, ValidationError):
         problem["type"] = "https://api.example.com/problems/validation-error"
-        problem["errors"] = [
-            {"pointer": f"#/{field}", "detail": str(msg)}
-            for field, msgs in exc.detail.items() for msg in msgs
-        ]
+        problem["errors"] = list(flatten(exc.detail))
     else:
         problem["detail"] = str(exc.detail)
 
     response.data = problem
     response.content_type = "application/problem+json"
     return response
+
+def flatten(detail, path=""):
+    """DRF error details can be dicts (fields), lists (many=True) or strings."""
+    if isinstance(detail, dict):
+        for key, value in detail.items():
+            yield from flatten(value, f"{path}/{key}")
+    elif isinstance(detail, list):
+        if all(isinstance(d, str) for d in detail):  # leaf: list of messages
+            for msg in detail:
+                yield {"pointer": f"#{path or '/'}", "detail": str(msg)}
+        else:  # nested list of objects
+            for i, value in enumerate(detail):
+                yield from flatten(value, f"{path}/{i}")
+    else:
+        yield {"pointer": f"#{path or '/'}", "detail": str(detail)}
 ```
 
 </TabItem>
@@ -188,6 +200,26 @@ app.onError((err, c) => {
 });
 
 app.notFound((c) => problem({ title: "Not Found", status: 404, instance: c.req.path }));
+
+// zValidator answers on its own (it doesn't throw), so give it a hook
+// that turns validation failures into problem+json too:
+import { zValidator as zv } from "@hono/zod-validator";
+import type { ZodSchema } from "zod";
+
+export const validate = <T extends ZodSchema>(target: "json" | "query" | "param", schema: T) =>
+  zv(target, schema, (result) => {
+    if (!result.success) {
+      return problem({
+        type: "https://api.example.com/problems/validation-error",
+        title: "Your request is not valid",
+        status: 400,
+        errors: result.error.issues.map((i) => ({
+          pointer: `#/${i.path.join("/")}`,
+          detail: i.message,
+        })),
+      });
+    }
+  });
 ```
 
 </TabItem>
