@@ -1,0 +1,292 @@
+---
+title: Concurrency control
+description: Prevent lost updates with optimistic concurrency. Send a strong ETag on reads, require If-Match on writes, compare atomically, and answer 412 or 428.
+sources:
+  - label: RFC 9110 §13
+    title: "RFC 9110: HTTP Semantics, §13 Conditional Requests"
+    url: https://www.rfc-editor.org/rfc/rfc9110#section-13
+    accessed: 2026-11
+  - label: RFC 6585 §3
+    title: "RFC 6585: Additional HTTP Status Codes, §3 428 Precondition Required"
+    url: https://www.rfc-editor.org/rfc/rfc6585#section-3
+    accessed: 2026-11
+  - label: W3C, 1999
+    title: "W3C: Detecting the Lost Update Problem Using Unreserved Checkout (1999)"
+    url: https://www.w3.org/1999/04/Editing/
+    accessed: 2026-11
+  - label: Zalando optimistic locking
+    title: "Zalando RESTful API Guidelines: Appendix, Optimistic locking in RESTful APIs"
+    url: https://opensource.zalando.com/restful-api-guidelines/#optimistic-locking
+    accessed: 2026-11
+related:
+  - collections/caching
+  - http/methods
+  - reliability/idempotency
+  - http/status-codes
+---
+
+import {
+  InBrief,
+  Note,
+  Compare,
+  Prefer,
+  Avoid,
+  Rule,
+  RuleGroup,
+  SelfCheck,
+  Question,
+  WorkedProblem,
+  Solution,
+  Figure,
+  Status,
+  Tabs,
+  TabItem,
+} from "@components/kit";
+
+<InBrief>
+
+- Use optimistic concurrency for HTTP. Locks held across requests outlive their owners.
+- Send a strong `ETag` derived from a version column on every read, and accept `If-Match` on every write.
+- Do the comparison inside the write (`UPDATE … WHERE version = ?`), never as a separate read-then-check.
+- Return <Status code={412} /> when the version doesn't match, and <Status code={428} /> when a required `If-Match` is missing.
+- Parse `If-Match` per the spec: lists, `*` and weak tags are all valid inputs.
+
+</InBrief>
+
+Two people open the same product in the admin tool. One fixes the price; the other fixes a typo in the description and saves, sending the whole product with the old price. The price fix disappears. Nobody sees an error, and the bug report a week later says "prices randomly revert". This is the lost update, and it needs nothing more exotic than two browser tabs.
+
+<Figure n={2} caption="A lost update. Both writes succeed, and the first is silently overwritten.">
+
+```text
+Alice  GET /products/sku-1   → { price: 10, description: "Shoos" }   ETag "v7"
+Bob    GET /products/sku-1   → { price: 10, description: "Shoos" }   ETag "v7"
+Alice  PUT /products/sku-1   ← { price: 12, description: "Shoos" }   → 200, now "v8"
+Bob    PUT /products/sku-1   ← { price: 10, description: "Shoes" }   → 200, price back to 10
+```
+
+</Figure>
+
+## Choose optimistic concurrency for HTTP
+
+Pessimistic locking ("I'm editing this, nobody else may") needs lock ownership, timeouts and a way to break locks held by someone who went to lunch. Over HTTP, where clients disappear without saying goodbye, that's rarely worth it. Optimistic concurrency lets everyone edit and makes a write succeed only if the resource is still at the version the client read. Conflicts are rare in most domains, so the occasional retry is cheaper than lock management.
+
+HTTP has this built in. The server sends a validator, the `ETag`, on reads. The client sends it back in `If-Match` on writes. If the resource has moved on, the server refuses with <Status code={412} />.
+
+```http
+PUT /products/sku-1
+If-Match: "v7"
+{ "price": 10, "description": "Shoes" }
+
+HTTP/1.1 412 Precondition Failed
+Content-Type: application/problem+json
+{ "type": "https://api.example.com/problems/version-mismatch", "status": 412,
+  "detail": "sku-1 is now at version v8. Reload, reapply your change and retry." }
+```
+
+Bob's client can now reload, show him what changed, and let him reapply his edit.
+
+## Make the comparison part of the write
+
+Reading the version, comparing it in application code and then writing has a race window: two requests can both pass the check before either writes. The comparison has to be atomic with the write:
+
+```sql
+UPDATE products
+SET price = :price, description = :description, version = version + 1
+WHERE id = :id AND version = :expected
+RETURNING version;   -- no row returned: someone else won
+```
+
+`SELECT … FOR UPDATE` in a transaction, or a conditional write in DynamoDB or another store, are equivalent.
+
+_Assumes:_ an integer `version` column; ETags are `"v<version>"`; `parse_if_match` implements the rules in the next section.
+
+<Tabs syncKey="stack">
+<TabItem label="FastAPI">
+
+```python
+@app.put("/products/{sku}")
+def replace_product(sku: str, body: ProductIn, response: Response,
+                    if_match: Annotated[str | None, Header()] = None) -> Product:
+    if if_match is None:
+        raise problem(428, "if-match-required")
+    current = products.version_of(sku)
+    if current is None:
+        raise problem(404, "product-not-found")
+    if not parse_if_match(if_match).matches(f'"v{current}"'):
+        raise problem(412, "version-mismatch", current_etag=f'"v{current}"')
+    updated = products.update_if_version(sku, body, expected=current)  # UPDATE … WHERE version = :expected
+    if updated is None:  # lost the race between the check and the write
+        raise problem(412, "version-mismatch")
+    response.headers["ETag"] = f'"v{updated.version}"'
+    return updated
+```
+
+</TabItem>
+<TabItem label="Django">
+
+```python
+class ProductDetail(APIView):
+    def put(self, request, sku):
+        if_match = request.headers.get("If-Match") or problem(428, "if-match-required")
+        serializer = ProductSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        current = Product.objects.filter(sku=sku).values_list("version", flat=True).first()
+        if current is None:
+            return problem(404, "product-not-found")
+        if not parse_if_match(if_match).matches(f'"v{current}"'):
+            return problem(412, "version-mismatch")
+        updated = Product.objects.filter(sku=sku, version=current).update(
+            **serializer.validated_data, version=F("version") + 1)
+        if not updated:
+            return problem(412, "version-mismatch")
+        product = Product.objects.get(sku=sku)
+        return Response(ProductSerializer(product).data, headers={"ETag": f'"v{product.version}"'})
+```
+
+</TabItem>
+<TabItem label="Hono">
+
+```ts
+app.put("/products/:sku", zValidator("json", ProductIn), async (c) => {
+  const ifMatch = c.req.header("If-Match");
+  if (!ifMatch) return problem(c, 428, "if-match-required");
+  const sku = c.req.param("sku");
+  const current = await products.versionOf(sku);
+  if (current === undefined) return problem(c, 404, "product-not-found");
+  if (!parseIfMatch(ifMatch).matches(`"v${current}"`)) return problem(c, 412, "version-mismatch");
+  const updated = await products.updateIfVersion(sku, c.req.valid("json"), current); // atomic
+  if (!updated) return problem(c, 412, "version-mismatch");
+  c.header("ETag", `"v${updated.version}"`);
+  return c.json(updated);
+});
+```
+
+</TabItem>
+</Tabs>
+
+## Parse If-Match the way the spec defines it
+
+`If-Match` is not a single quoted string. RFC 9110 §13.1.1 allows:
+
+- **A list:** `If-Match: "v7", "v8"` matches if any entry matches.
+- **`*`:** matches if the resource exists at all, which makes `PUT` "update only, never create".
+- **Weak tags:** `W/"v7"` never matches, because `If-Match` uses strong comparison. A request with only weak tags must fail with <Status code={412} />, not be treated as missing or be stripped of `W/` and compared.
+
+Hand-rolled parsers that do `if_match.strip('"') == str(version)` get all three wrong, sometimes in the dangerous direction of letting writes through.
+
+Its counterpart, `If-None-Match: *`, makes `PUT` "create only, never overwrite", which is useful with client-generated IDs.
+
+## Require the precondition where it matters
+
+If `If-Match` is optional, clients that forget it are back to last-write-wins. For resources edited by several people or processes, require it and return <Status code={428} /> with a problem type that explains how to get an ETag. For `PATCH` with JSON Merge Patch, the risk is smaller because only the sent fields change, but two patches to the same field still race.
+
+| Mechanism                               | Pros                                                      | Cons                                                                    |
+| --------------------------------------- | --------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `ETag` + `If-Match`                     | HTTP-native; shared with caching; tooling understands 412 | Clients must read and send a header                                     |
+| `version` field in the body             | Visible, easy for form-based clients                      | Not understood by HTTP tooling; easy to forget on `PATCH`               |
+| `Last-Modified` + `If-Unmodified-Since` | Already present on many resources                         | One-second resolution: two writes in the same second collide undetected |
+
+<Compare>
+<Prefer label="Atomic">
+
+```sql
+UPDATE products SET price = :price, version = version + 1
+WHERE id = :id AND version = :expected;
+-- 0 rows updated → 412
+```
+
+</Prefer>
+<Avoid label="Read, check, write">
+
+```python
+product = Product.objects.get(pk=pk)
+if product.version == expected:      # another request can pass here too
+    product.price = price
+    product.save()
+```
+
+</Avoid>
+</Compare>
+
+<Note kind="history" title="The lost update problem, by name" year="1999" source="https://www.w3.org/1999/04/Editing/">
+
+When the W3C worked on editing documents over HTTP, it wrote up the "lost update problem" and proposed exactly this unreserved checkout: fetch with an entity tag, write back with `If-Match`, get 412 on conflict. The mechanism has been in HTTP/1.1 since 1997. Most lost-update bugs in APIs today come from not using it, not from it being missing.
+
+</Note>
+
+<RuleGroup>
+
+<Rule
+  guide="zalando"
+  id="182"
+  level="MAY"
+  title="Consider to support ETag together with If-Match/If-None-Match header"
+/>
+
+</RuleGroup>
+
+<WorkedProblem kind="Review" title="An If-Match parser">
+
+```python
+def check_if_match(header: str | None, current_version: int) -> None:
+    if header is None:
+        return
+    tag = header.replace("W/", "").strip().strip('"')
+    if tag != str(current_version):
+        raise problem(412, "version-mismatch")
+```
+
+Find the bugs.
+
+<Solution>
+
+1. **Weak tags are made strong.** Stripping `W/` lets a weak validator satisfy `If-Match`, which RFC 9110 forbids. Weak-only headers must fail.
+2. **`*` fails.** `If-Match: *` should succeed for any existing resource.
+3. **Lists fail.** `"v7", "v8"` becomes `v7", "v8` and never matches.
+4. **A missing header passes silently.** If the endpoint needs protection, return 428.
+5. **Format mismatch.** ETags elsewhere are `"v7"`, but this compares against `7`, so valid tags never match.
+6. **It's only a check.** Even when correct, the write must still use `WHERE version = :expected`, or two requests that both pass the check will both write.
+
+</Solution>
+</WorkedProblem>
+
+<SelfCheck>
+
+<Question
+  q='A client sends <code>PATCH /carts/crt_5</code> with <code>If-Match: "v3"</code>, but the cart is now at <code>"v4"</code>. What&apos;s the right response?'
+  answer={1}
+  options={[
+    {
+      text: "409 Conflict",
+      why: "409 is for conflicts with resource state not expressed as a precondition; HTTP defines a specific code for this.",
+    },
+    {
+      text: "412 Precondition Failed",
+      why: "<code>If-Match</code> is a precondition; when it evaluates false, the answer is 412.",
+    },
+    { text: "304 Not Modified", why: "That's for <code>If-None-Match</code> on reads." },
+    {
+      text: "Apply the patch and return 200.",
+      why: "That's the lost update the header exists to prevent.",
+    },
+  ]}
+/>
+
+<Question
+  q="Which header makes <code>PUT /orders/ord_01JCX</code> succeed only if the order doesn't exist yet?"
+  answer={3}
+  options={[
+    { text: "<code>If-Match: *</code>", why: "The opposite: succeeds only if it does exist." },
+    {
+      text: "<code>If-Unmodified-Since</code> with the current time",
+      why: "Says nothing about existence.",
+    },
+    { text: "<code>Prefer: create-only</code>", why: "Not a registered preference." },
+    {
+      text: "<code>If-None-Match: *</code>",
+      why: "Fails with 412 if any current representation exists, so the request can only create.",
+    },
+  ]}
+/>
+
+</SelfCheck>

@@ -1,0 +1,276 @@
+---
+title: Resources and actions
+description: Model the domain as things that clients create, read, change and remove. Most actions turn out to be a field change, a new resource, or a computed result.
+sources:
+  - label: RFC 9110 §3.1
+    title: "RFC 9110: HTTP Semantics, §3.1 Resources"
+    url: https://www.rfc-editor.org/rfc/rfc9110#section-3.1
+    accessed: 2026-11
+  - label: AIP-136
+    title: "Google AIP-136: Custom methods"
+    url: https://google.aip.dev/136
+    accessed: 2026-11
+  - label: GitHub starring
+    title: "GitHub REST API: Starring"
+    url: https://docs.github.com/en/rest/activity/starring
+    accessed: 2026-11
+  - label: Zalando #138
+    title: "Zalando RESTful API Guidelines: Avoid actions, think about resources"
+    url: https://opensource.zalando.com/restful-api-guidelines/#138
+    accessed: 2026-11
+related:
+  - modelling/urls
+  - http/methods
+  - reliability/long-running-operations
+  - foundations/rest-and-alternatives
+---
+
+import {
+  InBrief,
+  Note,
+  Compare,
+  Prefer,
+  Avoid,
+  Rule,
+  RuleGroup,
+  SelfCheck,
+  Question,
+  WorkedProblem,
+  Solution,
+  GuidesDiffer,
+  Status,
+  Tabs,
+  TabItem,
+} from "@components/kit";
+
+<InBrief>
+
+- URLs name things, methods name what happens to them. Keep verbs out of paths.
+- Turn an action into a field update, a new sub-resource that records the event, or a computed resource.
+- Prefer a sub-resource such as `/cancellation` over a status `PATCH` when the action has its own data, rules or side effects.
+- Take names from the business's vocabulary, and model the whole process, including reversal and reconciliation.
+
+</InBrief>
+
+Most of us learned to program by writing functions: `cancelOrder()`, `sendInvoice()`, `approveRefund()`. A resource-oriented API asks a different question: what thing is created, read, changed or removed? Asked consistently, it stops you inventing endpoints and starts you discovering them. Twenty nouns with the same five methods are learnable; a hundred bespoke verbs aren't.
+
+## Name things in the URL and let the method say what happens
+
+<Compare>
+<Prefer>
+
+```http
+GET    /customers/cus_7
+POST   /orders
+DELETE /carts/crt_3/items/sku-123
+```
+
+</Prefer>
+<Avoid>
+
+```http
+GET  /getCustomer?id=cus_7
+POST /createOrder
+POST /removeItemFromCart
+```
+
+</Avoid>
+</Compare>
+
+The verb-in-URL style looks harmless at five endpoints. At fifty, every endpoint has its own naming quirks, its own idea of which method to use, and no shared semantics that a cache or retry policy can rely on.
+
+## Turn actions into one of three resource shapes
+
+Businesses are full of actions: cancel, approve, publish, ship, refund. Each one maps onto one of three shapes.
+
+**A field changes.** If the action only moves a field to a new value and carries no data of its own, update the resource.
+
+```http
+PATCH /articles/art_42
+Content-Type: application/merge-patch+json
+
+{ "visibility": "public" }
+```
+
+**A record is created.** Cancellations, refunds, shipments and approvals have their own data (who, when, why), their own validation rules and often their own lifecycle. Make them resources.
+
+```http
+POST /orders/ord_42/cancellation
+{ "reason": "customer_request" }
+
+HTTP/1.1 201 Created
+Location: https://api.example.com/orders/ord_42/cancellation
+```
+
+**A result is computed.** Quotes, previews and validations are things too: a price quote has an ID, a price and an expiry.
+
+```http
+POST /shipping-quotes
+{ "from": "DE", "to": "ES", "weight_grams": 1200 }
+
+HTTP/1.1 201 Created
+{ "id": "quo_77", "price": { "amount": "7.90", "currency": "EUR" }, "expires_at": "2026-11-14T10:15:00Z" }
+```
+
+## Prefer a sub-resource over a status PATCH for real state transitions
+
+`PATCH /orders/ord_42 {"status": "cancelled"}` is tempting because it's one endpoint. It breaks down when the transition has rules. Which status values may a client set, from which states? Where does the reason go? How does the client learn that cancelling triggered a refund? A status field that is writable through `PATCH` turns the state machine into an input validation problem.
+
+A sub-resource keeps the transition explicit. `POST /orders/ord_42/cancellation` can require a reason, return <Status code={409} /> with a precise problem type when the order has shipped, and later be read back to show who cancelled and when. Keep `status` read-only and let transitions happen through resources that describe them.
+
+_Assumes:_ FastAPI with Pydantic v2, DRF 3.15, Hono 4 with Zod. `orders.cancel()` raises `OrderNotCancellable` for shipped orders.
+
+<Tabs syncKey="stack">
+<TabItem label="FastAPI">
+
+```python
+class CancellationIn(BaseModel):
+    reason: Literal["customer_request", "out_of_stock", "fraud"]
+
+@app.post("/orders/{order_id}/cancellation", status_code=201)
+def cancel_order(order_id: str, body: CancellationIn, response: Response) -> Cancellation:
+    try:
+        cancellation = orders.cancel(order_id, reason=body.reason)
+    except OrderNotCancellable as e:
+        raise problem(409, "order-not-cancellable", detail=str(e))
+    response.headers["Location"] = f"{BASE_URL}/orders/{order_id}/cancellation"
+    return cancellation
+```
+
+</TabItem>
+<TabItem label="Django">
+
+```python
+class OrderViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = Order.objects.all()
+    serializer_class = OrderSerializer
+
+    @action(detail=True, methods=["post", "get"], url_path="cancellation")
+    def cancellation(self, request, pk=None):
+        order = self.get_object()
+        if request.method == "GET":
+            return Response(CancellationSerializer(get_object_or_404(Cancellation, order=order)).data)
+        serializer = CancellationSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        cancellation = cancel(order, reason=serializer.validated_data["reason"], by=request.user)
+        return Response(CancellationSerializer(cancellation).data, status=201)
+```
+
+</TabItem>
+<TabItem label="Hono">
+
+```ts
+const CancellationIn = z.object({ reason: z.enum(["customer_request", "out_of_stock", "fraud"]) });
+
+app.post("/orders/:id/cancellation", zValidator("json", CancellationIn), async (c) => {
+  const id = c.req.param("id");
+  const result = await orders.cancel(id, c.req.valid("json").reason);
+  if (!result.ok) return problem(c, 409, "order-not-cancellable", result.detail);
+  c.header("Location", `${BASE_URL}/orders/${id}/cancellation`);
+  return c.json(result.cancellation, 201);
+});
+```
+
+</TabItem>
+</Tabs>
+
+The singular `cancellation` is deliberate: an order is cancelled at most once. A repeatable action, such as partial refunds, gets a plural collection: `POST /orders/ord_42/refunds`.
+
+<Note kind="practice" title="GitHub stars" source="https://docs.github.com/en/rest/activity/starring">
+
+GitHub has no "star" verb. `PUT /user/starred/{owner}/{repo}` stars a repository, `DELETE` removes the star, and `GET` returns <Status code={204} /> if starred or <Status code={404} /> if not. A toggle modelled as a resource gets idempotency for free: double-clicking the button can't double-star.
+
+</Note>
+
+## Accept a custom method when no honest noun exists
+
+Some operations resist nouns: `send` on an email draft, `translate` on a text, `reboot` on a machine. Inventing `/emails/eml_1/sendings` is nounification for its own sake. Guidelines split on this, as the table below shows. Whatever your rule, apply it consistently, use `POST`, and document the operation's idempotency.
+
+<GuidesDiffer id="custom-methods" />
+
+## Use the business's words, and model the whole process
+
+Resource names should come from the people who run the domain. `/shipments` beats `/data`, `/ledger-entries` beats `/entries`, and `/orders/ord_42/cancellation` beats `/objects/42/state`. When engineers and the business use the same nouns, support tickets and specs read the same way.
+
+Model complete processes, not just the happy path. A `/payments` resource that can be created but never refunded, listed or reconciled forces consumers into back channels. Before publishing, walk each resource through its full lifecycle and check that every transition a consumer needs is in the API.
+
+Keep each API small enough to hold in your head. Guidelines suggest somewhere around four to eight resource types; past that, look for a domain boundary to split along.
+
+<RuleGroup>
+
+<Rule guide="zalando" id="141" level="MUST" title="Keep URLs verb-free" />
+<Rule guide="zalando" id="138" level="MUST" title="Avoid actions — think about resources" />
+<Rule guide="zalando" id="142" level="MUST" title="Use domain-specific resource names" />
+<Rule guide="zalando" id="139" level="SHOULD" title="Model complete business processes" />
+<Rule guide="zalando" id="146" level="SHOULD" title="Limit number of resource types" />
+
+</RuleGroup>
+
+<WorkedProblem kind="Design" title="Expense approvals">
+
+Managers approve or reject expense reports, with an optional comment. A report can be approved by up to two managers, and finance needs an audit trail. Design the endpoints.
+
+<Solution>
+
+```http
+POST /expense-reports/exp_9/approvals      { "decision": "approved", "comment": "…" }  → 201
+GET  /expense-reports/exp_9/approvals                                                → 200, the audit trail
+GET  /expense-reports/exp_9                                                          → "status": "pending_second_approval"
+```
+
+Approvals are records with an author, a time and a comment, and there can be several, so they form a plural sub-collection. The report's `status` is derived and read-only. A third approval attempt returns 409 with a problem type such as `approval-limit-reached`.
+
+**Alternatives.** `POST /expense-reports/exp_9:approve` (custom method) is fine under Google's guidelines, but you'd still need somewhere to read the audit trail, which the sub-collection gives you for free.
+
+</Solution>
+</WorkedProblem>
+
+<SelfCheck>
+
+<Question
+  q="Which design for approving an expense report is the most resource-oriented?"
+  answer={2}
+  options={[
+    {
+      text: "<code>POST /approveExpenseReport?id=exp_9</code>",
+      why: "A verb in the path with the identifier in a query string; nothing here is a resource.",
+    },
+    {
+      text: "<code>GET /expense-reports/exp_9/approve</code>",
+      why: "State change behind <code>GET</code>: a link previewer would approve reports.",
+    },
+    {
+      text: "<code>POST /expense-reports/exp_9/approvals</code>",
+      why: "An approval is a record with its own data. Creating it is clean, and listing approvals gives the audit trail.",
+    },
+    {
+      text: "<code>PUT /expense-reports/approve/exp_9</code>",
+      why: "Verb in the path, and <code>PUT</code> implies replacing whatever lives at that URL.",
+    },
+  ]}
+/>
+
+<Question
+  q='When is <code>PATCH /orders/ord_42 {"status": "cancelled"}</code> a reasonable design?'
+  answer={0}
+  options={[
+    {
+      text: "Almost never for a transition with rules or side effects; it's fine for a free field like a label.",
+      why: "Writable status fields turn state machines into validation problems; transitions with rules belong in their own resource.",
+    },
+    {
+      text: "Always: it's the simplest option.",
+      why: "Simple to build, but where do the reason, the refund and the 409 for shipped orders go?",
+    },
+    {
+      text: "Only if the client also sends <code>If-Match</code>.",
+      why: "<code>If-Match</code> prevents lost updates; it doesn't model the transition.",
+    },
+    {
+      text: "Only for internal APIs.",
+      why: "Internal consumers need the same clarity about transitions.",
+    },
+  ]}
+/>
+
+</SelfCheck>

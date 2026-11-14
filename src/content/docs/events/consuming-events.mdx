@@ -1,0 +1,257 @@
+---
+title: Consuming events
+description: Delivery is at-least-once and order is a hope. Deduplicate by event ID in the same transaction as the effect, prefer effects that are safe to repeat, ignore stale versions, and keep personal data out of events.
+sources:
+  - label: Zalando #214
+    title: "Zalando RESTful API Guidelines: Be robust against duplicates when consuming events"
+    url: https://opensource.zalando.com/restful-api-guidelines/#214
+    accessed: 2026-11
+  - label: Confluent, 2017
+    title: "Neha Narkhede: Exactly-once Semantics are Possible: Here's How Apache Kafka Does it (Confluent, 2017)"
+    url: https://www.confluent.io/blog/exactly-once-semantics-are-possible-heres-how-apache-kafka-does-it/
+    accessed: 2026-11
+  - label: Stripe
+    title: "Stripe Docs: Receive Stripe events in your webhook endpoint"
+    url: https://docs.stripe.com/webhooks
+    accessed: 2026-11
+  - label: GDPR Art. 17
+    title: "GDPR Article 17: Right to erasure"
+    url: https://gdpr-info.eu/art-17-gdpr/
+    accessed: 2026-11
+related:
+  - events/event-design
+  - events/webhooks
+  - reliability/idempotency
+  - reliability/concurrency
+---
+
+import {
+  InBrief,
+  Note,
+  Compare,
+  Prefer,
+  Avoid,
+  Rule,
+  RuleGroup,
+  SelfCheck,
+  Question,
+  Tabs,
+  TabItem,
+} from "@components/kit";
+
+<InBrief>
+
+- Expect every event at least once and sometimes out of order. That's the normal case, not an incident.
+- Record each processed `eid` in the same transaction as the side effect, and acknowledge only after it commits.
+- Prefer effects that are safe to repeat ("set to X") over increments ("add X").
+- Compare the producer's version or revision with what you hold, and ignore anything older.
+- Put identifiers in events, not personal data. Copies of events are hard to find and harder to erase.
+
+</InBrief>
+
+Every event system eventually delivers the same event twice. Nothing is broken when it happens: a consumer processed an event, crashed before it recorded the fact, and the broker did its job by redelivering. Networks give you a choice between at-most-once (sometimes lose events) and at-least-once (sometimes repeat them), and nobody wants to lose a payment. So consumers are built to make repetition harmless. Once that's in place, retries, replays and redeliveries become boring, which is the goal.
+
+```text
+1. Consumer receives event e-1 and adds 100 loyalty points
+2. Consumer crashes before committing its offset
+3. Broker redelivers e-1 to the restarted consumer → another 100 points
+```
+
+## Deduplicate by event ID, in the same transaction
+
+Keep a table of processed `eid`s. Insert the ID and perform the effect in one transaction, and commit the broker offset (or answer the webhook) only after that transaction commits. If the insert conflicts, you've seen the event before: skip the effect and acknowledge anyway, so the broker stops redelivering.
+
+_Assumes:_ the consumer's own database holds both the effect and a `processed_events(eid primary key)` table; `OrderPlaced` is the schema from [Event design](/events/event-design/).
+
+<Tabs syncKey="stack">
+<TabItem label="FastAPI">
+
+```python
+async def handle_order_placed(raw: bytes) -> None:
+    event = OrderPlaced.model_validate_json(raw)
+    async with db.transaction():
+        inserted = await db.execute(
+            "INSERT INTO processed_events (eid) VALUES (:eid) ON CONFLICT DO NOTHING",
+            {"eid": event.metadata.eid},
+        )
+        if inserted == 0:
+            return  # seen before: already handled
+        await loyalty.add_points(event.customer_id, points_for(event.total))
+    # the caller commits the offset only after this returns
+```
+
+</TabItem>
+<TabItem label="Django">
+
+```python
+class ProcessedEvent(models.Model):
+    eid = models.UUIDField(primary_key=True)
+    processed_at = models.DateTimeField(auto_now_add=True)
+
+def handle_order_placed(event: dict) -> None:
+    with transaction.atomic():
+        _, created = ProcessedEvent.objects.get_or_create(eid=event["metadata"]["eid"])
+        if not created:
+            return  # seen before
+        LoyaltyAccount.objects.filter(customer_id=event["customer_id"]).update(
+            points=F("points") + points_for(event["total"])
+        )
+```
+
+</TabItem>
+<TabItem label="Hono">
+
+```ts
+consumer.on("shop.order-placed", async (message) => {
+  const event = OrderPlaced.parse(JSON.parse(message.value));
+  await db.transaction(async (tx) => {
+    const res = await tx.execute(
+      sql`INSERT INTO processed_events (eid) VALUES (${event.metadata.eid}) ON CONFLICT DO NOTHING`,
+    );
+    if (res.rowCount === 0) return; // seen before
+    await addLoyaltyPoints(tx, event.customer_id, event.total);
+  });
+  await message.ack(); // only after the transaction committed
+});
+```
+
+</TabItem>
+</Tabs>
+
+Processed-ID tables grow forever unless you prune them. Keep IDs at least as long as the broker's retention plus the longest replay you'd run, and no longer.
+
+## Prefer effects that are safe to repeat
+
+A deduplication table is a safety net. Better still is an effect that a duplicate can't hurt, because it states a result instead of a change.
+
+<Compare>
+<Prefer label="Repeatable">
+
+```sql
+UPDATE product_copies SET price = 79.00 WHERE sku = 'sku-1042';
+INSERT INTO shipments (order_id, …) VALUES ('ord_42', …)
+  ON CONFLICT (order_id) DO NOTHING;
+```
+
+</Prefer>
+<Avoid label="Accumulating">
+
+```sql
+UPDATE accounts SET points = points + 100 WHERE customer_id = 'cus_7';
+UPDATE stock SET quantity = quantity - 1 WHERE sku = 'sku-1042';
+```
+
+</Avoid>
+</Compare>
+
+Some effects can't be made repeatable: an email, a charge, an SMS. For those, the deduplication table is not optional, and the external call should carry its own idempotency key, derived from the `eid`.
+
+## Ignore stale events
+
+Events for one entity can arrive out of order after a retry, a replay or a repartition. Use the producer's ordering field and apply only what is newer than what you hold:
+
+```sql
+UPDATE product_copies
+SET name = :name, price = :price, revision = :revision
+WHERE sku = :sku AND revision < :revision;
+```
+
+This is last-writer-wins by revision, and it absorbs exact duplicates for free, because a duplicate has the same revision. It only works if the producer provides the number. A consumer that sorts by `occurred_at` is trusting clocks on different machines, and clocks are worse at ordering than counters.
+
+## Keep personal data out of events
+
+Events are copied to every consumer, retained for days or forever, replayed into new services and archived in data lakes. When a customer exercises their right to erasure, every copy of every event that names them is now your problem. Send identifiers, and let authorised consumers fetch the details through an API that checks permissions and can forget.
+
+<Compare>
+<Prefer>
+
+```json
+{ "order_id": "ord_42", "customer_id": "cus_7" }
+```
+
+</Prefer>
+<Avoid>
+
+```json
+{
+  "order_id": "ord_42",
+  "customer_email": "ada@example.com",
+  "shipping_address": "12 Analytical Row, London",
+  "card_last4": "4242"
+}
+```
+
+</Avoid>
+</Compare>
+
+<Note kind="curiosity" title="Exactly-once, with fine print" year="2017" source="https://www.confluent.io/blog/exactly-once-semantics-are-possible-heres-how-apache-kafka-does-it/">
+
+Kafka 0.11 introduced exactly-once semantics in 2017, with an announcement whose title argued against years of conference talks saying it was impossible. The feature is real: idempotent producers and transactions make a read-process-write cycle within Kafka atomic. The fine print is the boundary. Once your consumer sends an email or charges a card, the side effect sits outside Kafka's transaction, and deduplication is your job again.
+
+</Note>
+
+<Note kind="practice" title="Stripe says it out loud" source="https://docs.stripe.com/webhooks">
+
+Stripe's webhook documentation tells integrators that endpoints might receive the same event more than once and should log processed event IDs and skip duplicates. It also says Stripe doesn't guarantee delivery in the order events were generated, warns against using timestamps to order them, and suggests retrieving missing objects from the API instead. Saying this in the docs is a design decision: consumers who are told to expect duplicates write code that survives them.
+
+</Note>
+
+<RuleGroup>
+
+<Rule
+  guide="zalando"
+  id="214"
+  level="MUST"
+  title="Be robust against duplicates when consuming events"
+/>
+<Rule
+  guide="zalando"
+  id="212"
+  level="SHOULD"
+  title="Design for idempotent out-of-order processing"
+/>
+<Rule guide="zalando" id="200" level="SHOULD" title="Avoid writing sensitive data to events" />
+<Rule guide="zalando" id="209" level="MUST" title="Maintain backwards compatibility for events" />
+
+</RuleGroup>
+
+<SelfCheck>
+
+<Question
+  q="Your consumer receives a <code>product-changed</code> event with revision 7, but it already holds revision 9 of that product. What should it do?"
+  answer={1}
+  options={[
+    { text: "Apply it: it's a new event.", why: "It would roll the product back to stale data." },
+    {
+      text: "Ignore it and acknowledge it.",
+      why: "It's older than what's stored; acknowledging stops the broker redelivering it.",
+    },
+    {
+      text: "Refuse to acknowledge it so an operator looks at it.",
+      why: "Late events are normal; this blocks the partition for nothing.",
+    },
+    {
+      text: "Delete the local copy and refetch everything.",
+      why: "The revision check already gives the right answer cheaply.",
+    },
+  ]}
+/>
+
+<Question
+  q="Why record the processed <code>eid</code> in the same transaction as the side effect?"
+  answer={3}
+  options={[
+    { text: "It's faster than two transactions.", why: "Perhaps, but speed isn't the reason." },
+    { text: "The broker requires it.", why: "The broker knows nothing about your database." },
+    {
+      text: "So the event ID is unique.",
+      why: "The producer makes it unique; you're recording that you handled it.",
+    },
+    {
+      text: "So a crash can't leave the effect applied without the record, or the record without the effect.",
+      why: "Either half alone means a duplicate effect or a lost one.",
+    },
+  ]}
+/>
+
+</SelfCheck>

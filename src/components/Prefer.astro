@@ -1,0 +1,11 @@
+---
+interface Props {
+  label?: string;
+}
+const { label = "Prefer" } = Astro.props;
+---
+
+<div class="fg-compare__col fg-compare__col--good">
+  <p class="fg-label">{label}</p>
+  <slot />
+</div>

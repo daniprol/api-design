@@ -1,0 +1,58 @@
+---
+title: Zalando
+description: How Zalando's RESTful API and Event Guidelines are organised, where they're more opinionated than most, and how this guide cites them.
+sources:
+  - label: Zalando
+    title: "Zalando RESTful API and Event Guidelines"
+    url: https://opensource.zalando.com/restful-api-guidelines/
+    accessed: 2026-11
+  - label: GitHub
+    title: "zalando/restful-api-guidelines on GitHub"
+    url: https://github.com/zalando/restful-api-guidelines
+    accessed: 2026-11
+  - label: Zally
+    title: "Zalando Zally: API linter"
+    url: https://github.com/zalando/zally
+    accessed: 2026-11
+---
+
+import { Rule, Note } from "@components/kit";
+
+Zalando, the European fashion platform, runs hundreds of engineering teams that publish and consume thousands of APIs. It published its API guidelines as open source in 2015 and has maintained them in public since, with a changelog. They are among the most complete and opinionated guides available, and the most practical to cite, because every rule has a stable number and a level. That's why this guide quotes them chapter by chapter.
+
+## What they stand on
+
+1. **API first.** Design and review the contract before implementing it.
+2. **API as a product.** Consumers are customers; their experience is a design goal.
+3. **Consistency at scale.** Hundreds of teams, one look and feel, enforced by a linter rather than by memory.
+4. **Compatibility over versioning.** Evolve without breaking; version only as a last resort.
+
+## How rules are cited here
+
+Each rule has a number and a level in RFC 2119 terms, and appears at the end of the chapter that discusses it:
+
+<Rule guide="zalando" id="134" level="MUST" title="Pluralize resource names" />
+
+The level is Zalando's, reported as written. Where this guide recommends something different, the chapter says so and gives the reason; see [Sources and method](/about/sources/). The [rule index](/reference/rules/) lists every rule cited, generated from the pages.
+
+## Where Zalando is more opinionated than most
+
+- **No URL versioning**, and media type versioning only when a break is unavoidable. See [Versioning](/evolution/versioning/).
+- **snake_case** for JSON properties and query parameters. See [JSON conventions](/representations/json/).
+- **Problem Details** as the only error format. See [Errors](/http/errors/).
+- **A full events chapter**, reflecting its own event bus, Nakadi. See [Event design](/events/event-design/).
+
+## Where this guide departs from Zalando
+
+- **Enum values.** Zalando says enum values SHOULD be `UPPER_SNAKE_CASE` (rule 240). This guide uses lowercase snake_case, matching the field names. Both work if applied everywhere; see [JSON conventions](/representations/json/).
+- **Validation errors.** This guide sends `422` for requests that parse but fail validation and keeps `400` for unparseable ones; see [Status codes](/http/status-codes/).
+- **Scope names.** Zalando requires `<application-id>.<access-mode>` scopes (rule 225). This guide's examples use `orders:read`, the style most public OAuth providers use; either works if it's consistent. See [Authentication and authorization](/security/auth/).
+- **Tracing.** Zalando requires its own `X-Flow-ID` header (rule 233). This guide recommends W3C Trace Context (`traceparent`), which tracing tools understand out of the box; see [Headers](/http/headers/).
+- **Redirects.** Zalando says not to use redirects (rule 251). This guide agrees, with one exception: a short-lived download URL behind a `303` or `307`; see [Files](/representations/files/).
+- **Versioning.** Zalando requires media type versioning when a break is unavoidable. This guide presents it as one option among several and asks you to pick by the cost you can carry; see [Versioning](/evolution/versioning/).
+
+<Note kind="practice" title="A guide with a changelog" source="https://github.com/zalando/restful-api-guidelines">
+
+The guidelines live on GitHub with a public changelog. Rules get added, reworded and occasionally relaxed, and old rule numbers stay stable so that links from linter reports and review comments keep working. That stability is a design decision worth copying for any internal guide.
+
+</Note>

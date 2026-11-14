@@ -1,0 +1,276 @@
+---
+title: Long-running operations and batches
+description: Accept slow work with 202 and an operation resource the client can poll, make the request idempotent, and report batch outcomes per item.
+sources:
+  - label: RFC 9110 §15.3.3
+    title: "RFC 9110: HTTP Semantics, §15.3.3 202 Accepted"
+    url: https://www.rfc-editor.org/rfc/rfc9110#section-15.3.3
+    accessed: 2026-11
+  - label: RFC 4918 §13
+    title: "RFC 4918: HTTP Extensions for WebDAV, §13 Multi-Status Response"
+    url: https://www.rfc-editor.org/rfc/rfc4918#section-13
+    accessed: 2026-11
+  - label: AIP-151
+    title: "Google AIP-151: Long-running operations"
+    url: https://google.aip.dev/151
+    accessed: 2026-11
+  - label: Azure LRO
+    title: "Microsoft Azure REST API Guidelines: Long-running operations"
+    url: https://github.com/microsoft/api-guidelines/blob/vNext/azure/Guidelines.md#long-running-operations--jobs
+    accessed: 2026-11
+  - label: RFC 7240 §4.1
+    title: "RFC 7240: Prefer Header for HTTP, §4.1 respond-async"
+    url: https://www.rfc-editor.org/rfc/rfc7240#section-4.1
+    accessed: 2026-11
+related:
+  - reliability/idempotency
+  - http/headers
+  - events/webhooks
+  - representations/files
+---
+
+import {
+  InBrief,
+  Note,
+  Compare,
+  Prefer,
+  Avoid,
+  Rule,
+  RuleGroup,
+  SelfCheck,
+  Question,
+  Status,
+  Tabs,
+  TabItem,
+} from "@components/kit";
+
+<InBrief>
+
+- Return <Status code={202} /> with `Location` pointing at an operation resource for anything that may take longer than a few seconds.
+- Give operations a small, fixed state machine and put either a result link or a problem object on the terminal state.
+- Make the initiating request idempotent. Its response is the one most likely to be lost.
+- Use `Retry-After` to pace polling, and add a webhook for clients that need to know at once.
+- For batches, return <Status code={207} /> with a result per item and document whether the batch is atomic or best effort.
+
+</InBrief>
+
+Not everything finishes in 200 milliseconds. Exporting a year of orders, importing a million products or provisioning a database takes seconds to hours. Holding an HTTP connection open that long fails in predictable ways: load balancers cut idle connections at 60 seconds, mobile apps go to the background, and a 504 at minute four doesn't say whether the export finished. Model the work as a resource instead.
+
+## Accept slow work with 202 and an operation resource
+
+```http
+POST /exports
+Idempotency-Key: 0b5f…
+{ "kind": "orders", "created_after": "2026-01-01T00:00:00Z" }
+
+HTTP/1.1 202 Accepted
+Location: https://api.example.com/operations/op_91
+Retry-After: 5
+{ "id": "op_91", "status": "pending", "created_at": "2026-11-14T09:00:00Z" }
+```
+
+The client polls the operation with plain `GET`:
+
+```http
+GET /operations/op_91
+→ 200 { "id": "op_91", "status": "running", "progress": { "completed": 4200, "total": 10000 } }
+
+GET /operations/op_91
+→ 200 { "id": "op_91", "status": "succeeded",
+        "result": { "href": "https://api.example.com/exports/exp_33" } }
+```
+
+Some APIs answer a finished operation with <Status code={303} /> pointing at the result. That saves a step, but many HTTP clients follow redirects automatically and the caller never sees the operation's final state. A result link in the body is more explicit.
+
+<Compare>
+<Prefer>
+
+```http
+POST /exports           → 202, Location: /operations/op_91
+GET  /operations/op_91  → 200 {"status": "running"}
+```
+
+</Prefer>
+<Avoid>
+
+```http
+POST /exports
+… four minutes …
+504 Gateway Timeout     (did it finish?)
+```
+
+</Avoid>
+</Compare>
+
+## Keep the state machine small and terminal states complete
+
+```text
+pending ──► running ──► succeeded   (result link)
+                  ├───► failed      (problem object)
+                  └───► cancelled   (if you support DELETE or :cancel)
+```
+
+Clients write `while status not in ("succeeded", "failed", "cancelled")`, so the set of terminal states is part of the contract. A `failed` operation carries a full [problem object](/http/errors/), not a bare `"error": "failed"`. Keep operations readable for a documented period after completion, such as seven days, so a client that was offline can still collect the outcome.
+
+Whether the operation lives under a generic `/operations/{id}` or a domain collection like `/exports/{id}` with a `status` field is a style choice. Google (AIP-151) and Azure both use a generic operation resource. Domain resources read better when the job produces something that lives on afterwards.
+
+## Make the initiating request idempotent
+
+The `POST` that starts the work is the request most likely to time out, because it often does real work before answering. Without an [idempotency key](/reliability/idempotency/), a retry starts a second export or provisions a second database. Store the key with the operation ID, so a retry returns the same `202` and the same `Location`.
+
+_Assumes:_ a durable queue (Celery, BullMQ, SQS or similar); `operations` is a table, not process memory.
+
+<Tabs syncKey="stack">
+<TabItem label="FastAPI">
+
+```python
+@app.post("/exports", status_code=202)
+def start_export(body: ExportIn, response: Response, account: CurrentAccount,
+                 idempotency_key: Annotated[str, Header()]):
+    with db.begin():
+        op = operations.get_by_key(account.id, idempotency_key)
+        if op is None:
+            op = operations.create(account.id, idempotency_key, kind="export", params=body)
+            outbox.enqueue("run_export", op_id=op.id)  # same transaction: no lost jobs
+    response.headers["Location"] = f"{BASE_URL}/operations/{op.id}"
+    response.headers["Retry-After"] = "5"
+    return op.to_api()
+```
+
+</TabItem>
+<TabItem label="Django">
+
+```python
+class ExportCreate(APIView):
+    def post(self, request):
+        key = request.headers.get("Idempotency-Key")
+        if not key:
+            return problem(400, "idempotency-key-required")
+        with transaction.atomic():
+            op, created = Operation.objects.get_or_create(
+                account=request.user.account, idempotency_key=key,
+                defaults={"kind": "export", "params": request.data})
+            if created:
+                transaction.on_commit(lambda: run_export.delay(op.pk))
+        return Response(OperationSerializer(op).data, status=202,
+                        headers={"Location": request.build_absolute_uri(op.get_absolute_url()),
+                                 "Retry-After": "5"})
+```
+
+</TabItem>
+<TabItem label="Hono">
+
+```ts
+app.post("/exports", zValidator("json", ExportIn), async (c) => {
+  const key = c.req.header("Idempotency-Key")!;
+  const op = await db.transaction(async (tx) => {
+    const existing = await operations.byKey(tx, c.get("account").id, key);
+    if (existing) return existing;
+    const created = await operations.create(tx, {
+      kind: "export",
+      params: c.req.valid("json"),
+      key,
+    });
+    await outbox.enqueue(tx, "run_export", { opId: created.id });
+    return created;
+  });
+  c.header("Location", `${BASE_URL}/operations/${op.id}`);
+  c.header("Retry-After", "5");
+  return c.json(toApi(op), 202);
+});
+```
+
+</TabItem>
+</Tabs>
+
+## Pace polling, and offer a push channel
+
+`Retry-After` on both the `202` and each `running` response tells clients when to check again; vary it with the expected remaining time. For clients that need to know immediately, add a [webhook](/events/webhooks/) such as `operation.completed`, and keep the operation resource as the source of truth for clients that missed the event. Server-sent events on `GET /operations/{id}` work too, for browser clients.
+
+`Prefer: respond-async, wait=10` (RFC 7240) lets one endpoint serve both cases: the server answers synchronously if the work finishes within ten seconds, and with `202` otherwise.
+
+## Report batch outcomes per item with 207
+
+Batch endpoints save round trips, but "97 of 100 succeeded" is neither <Status code={201} /> nor <Status code={400} />. Answer <Status code={207} /> with a result per item, in request order:
+
+```http
+POST /products/batch
+{ "items": [ {…}, {…}, {…} ] }
+
+HTTP/1.1 207 Multi-Status
+{
+  "items": [
+    { "status": 201, "id": "sku-1", "href": "https://api.example.com/products/sku-1" },
+    { "status": 201, "id": "sku-2", "href": "https://api.example.com/products/sku-2" },
+    { "status": 422, "problem": { "type": "…/validation-error", "errors": [ { "pointer": "#/price/amount", "detail": "must be > 0" } ] } }
+  ]
+}
+```
+
+- <Status code={207} /> means "look inside", so clients must check each item. Monitoring that counts
+  2xx as success needs to know that too.
+- If the batch as a whole is invalid, such as malformed JSON, too many items or missing authorisation, return a normal 4xx.
+- Document whether the batch is atomic (all or nothing, then a single status is enough) or best effort (per-item results). Cap the batch size and say what the cap is.
+
+<Note kind="history" title="207 came from WebDAV" year="1999" source="https://www.rfc-editor.org/rfc/rfc4918#section-13">
+
+Multi-Status was defined for WebDAV, where one `PROPFIND` or `DELETE` on a folder touches many files and some may fail. Its original body was XML. JSON APIs borrowed the status and replaced the body, which the spec doesn't define for them, so your per-item format is your own contract. Document it like any other schema.
+
+</Note>
+
+<RuleGroup>
+
+<Rule guide="zalando" id="253" level="MAY" title="Support asynchronous request processing" />
+<Rule guide="zalando" id="152" level="MUST" title="Use code 207 for batch or bulk requests" />
+
+</RuleGroup>
+
+<SelfCheck>
+
+<Question
+  q="An export usually finishes in 2 seconds but sometimes takes 3 minutes. What's the most flexible design?"
+  answer={2}
+  options={[
+    {
+      text: "Always answer synchronously and raise the gateway timeout to 5 minutes.",
+      why: "Clients, proxies and mobile OSes have their own timeouts, and you still can't tell success from timeout.",
+    },
+    {
+      text: "Always return 202 and make clients poll.",
+      why: "Works, but adds a round trip to the common fast case.",
+    },
+    {
+      text: "Support <code>Prefer: respond-async, wait=…</code>: synchronous when fast, 202 with an operation otherwise.",
+      why: "One endpoint, the fast path stays fast, and the slow path is still robust.",
+    },
+    {
+      text: "Return 200 immediately with an empty body.",
+      why: "The client gets no way to find the result.",
+    },
+  ]}
+/>
+
+<Question
+  q="A batch create of 50 items has 3 invalid items, and the batch is best effort. What should the response be?"
+  answer={1}
+  options={[
+    {
+      text: "400, because the request contained invalid data.",
+      why: "47 items were created; a 400 tells the client nothing was.",
+    },
+    {
+      text: "207 with a status and result or problem for each item.",
+      why: "Per-item outcomes are the only truthful answer for partial success.",
+    },
+    {
+      text: "201, because most items succeeded.",
+      why: "Clients would never learn about the 3 failures.",
+    },
+    {
+      text: "500, because something went wrong.",
+      why: "Invalid input is a client problem, and 500 invites blind retries.",
+    },
+  ]}
+/>
+
+</SelfCheck>

@@ -1,0 +1,60 @@
+---
+/**
+ * One self-check question. Picking an option reveals the rationale for every
+ * option. Options are shuffled deterministically (seeded by the question).
+ *
+ *   <Question q="…" answer={1} options={[{ text: "…", why: "…" }, …]} />
+ */
+interface Option {
+  text: string;
+  why: string;
+}
+
+interface Props {
+  q: string;
+  options: Option[];
+  /** Index of the correct option, as authored (0-based). */
+  answer: number;
+}
+
+const { q, options, answer: authored } = Astro.props;
+const hash = (text: string) =>
+  [...text].reduce((h, ch) => Math.imul(h ^ ch.charCodeAt(0), 16777619) >>> 0, 2166136261);
+const order = options.map((_, i) => i).sort((a, b) => hash(`${q}#${a}`) - hash(`${q}#${b}`));
+const shuffled = order.map((i) => ({ ...options[i], correct: i === authored }));
+---
+
+<fg-question class="fg-question not-content">
+  <p class="fg-question__q" set:html={q} />
+  <ol class="fg-question__options">
+    {
+      shuffled.map((option) => (
+        <li data-correct={option.correct ? "" : undefined}>
+          <button type="button">
+            <span set:html={option.text} />
+          </button>
+          <p class="fg-question__why">
+            <span class="fg-question__mark">{option.correct ? "Right." : "No."}</span> <span set:html={option.why} />
+          </p>
+        </li>
+      ))
+    }
+  </ol>
+  <button type="button" class="fg-question__show">Show answers</button>
+</fg-question>
+
+<script>
+  class FgQuestion extends HTMLElement {
+    connectedCallback() {
+      const reveal = (picked?: HTMLElement) => {
+        this.classList.add("is-revealed");
+        for (const li of this.querySelectorAll("li")) li.classList.toggle("is-picked", li === picked);
+      };
+      for (const li of this.querySelectorAll<HTMLElement>("li")) {
+        li.querySelector("button")?.addEventListener("click", () => reveal(li));
+      }
+      this.querySelector(".fg-question__show")?.addEventListener("click", () => reveal());
+    }
+  }
+  if (!customElements.get("fg-question")) customElements.define("fg-question", FgQuestion);
+</script>

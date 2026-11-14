@@ -1,0 +1,54 @@
+---
+/** A large search field on the home page that opens Starlight's search dialog. */
+---
+
+<button type="button" class="fg-searchbox" data-fg-search>
+  <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+    ><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg
+  >
+  <span>Search topics, headers, status codes…</span>
+  <kbd>/</kbd>
+</button>
+
+<script>
+  document.querySelector("[data-fg-search]")?.addEventListener("click", () => {
+    document.querySelector<HTMLButtonElement>("site-search button[data-open-modal]")?.click();
+  });
+</script>
+
+<style>
+  .fg-searchbox {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    width: 100%;
+    max-width: 34rem;
+    margin-top: 1.75rem;
+    padding: 0.8rem 1rem;
+    border: 1px solid var(--sl-color-gray-5);
+    border-radius: var(--fg-radius);
+    background: var(--fg-surface);
+    color: var(--sl-color-gray-3);
+    font: inherit;
+    font-size: 0.95rem;
+    text-align: start;
+    cursor: text;
+    transition: border-color var(--fg-t);
+  }
+
+  .fg-searchbox:hover {
+    border-color: var(--sl-color-gray-4);
+  }
+
+  .fg-searchbox span {
+    flex: 1;
+  }
+
+  kbd {
+    padding: 0.05rem 0.4rem;
+    border: 1px solid var(--fg-hairline);
+    border-radius: 4px;
+    font-family: var(--sl-font-mono);
+    font-size: 0.75rem;
+  }
+</style>

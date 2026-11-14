@@ -1,28 +1,20 @@
 ---
-/**
- * Collapsible panel that groups company rule boxes at the end of a lesson,
- * so the lesson stays a general course and the company detail is one click away.
- */
-interface Props {
-  title?: string;
-  open?: boolean;
-}
-const { title = "What the company guides say", open = false } = Astro.props;
+/** Company guidelines relevant to the page, collapsed. The label is filled in from the rules inside. */
 ---
 
-<details class="dojo-rule-group" open={open}>
+<details class="fg-fold fg-rules">
   <summary>
-    <span class="dojo-rule-group__icon" aria-hidden="true">🏢</span>
-    <span class="dojo-rule-group__title">{title}</span>
-    <span class="dojo-rule-group__count" data-rule-count></span>
+    <span class="fg-fold__title">Company guidelines</span>
+    <span class="fg-fold__meta" data-rule-count></span>
   </summary>
-  <div class="dojo-rule-group__body"><slot /></div>
+  <div class="fg-fold__body"><slot /></div>
 </details>
 
 <script>
-  for (const group of document.querySelectorAll<HTMLDetailsElement>(".dojo-rule-group")) {
-    const count = group.querySelectorAll(".dojo-rule").length;
+  for (const group of document.querySelectorAll<HTMLDetailsElement>(".fg-rules")) {
+    const rules = [...group.querySelectorAll<HTMLElement>(".fg-rule")];
+    const names = [...new Set(rules.map((r) => r.dataset.guide))].join(", ");
     const label = group.querySelector<HTMLElement>("[data-rule-count]");
-    if (label) label.textContent = `${count} rule${count === 1 ? "" : "s"}`;
+    if (label) label.textContent = `${names} · ${rules.length} rule${rules.length === 1 ? "" : "s"}`;
   }
 </script>

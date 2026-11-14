@@ -1,39 +1,50 @@
 ---
 /**
- * Adds a lesson header (module, position, reading time) above lesson titles.
+ * Title, one-sentence summary, then a metadata line:
+ *   Last reviewed Nov 2026 · Sources: RFC 9110 §9.3, RFC 5789
  */
 import Default from "@astrojs/starlight/components/PageTitle.astro";
-import { findLesson, lessons } from "../../data/curriculum";
+import { findTopic } from "../../data/guide";
 
-const lesson = findLesson(Astro.locals.starlightRoute.id);
+const { entry, lastUpdated, id } = Astro.locals.starlightRoute;
+const { description, sources = [] } = entry.data as typeof entry.data & {
+  sources?: { label: string; url: string }[];
+};
+const topic = findTopic(id);
+const reviewed = lastUpdated?.toLocaleDateString("en-GB", { month: "short", year: "numeric", timeZone: "UTC" });
+const shown = sources.slice(0, 3);
 ---
 
+{topic && <p class="fg-eyebrow">{topic.number} · {topic.section.title}</p>}
+{id !== "" && <Default />}
+{description && id !== "" && <p class="fg-summary">{description}</p>}
 {
-  lesson && (
-    <div class="dojo-lesson-meta" style={`--module-color: ${lesson.module.color}`}>
-      <span class="dojo-lesson-meta__module">
-        {lesson.module.emoji} Module {lesson.moduleIndex + 1} · {lesson.module.title}
-      </span>
-      <span class="dojo-lesson-meta__chip">
-        Lesson {lesson.number} / {lessons.length}
-      </span>
-      <span class="dojo-lesson-meta__chip">⏱ {lesson.minutes} min</span>
-      <span class="dojo-lesson-meta__chip dojo-lesson-meta__done" data-lesson-done hidden>
-        ✓ Completed
-      </span>
-    </div>
+  (reviewed || shown.length > 0) && id !== "" && (
+    <p class="fg-meta">
+      {reviewed && (
+        <span>
+          Last reviewed <time datetime={lastUpdated?.toISOString()}>{reviewed}</time>
+        </span>
+      )}
+      {shown.length > 0 && (
+        <span>
+          Sources:{" "}
+          {shown.map((s, i) => (
+            <>
+              {i > 0 && ", "}
+              <a href={s.url} rel="noopener">
+                {s.label}
+              </a>
+            </>
+          ))}
+          {sources.length > shown.length && (
+            <>
+              ,{" "}
+              <a href="#references">+{sources.length - shown.length} more</a>
+            </>
+          )}
+        </span>
+      )}
+    </p>
   )
 }
-<Default />
-
-<script>
-  import { decorateSidebar, getDone, hrefToId, onProgress } from "../../scripts/progress";
-
-  const update = () => {
-    decorateSidebar();
-    const chip = document.querySelector<HTMLElement>("[data-lesson-done]");
-    if (chip) chip.hidden = !getDone().has(hrefToId(location.href));
-  };
-  update();
-  onProgress(update);
-</script>

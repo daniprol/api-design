@@ -1,0 +1,263 @@
+---
+title: Specs in CI
+description: Treat the OpenAPI document as a build artefact with owners. Lint it against your style guide, fail on breaking changes, test the implementation against it, and publish it.
+sources:
+  - label: Spectral
+    title: "Stoplight Spectral: JSON/YAML linter with OpenAPI rulesets"
+    url: https://github.com/stoplightio/spectral
+    accessed: 2026-11
+  - label: Zally
+    title: "Zalando Zally: API linter for the Zalando guidelines"
+    url: https://github.com/zalando/zally
+    accessed: 2026-11
+  - label: oasdiff
+    title: "oasdiff: OpenAPI diff and breaking-change detection"
+    url: https://github.com/oasdiff/oasdiff
+    accessed: 2026-11
+  - label: Schemathesis
+    title: "Schemathesis: property-based API testing from OpenAPI"
+    url: https://schemathesis.readthedocs.io/
+    accessed: 2026-11
+  - label: Pact
+    title: "Pact: consumer-driven contract testing"
+    url: https://docs.pact.io/
+    accessed: 2026-11
+  - label: Zalando #218
+    title: "Zalando RESTful API Guidelines: Contain API meta information"
+    url: https://opensource.zalando.com/restful-api-guidelines/#218
+    accessed: 2026-11
+related:
+  - foundations/principles
+  - evolution/compatibility
+  - evolution/deprecation
+  - http/errors
+---
+
+import {
+  InBrief,
+  Note,
+  Compare,
+  Prefer,
+  Avoid,
+  Rule,
+  RuleGroup,
+  SelfCheck,
+  Question,
+  Tabs,
+  TabItem,
+} from "@components/kit";
+
+<InBrief>
+
+- Check the spec into the repository and generate or validate it on every build. A spec that drifts from the code is worse than none.
+- Give every spec an owner, a stable API ID, an audience and a semantic version.
+- Lint against your style guide (Spectral or Zally) so reviews can focus on the domain.
+- Fail the build on breaking changes with a spec diff (oasdiff), and require an explicit override.
+- Test the running implementation against the spec (Schemathesis), and use consumer contracts (Pact) where you know your consumers.
+
+</InBrief>
+
+With five APIs, everyone knows who owns what and what changed last week. With five hundred, nobody does, and the style guide becomes a document people agree with and don't follow. The fix is to treat the spec as a build artefact: generated or validated with every change, linted, diffed and published, the way code is compiled and tested.
+
+## Give every spec metadata that answers who, what and for whom
+
+```yaml
+openapi: 3.1.0
+info:
+  title: Order Management API
+  version: 1.14.2 # semantic version of the contract
+  description: Place, track and cancel customer orders.
+  contact: { name: Team Checkout, url: https://wiki.example.com/teams/checkout }
+  x-api-id: 0f3c1e2d-7a0e-4b8e-9d2b-1f2a3b4c5d6e # stable forever, survives renames
+  x-audience: external-partner
+servers:
+  - url: https://order-management.api.example.com
+```
+
+- **Version the contract with SemVer**, even if the API itself is never versioned on the wire. Major means breaking (rare), minor means additive, and patch means documentation only.
+- **Declare the audience**: component-internal, business-unit-internal, company-internal, external-partner or external-public. It tells reviewers how careful a change must be. Your own frontend's API can move fast; one with three thousand external integrators can't.
+- **Name by function**, not by team or technology: `order-management.api.example.com`, not `team-falcon-svc-2`. Teams reorganise; functions stay.
+
+## Lint against the style guide
+
+A linter turns guideline rules into failing builds, so human review can spend its time on the domain model instead of casing. Spectral is the generic engine, with rulesets for OpenAPI and for several public style guides. Zally is Zalando's linter for its own guidelines.
+
+```yaml title=".spectral.yaml"
+extends: ["spectral:oas"]
+rules:
+  paths-kebab-case:
+    description: Path segments are kebab-case.
+    given: "$.paths[*]~"
+    then: { function: pattern, functionOptions: { match: "^(/([a-z0-9-]+|\\{[a-z_]+\\}))+$" } }
+    severity: error
+  problem-json-errors:
+    description: 4xx and 5xx responses use application/problem+json.
+    given: "$.paths.*.*.responses[?(@property >= '400')].content"
+    then: { field: "application/problem+json", function: truthy }
+    severity: error
+```
+
+Start with a small set at `error` severity, plus the rest as warnings, and promote rules as the existing APIs comply. A linter that fails every build on day one gets disabled on day two.
+
+## Fail the build on breaking changes
+
+Compare the spec on the branch with the one on `main`, and fail if anything breaks existing clients: a removed path, a new required parameter, a narrowed enum, a changed type. oasdiff checks a long catalogue of such changes.
+
+```yaml title=".github/workflows/api.yml (excerpt)"
+- name: Export spec
+  run: python -m app.export_openapi > openapi.json
+- name: Lint
+  run: npx @stoplight/spectral-cli lint openapi.json --fail-severity error
+- name: Breaking changes
+  run: |
+    git show origin/main:openapi.json > base.json
+    docker run --rm -v "$PWD:/w" tufin/oasdiff breaking /w/base.json /w/openapi.json --fail-on ERR
+```
+
+When a break is intended, the override should be explicit and reviewed, such as a label on the pull request and a matching major version bump, not a flag someone can quietly set. Remember the limit: diffs see shape, not meaning. A field that changes from gross to net price passes every tool (see [Compatibility](/evolution/compatibility/)).
+
+## Test the implementation against the spec
+
+A valid spec can still describe an API that doesn't exist. Two complementary techniques close the gap:
+
+- **Property-based testing from the spec.** Schemathesis generates requests from the schema, including edge cases you didn't think of, and checks that responses conform: undocumented status codes, wrong content types, 500s on unusual input, response bodies that don't match the schema. It's the cheapest way to find the stack trace you promised never to leak.
+- **Consumer-driven contracts.** With Pact, each consumer records the interactions it relies on, and the provider's CI replays them. You learn which consumers a change breaks before you deploy, not after. It needs known consumers willing to participate, so it fits internal ecosystems better than public APIs.
+
+_Assumes:_ the app can export its spec without starting a server.
+
+<Tabs syncKey="stack">
+<TabItem label="FastAPI">
+
+```python
+# app/export_openapi.py
+import json
+from app.main import app
+
+app.openapi()["info"] |= {"x-api-id": API_ID, "x-audience": "external-partner"}
+print(json.dumps(app.openapi(), indent=2, sort_keys=True))
+
+# CI, against a running instance:
+#   schemathesis run http://localhost:8000/openapi.json --checks all
+```
+
+</TabItem>
+<TabItem label="Django">
+
+```python
+# settings.py (drf-spectacular)
+SPECTACULAR_SETTINGS = {
+    "TITLE": "Order Management API",
+    "VERSION": "1.14.2",
+    "EXTENSIONS_INFO": {"x-api-id": API_ID, "x-audience": "external-partner"},
+}
+
+# CI:
+#   python manage.py spectacular --file openapi.yaml --validate --fail-on-warn
+#   schemathesis run http://localhost:8000/api/schema/ --checks all
+```
+
+</TabItem>
+<TabItem label="Hono">
+
+```ts
+// scripts/export-openapi.ts
+import { app } from "../src/app";
+
+const spec = app.getOpenAPI31Document({
+  openapi: "3.1.0",
+  info: {
+    title: "Order Management API",
+    version: "1.14.2",
+    "x-api-id": API_ID,
+    "x-audience": "external-partner",
+  },
+});
+console.log(JSON.stringify(spec, null, 2));
+```
+
+</TabItem>
+</Tabs>
+
+## Publish the spec and watch real usage
+
+A spec that lives only in a repository isn't discoverable. Publish it to an API catalogue or developer portal, so teams find an API before they build a duplicate, and render reference documentation from the same file so docs can't drift.
+
+Then measure how the API is actually used. Per endpoint and per client, track rate, errors split into 4xx and 5xx, and latency percentiles (the RED method), plus calls to deprecated endpoints. Usage data by client is what makes [deprecation](/evolution/deprecation/) possible: you can't contact the consumers you can't see.
+
+<Compare>
+<Prefer>
+
+```yaml
+info:
+  title: Order Management API
+  version: 1.14.2
+  contact: { name: Team Checkout }
+  x-audience: external-partner
+```
+
+</Prefer>
+<Avoid>
+
+```yaml
+info:
+  title: svc-api
+  version: latest
+  # owner: ask around
+```
+
+</Avoid>
+</Compare>
+
+<Note kind="practice" title="Zally at Zalando" source="https://github.com/zalando/zally">
+
+With hundreds of teams publishing APIs, Zalando couldn't review every spec by hand against its guidelines, so it built Zally, an open-source linter whose rules map to guideline numbers. Violations are reported by severity in each team's pipeline, and the API review meeting focuses on what a linter can't judge: the domain model, naming and lifecycle.
+
+</Note>
+
+<RuleGroup>
+
+<Rule guide="zalando" id="192" level="MUST" title="Publish OpenAPI specification for APIs" />
+<Rule guide="zalando" id="218" level="MUST" title="Contain API meta information" />
+<Rule guide="zalando" id="215" level="MUST" title="Provide API identifiers" />
+<Rule guide="zalando" id="219" level="MUST" title="Provide API audience" />
+<Rule guide="zalando" id="116" level="MUST" title="Use semantic versioning" />
+<Rule guide="zalando" id="223" level="MUST" title="Use functional naming schema" />
+<Rule guide="zalando" id="224" level="MUST" title="Follow naming convention for hostnames" />
+<Rule guide="zalando" id="193" level="SHOULD" title="Monitor API usage" />
+
+</RuleGroup>
+
+<SelfCheck>
+
+<Question
+  q="oasdiff reports no breaking changes, but a field changed from gross to net price. What does this show?"
+  answer={2}
+  options={[
+    { text: "oasdiff is misconfigured.", why: "It's working as designed." },
+    { text: "The change isn't breaking.", why: "It's the most dangerous kind of breaking change." },
+    {
+      text: "Spec diffs detect changes in shape, not in meaning; semantic changes need human review.",
+      why: "No schema tool can know what a number means.",
+    },
+    {
+      text: "The spec needs a new major version to be detected.",
+      why: "The version number doesn't make the tool see semantics.",
+    },
+  ]}
+/>
+
+<Question
+  q="Which tool would most likely find an endpoint that returns a 500 with a stack trace for an unusual but schema-valid input?"
+  answer={1}
+  options={[
+    { text: "Spectral", why: "It lints the spec document, not the running implementation." },
+    {
+      text: "Schemathesis",
+      why: "It generates many valid and edge-case requests from the schema and checks the responses.",
+    },
+    { text: "oasdiff", why: "It compares two specs, not a spec with an implementation." },
+    { text: "A changelog", why: "Documentation doesn't exercise the code." },
+  ]}
+/>
+
+</SelfCheck>

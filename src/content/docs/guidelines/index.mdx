@@ -1,0 +1,62 @@
+---
+title: Guidelines compared
+description: Zalando, Google, Microsoft and Stripe publish or embody different answers to the same API design questions. Where they agree, where they don't, and why.
+sources:
+  - label: Zalando
+    title: "Zalando RESTful API and Event Guidelines"
+    url: https://opensource.zalando.com/restful-api-guidelines/
+    accessed: 2026-11
+  - label: Google AIP
+    title: "Google API Improvement Proposals"
+    url: https://google.aip.dev/
+    accessed: 2026-11
+  - label: Microsoft Azure
+    title: "Microsoft Azure REST API Guidelines"
+    url: https://github.com/microsoft/api-guidelines/blob/vNext/azure/Guidelines.md
+    accessed: 2026-11
+  - label: Stripe API
+    title: "Stripe API reference"
+    url: https://docs.stripe.com/api
+    accessed: 2026-11
+---
+
+import ComparisonMatrix from "@components/ComparisonMatrix.astro";
+import { Note } from "@components/kit";
+
+Several large API producers publish their design guidelines, and they don't agree. That's the useful part. A rule tells you what one organisation decided; two rules that contradict each other tell you there was a trade-off, and the reasons on each side tell you what it was.
+
+## Where they agree
+
+On the fundamentals, the guides are close to unanimous:
+
+- Model the API around resources, and use HTTP methods with their standard meaning.
+- Name things consistently, and make the rules checkable by a linter.
+- Never break published clients. Prefer additive change to versioning.
+- Paginate collections, return structured errors, and treat the API description as the contract.
+- Treat the API as a product with consumers, not as a byproduct of an implementation.
+
+## Where they differ
+
+Each row links to the chapter where the trade-off is discussed; each cell links to the source.
+
+<ComparisonMatrix />
+
+Stripe isn't a style guide, but its public API is one of the most studied in the industry, so it appears as a reference point for what a single, carefully run API does in practice.
+
+## Why the differences exist
+
+Consistency matters within an ecosystem much more than between ecosystems. A developer integrating fifty Google APIs gains from all of them looking alike; whether Google's choices match Zalando's matters far less to them. Google optimises for gRPC and generated clients, so `lowerCamelCase` and custom methods follow from protocol buffers. Zalando optimises for hundreds of teams publishing JSON over HTTP, so it prefers snake_case and forbids URL versions. Azure serves management planes for every cloud product, so it standardises long-running operations in detail. Pick the guide whose constraints look most like yours, and then be consistent with it.
+
+<Note kind="practice" title="Linters make guidelines real" source="https://github.com/zalando/zally">
+
+Guidelines that nobody checks become suggestions. Zalando's Zally, Google's `api-linter` and Azure's Spectral-based rulesets all turn their guidelines into failing builds, and rule numbers in a CI report tell a team exactly which paragraph to read. If you adopt a guide, adopt or write its linter in the same week.
+
+</Note>
+
+## Covered here
+
+| Guideline                                                        | Status on this site                                                          |
+| ---------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| [Zalando RESTful API and Event Guidelines](/guidelines/zalando/) | Cited rule by rule in every chapter, with a [rule index](/reference/rules/). |
+| Google API Improvement Proposals                                 | Compared on the decisions above.                                             |
+| Microsoft Azure REST API Guidelines                              | Compared on the decisions above.                                             |

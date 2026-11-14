@@ -1,0 +1,75 @@
+---
+title: RFC index
+description: Every RFC and specification this guide relies on, grouped by subject, with the chapter where it matters.
+---
+
+The standards behind the Guide. Read the chapter first; go to the RFC when you need the exact wording.
+
+## HTTP itself
+
+| RFC                                                  | Title                                   | Where it matters                                                                                                     |
+| ---------------------------------------------------- | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110)   | HTTP Semantics                          | Methods, status codes, headers, conditional requests: [Methods](/http/methods/), [Status codes](/http/status-codes/) |
+| [RFC 9111](https://www.rfc-editor.org/rfc/rfc9111)   | HTTP Caching                            | [Caching](/collections/caching/)                                                                                     |
+| [RFC 5789](https://www.rfc-editor.org/rfc/rfc5789)   | PATCH Method for HTTP                   | [Methods](/http/methods/)                                                                                            |
+| [RFC 10008](https://www.rfc-editor.org/rfc/rfc10008) | The HTTP QUERY Method                   | [Methods](/http/methods/)                                                                                            |
+| [RFC 6585](https://www.rfc-editor.org/rfc/rfc6585)   | Additional HTTP Status Codes (428, 429) | [Concurrency control](/reliability/concurrency/), [Limits](/security/limits/)                                        |
+| [RFC 4918](https://www.rfc-editor.org/rfc/rfc4918)   | WebDAV (source of 207 and 422)          | [Long-running operations](/reliability/long-running-operations/)                                                     |
+| [RFC 7240](https://www.rfc-editor.org/rfc/rfc7240)   | Prefer Header for HTTP                  | [Headers](/http/headers/)                                                                                            |
+| [RFC 9651](https://www.rfc-editor.org/rfc/rfc9651)   | Structured Field Values for HTTP        | [Headers](/http/headers/)                                                                                            |
+| [RFC 6648](https://www.rfc-editor.org/rfc/rfc6648)   | Deprecating the "X-" Prefix             | [Headers](/http/headers/)                                                                                            |
+| [RFC 9530](https://www.rfc-editor.org/rfc/rfc9530)   | Digest Fields                           | [Files](/representations/files/)                                                                                     |
+| [RFC 7239](https://www.rfc-editor.org/rfc/rfc7239)   | Forwarded HTTP Extension                | [Links](/representations/links/)                                                                                     |
+
+## Payloads and formats
+
+| RFC                                                | Title                                                       | Where it matters                                                             |
+| -------------------------------------------------- | ----------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| [RFC 8259](https://www.rfc-editor.org/rfc/rfc8259) | The JSON Data Interchange Format                            | [JSON conventions](/representations/json/)                                   |
+| [RFC 7493](https://www.rfc-editor.org/rfc/rfc7493) | The I-JSON Message Format                                   | [Data formats](/representations/data-formats/)                               |
+| [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) | Problem Details for HTTP APIs                               | [Errors](/http/errors/)                                                      |
+| [RFC 7396](https://www.rfc-editor.org/rfc/rfc7396) | JSON Merge Patch                                            | [Methods](/http/methods/)                                                    |
+| [RFC 6902](https://www.rfc-editor.org/rfc/rfc6902) | JSON Patch                                                  | [Methods](/http/methods/)                                                    |
+| [RFC 6901](https://www.rfc-editor.org/rfc/rfc6901) | JSON Pointer                                                | [Errors](/http/errors/)                                                      |
+| [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) | Date and Time on the Internet: Timestamps                   | [Data formats](/representations/data-formats/)                               |
+| [RFC 9557](https://www.rfc-editor.org/rfc/rfc9557) | Date and Time with Additional Information (time zone names) | [Data formats](/representations/data-formats/)                               |
+| [RFC 9562](https://www.rfc-editor.org/rfc/rfc9562) | Universally Unique IDentifiers (UUIDv7)                     | [Data formats](/representations/data-formats/)                               |
+| [RFC 6838](https://www.rfc-editor.org/rfc/rfc6838) | Media Type Specifications and Registration Procedures       | [Versioning](/evolution/versioning/), [Media types](/reference/media-types/) |
+| [RFC 7578](https://www.rfc-editor.org/rfc/rfc7578) | Returning Values from Forms: multipart/form-data            | [Files](/representations/files/)                                             |
+
+## URLs and links
+
+| RFC                                                | Title                    | Where it matters                                                         |
+| -------------------------------------------------- | ------------------------ | ------------------------------------------------------------------------ |
+| [RFC 3986](https://www.rfc-editor.org/rfc/rfc3986) | URI Generic Syntax       | [URL design](/modelling/urls/)                                           |
+| [RFC 8288](https://www.rfc-editor.org/rfc/rfc8288) | Web Linking              | [Links](/representations/links/), [Pagination](/collections/pagination/) |
+| [RFC 8820](https://www.rfc-editor.org/rfc/rfc8820) | URI Design and Ownership | [URL design](/modelling/urls/)                                           |
+
+## Security
+
+| RFC                                                | Title                                          | Where it matters              |
+| -------------------------------------------------- | ---------------------------------------------- | ----------------------------- |
+| [RFC 6750](https://www.rfc-editor.org/rfc/rfc6750) | OAuth 2.0 Bearer Token Usage                   | [Auth](/security/auth/)       |
+| [RFC 9700](https://www.rfc-editor.org/rfc/rfc9700) | Best Current Practice for OAuth 2.0 Security   | [Auth](/security/auth/)       |
+| [RFC 8725](https://www.rfc-editor.org/rfc/rfc8725) | JSON Web Token Best Current Practices          | [Auth](/security/auth/)       |
+| [RFC 2104](https://www.rfc-editor.org/rfc/rfc2104) | HMAC: Keyed-Hashing for Message Authentication | [Webhooks](/events/webhooks/) |
+
+## Lifecycle
+
+| RFC                                                | Title                                      | Where it matters                           |
+| -------------------------------------------------- | ------------------------------------------ | ------------------------------------------ |
+| [RFC 9745](https://www.rfc-editor.org/rfc/rfc9745) | The Deprecation HTTP Response Header Field | [Deprecation](/evolution/deprecation/)     |
+| [RFC 8594](https://www.rfc-editor.org/rfc/rfc8594) | The Sunset HTTP Header Field               | [Deprecation](/evolution/deprecation/)     |
+| [RFC 9413](https://www.rfc-editor.org/rfc/rfc9413) | Maintaining Robust Protocols               | [Compatibility](/evolution/compatibility/) |
+
+## Not RFCs, but standards all the same
+
+| Specification                                                                                                      | Where it matters                                                               |
+| ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
+| [OpenAPI Specification](https://spec.openapis.org/oas/latest.html)                                                 | [Principles](/foundations/principles/), [Specs in CI](/evolution/specs-in-ci/) |
+| [W3C Trace Context](https://www.w3.org/TR/trace-context/)                                                          | [Headers](/http/headers/)                                                      |
+| [CloudEvents](https://cloudevents.io/)                                                                             | [Event design](/events/event-design/)                                          |
+| [Standard Webhooks](https://github.com/standard-webhooks/standard-webhooks/blob/main/spec/standard-webhooks.md)    | [Webhooks](/events/webhooks/)                                                  |
+| [Idempotency-Key header (IETF draft)](https://datatracker.ietf.org/doc/draft-ietf-httpapi-idempotency-key-header/) | [Idempotency](/reliability/idempotency/)                                       |
+| [RateLimit header fields (IETF draft)](https://datatracker.ietf.org/doc/draft-ietf-httpapi-ratelimit-headers/)     | [Limits](/security/limits/)                                                    |
+| [OWASP API Security Top 10 (2023)](https://owasp.org/API-Security/editions/2023/en/0x11-t10/)                      | [Auth](/security/auth/), [Limits](/security/limits/)                           |

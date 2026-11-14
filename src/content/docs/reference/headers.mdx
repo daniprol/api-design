@@ -1,0 +1,61 @@
+---
+title: Headers
+description: The HTTP headers an API design touches, grouped by job, with the specification that defines each and the chapter that discusses it.
+related:
+  - http/headers
+  - collections/caching
+  - reliability/concurrency
+---
+
+Request (Req) and response (Res) direction is the usual one; a few headers travel both ways. Prefer these to custom headers, and if you must invent one, don't start it with `X-` (RFC 6648).
+
+## Content and negotiation
+
+| Header               | Dir. | Purpose                                                        | Spec     | Chapter                          |
+| -------------------- | ---- | -------------------------------------------------------------- | -------- | -------------------------------- |
+| `Content-Type`       | Both | Media type of the body.                                        | RFC 9110 | [Headers](/http/headers/)        |
+| `Accept`             | Req  | Media types the client can handle.                             | RFC 9110 | [Headers](/http/headers/)        |
+| `Accept-Language`    | Req  | Preferred languages for human-readable text.                   | RFC 9110 | [Headers](/http/headers/)        |
+| `Content-Language`   | Res  | Language of the response text.                                 | RFC 9110 | [Headers](/http/headers/)        |
+| `Vary`               | Res  | Request headers that changed the response; caches key on them. | RFC 9110 | [Caching](/collections/caching/) |
+| `Content-Encoding`   | Res  | Compression applied, such as `gzip` or `br`.                   | RFC 9110 | [Caching](/collections/caching/) |
+| `Prefer`             | Req  | Optional server behaviour: `return=minimal`, `respond-async`.  | RFC 7240 | [Headers](/http/headers/)        |
+| `Preference-Applied` | Res  | Which preferences the server honoured.                         | RFC 7240 | [Headers](/http/headers/)        |
+
+## Locations and links
+
+| Header             | Dir. | Purpose                                                       | Spec     | Chapter                          |
+| ------------------ | ---- | ------------------------------------------------------------- | -------- | -------------------------------- |
+| `Location`         | Res  | URI of a created resource, a redirect target or an operation. | RFC 9110 | [Headers](/http/headers/)        |
+| `Content-Location` | Res  | URI of the representation actually returned.                  | RFC 9110 | [Headers](/http/headers/)        |
+| `Link`             | Res  | Typed links: `next`, `deprecation`, `describedby`.            | RFC 8288 | [Links](/representations/links/) |
+
+## Caching and concurrency
+
+| Header          | Dir. | Purpose                                                                | Spec     | Chapter                                          |
+| --------------- | ---- | ---------------------------------------------------------------------- | -------- | ------------------------------------------------ |
+| `Cache-Control` | Both | Who may cache, and for how long.                                       | RFC 9111 | [Caching](/collections/caching/)                 |
+| `ETag`          | Res  | Opaque validator for this representation.                              | RFC 9110 | [Caching](/collections/caching/)                 |
+| `Last-Modified` | Res  | Weaker, date-based validator.                                          | RFC 9110 | [Caching](/collections/caching/)                 |
+| `If-None-Match` | Req  | Return <code>304</code> if the ETag still matches.                     | RFC 9110 | [Caching](/collections/caching/)                 |
+| `If-Match`      | Req  | Apply the write only if the ETag still matches, else <code>412</code>. | RFC 9110 | [Concurrency control](/reliability/concurrency/) |
+
+## Authentication and limits
+
+| Header             | Dir. | Purpose                                                                               | Spec               | Chapter                     |
+| ------------------ | ---- | ------------------------------------------------------------------------------------- | ------------------ | --------------------------- |
+| `Authorization`    | Req  | Credentials, usually `Bearer <token>`.                                                | RFC 9110, RFC 6750 | [Auth](/security/auth/)     |
+| `WWW-Authenticate` | Res  | How to authenticate, sent with <code>401</code>.                                      | RFC 9110           | [Auth](/security/auth/)     |
+| `Retry-After`      | Res  | Seconds or a date to wait before retrying, with <code>429</code> or <code>503</code>. | RFC 9110           | [Limits](/security/limits/) |
+| `RateLimit-Policy` | Res  | The quota policy that applies.                                                        | IETF draft         | [Limits](/security/limits/) |
+| `RateLimit`        | Res  | Remaining quota and time to reset.                                                    | IETF draft         | [Limits](/security/limits/) |
+
+## Reliability, tracing and lifecycle
+
+| Header                                                 | Dir. | Purpose                                                       | Spec              | Chapter                                  |
+| ------------------------------------------------------ | ---- | ------------------------------------------------------------- | ----------------- | ---------------------------------------- |
+| `Idempotency-Key`                                      | Req  | Client-chosen key that makes an unsafe request safe to retry. | IETF draft        | [Idempotency](/reliability/idempotency/) |
+| `traceparent`, `tracestate`                            | Req  | W3C Trace Context, propagated on every hop.                   | W3C               | [Headers](/http/headers/)                |
+| `Deprecation`                                          | Res  | When the resource was or will be deprecated.                  | RFC 9745          | [Deprecation](/evolution/deprecation/)   |
+| `Sunset`                                               | Res  | When the resource is expected to stop responding.             | RFC 8594          | [Deprecation](/evolution/deprecation/)   |
+| `webhook-id`, `webhook-timestamp`, `webhook-signature` | Req  | Identity, time and HMAC signature of a webhook delivery.      | Standard Webhooks | [Webhooks](/events/webhooks/)            |

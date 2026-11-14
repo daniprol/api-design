@@ -1,0 +1,26 @@
+---
+title: About this guide
+description: Who writes this guide, who it's for, what it covers and doesn't, and the editorial standards every page follows.
+---
+
+HTTP API Design is a practical reference for designing HTTP APIs that stay pleasant to use and cheap to change for years. It's written and maintained by Dani ([daniprol](https://github.com/daniprol) on GitHub), and developed in the open.
+
+## Who it's for
+
+Engineers who already build APIs and want a considered position on the decisions that come up in every design review: how to model an action, which status code, how to paginate, how to retry safely, how to change a contract without breaking anyone. It assumes you know HTTP and at least one web framework, and doesn't explain either from scratch.
+
+## What it covers
+
+Resource-oriented HTTP APIs with JSON payloads, from modelling to deprecation, plus the events and webhooks that usually travel alongside them. Code examples use FastAPI, Django REST Framework and Hono; pick one tab and every page remembers it.
+
+It doesn't cover GraphQL or gRPC design in depth, API gateways and infrastructure, or any single framework's documentation. [REST and alternatives](/foundations/rest-and-alternatives/) explains when you'd choose something other than REST.
+
+## Editorial standards
+
+- **Positions, not surveys.** Each chapter recommends one approach and says when another is better.
+- **Primary sources.** Claims cite RFCs, published guidelines or the engineering writing of the people involved, with the date accessed. See [Sources and method](/about/sources/).
+- **Company rules are quoted, not paraphrased.** Rule numbers, levels and titles match the original.
+- **Stories earn their place.** History, incidents and real-world practice appear where they explain a design decision, are kept short, and are always sourced.
+- **Dated and versioned.** Every page shows when it was last reviewed, and the [changelog](/about/changelog/) records what changed.
+
+Corrections and suggestions are welcome; see [Contributing](/about/contributing/).

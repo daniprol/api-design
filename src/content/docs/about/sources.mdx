@@ -1,0 +1,33 @@
+---
+title: Sources and method
+description: Which sources this guide relies on, how they're cited and dated, how guideline levels are reported, and what the code examples promise.
+---
+
+## What counts as a source
+
+In order of preference:
+
+1. **Standards.** IETF RFCs, W3C recommendations and the OpenAPI Specification. Where an RFC and common practice disagree, the page says so.
+2. **Published guidelines.** Zalando, Google AIP and Microsoft Azure, cited by rule number where they have one.
+3. **First-hand engineering writing.** Posts and documentation by the teams that built the systems described, such as Stripe on versioning or GitHub on its API changes.
+4. **Well-known secondary sources**, only when no primary one exists, and named as such.
+
+Every page lists its sources under the title and in full under References, each with the month it was last checked. The [RFC index](/reference/rfcs/) collects the standards in one place.
+
+## How guideline rules are reported
+
+Company rules appear at the end of each chapter with the guideline's own number, level and title, linked to the original. Levels follow RFC 2119 as the guideline states them: MUST is a requirement, SHOULD a strong default you may break with a documented reason, MAY an option.
+
+A rule appearing on a page means the chapter discusses the same decision. It doesn't mean this guide agrees with it. Where the recommendation here differs, the chapter says so, and the [Guidelines comparison](/guidelines/) shows where the published guides disagree with each other.
+
+## Notes, history and incidents
+
+Side notes are at most 90 words, carry a date where one applies, and link to a primary source. A note is there because it explains a design decision; if it doesn't, it's cut.
+
+## Code examples
+
+Examples show the part of the code that implements the decision, not a complete application. Each set of tabs begins with an _Assumes:_ line naming what's left out, such as an authentication middleware or a `problem()` helper that builds Problem Details responses. All examples use the same small shop domain: orders (`ord_`), customers (`cus_`) and products (`sku-`).
+
+## Reviews
+
+Each page shows the date it was last reviewed, taken from version control. Substantive changes are recorded in the [changelog](/about/changelog/).

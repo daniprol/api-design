@@ -1,20 +1,20 @@
 ---
 /**
- * Builds an index of every company rule referenced in the course, by
- * scanning lesson sources at build time. Always in sync with the lessons.
+ * Index of every company rule cited on the site, built at build time by
+ * scanning page sources for <Rule> tags, so it can't drift from the pages.
  */
-import { guides } from "../data/guides";
-import { lessons } from "../data/curriculum";
+import { guides, type GuideId } from "../data/guides";
+import { findTopic } from "../data/guide";
 
 interface Props {
-  guide: keyof typeof guides;
+  guide: GuideId;
 }
 
 const { guide: guideId } = Astro.props;
 const guide = guides[guideId];
 const base = import.meta.env.BASE_URL.replace(/\/+$/, "");
 
-const sources = import.meta.glob<string>("../content/docs/course/**/*.mdx", {
+const sources = import.meta.glob<string>("../content/docs/**/*.mdx", {
   query: "?raw",
   import: "default",
   eager: true,
@@ -24,77 +24,66 @@ interface Row {
   id: string;
   level: string;
   title: string;
-  lessons: { title: string; href: string }[];
+  pages: { title: string; href: string; number: string }[];
 }
 
 const rows = new Map<string, Row>();
-const attr = (tag: string, name: string) => new RegExp(`${name}="([^"]*)"`).exec(tag)?.[1];
+const attr = (tag: string, name: string) => new RegExp(`\\b${name}="([^"]*)"`).exec(tag)?.[1];
 
 for (const [path, source] of Object.entries(sources)) {
-  const id = path.replace(/^.*content\/docs\//, "").replace(/\.mdx$/, "");
-  const lesson = lessons.find((l) => l.id === id);
-  if (!lesson) continue;
+  const topic = findTopic(path.replace(/^.*content\/docs\//, "").replace(/\.mdx$/, ""));
+  if (!topic) continue;
   for (const [tag] of source.matchAll(/<Rule\s[^>]*>/g)) {
     if (attr(tag, "guide") !== guideId) continue;
     const ruleId = attr(tag, "id");
     if (!ruleId) continue;
-    const row = rows.get(ruleId) ?? {
-      id: ruleId,
-      level: attr(tag, "level") ?? "",
-      title: attr(tag, "title") ?? "",
-      lessons: [],
-    };
-    if (!row.lessons.some((l) => l.title === lesson.title)) {
-      row.lessons.push({ title: lesson.title, href: `${base}/${lesson.id}/` });
+    const row = rows.get(ruleId) ?? { id: ruleId, level: attr(tag, "level") ?? "", title: attr(tag, "title") ?? "", pages: [] };
+    if (!row.pages.some((p) => p.number === topic.number)) {
+      row.pages.push({ title: topic.title, number: topic.number, href: `${base}/${topic.id}/` });
     }
     rows.set(ruleId, row);
   }
 }
 
 const sorted = [...rows.values()].sort((a, b) => Number(a.id) - Number(b.id));
-const levelClass = (level: string) =>
-  level.startsWith("MUST") ? "must" : level.startsWith("SHOULD") ? "should" : "may";
+const levelClass = (level: string) => (level.startsWith("MUST") ? "must" : level.startsWith("SHOULD") ? "should" : "may");
 ---
 
-<p class="dojo-rule-index__count">
-  <b>{sorted.length}</b> {guide?.short} rules are covered across the course.
-</p>
-<div class="dojo-rule-index">
-  <table>
-    <thead>
-      <tr>
-        <th>Rule</th>
-        <th>Level</th>
-        <th>Guideline</th>
-        <th>Where you learn it</th>
-      </tr>
-    </thead>
-    <tbody>
-      {
-        sorted.map((row) => (
-          <tr>
-            <td>
-              <a href={guide?.ruleUrl(row.id)} target="_blank" rel="noopener">
-                #{row.id}
-              </a>
-            </td>
-            <td>
-              <span class={`dojo-rule__level dojo-rule__level--${levelClass(row.level)}`}>
-                {row.level}
-              </span>
-            </td>
-            <td>{row.title}</td>
-            <td>
-              {row.lessons.map((l, i) => (
-                <>
-                  {i > 0 && ", "}
-                  <a href={l.href}>{l.title}</a>
-                </>
-              ))}
-            </td>
-          </tr>
-        ))
-      }
-    </tbody>
-  </table>
-</div>
+<p class="fg-index-count">{sorted.length} {guide.short} rules are cited in the Guide.</p>
+<table class="fg-rule-index">
+  <thead>
+    <tr>
+      <th>Rule</th>
+      <th>Level</th>
+      <th>Title</th>
+      <th>Discussed in</th>
+    </tr>
+  </thead>
+  <tbody>
+    {
+      sorted.map((row) => (
+        <tr id={`${guideId}-${row.id}`}>
+          <td>
+            <a href={guide.ruleUrl(row.id)} rel="noopener">
+              #{row.id}
+            </a>
+          </td>
+          <td>
+            <span class={`fg-rule__level fg-rule__level--${levelClass(row.level)}`}>{row.level}</span>
+          </td>
+          <td>{row.title}</td>
+          <td>
+            {row.pages.map((p, i) => (
+              <>
+                {i > 0 && ", "}
+                <a href={p.href}>
+                  {p.number} {p.title}
+                </a>
+              </>
+            ))}
+          </td>
+        </tr>
+      ))
+    }
+  </tbody>
+</table>

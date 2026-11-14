@@ -1,0 +1,102 @@
+---
+/** Home page body: section index, recommended start, reference links, recent changes. */
+import changelog from "../../CHANGELOG.md?raw";
+import { findTopic, guide } from "../data/guide";
+
+const base = import.meta.env.BASE_URL.replace(/\/+$/, "");
+const href = (path: string) => `${base}${path}`;
+
+const startWith = ["foundations/principles", "http/methods", "reliability/idempotency", "evolution/compatibility"].map(
+  (id) => findTopic(id)!,
+);
+
+const reference = [
+  { label: "Status codes", path: "/reference/status-codes/" },
+  { label: "Headers", path: "/reference/headers/" },
+  { label: "Design review checklist", path: "/reference/checklist/" },
+  { label: "Glossary", path: "/reference/glossary/" },
+  { label: "RFC index", path: "/reference/rfcs/" },
+];
+
+// Last three dated bullets from CHANGELOG.md
+const recent: { date: string; text: string }[] = [];
+let date = "";
+for (const line of changelog.split("\n")) {
+  const heading = /^## (\d{4}-\d{2}-\d{2})/.exec(line);
+  if (heading) date = heading[1];
+  else if (date && line.startsWith("- ") && recent.length < 3) recent.push({ date, text: line.slice(2) });
+}
+---
+
+<div class="fg-home not-content">
+  <section aria-labelledby="home-guide">
+    <h2 id="home-guide" class="fg-home__h">The Guide</h2>
+    <div class="fg-home__sections">
+      {
+        guide.map((section, i) => (
+          <div class="fg-home__section">
+            <h3>
+              <a href={href(`/${section.slug}/${section.topics[0].slug}/`)}>
+                <span class="fg-home__n">{i + 1}</span>
+                {section.title}
+              </a>
+            </h3>
+            <ul>
+              {section.topics.map((t) => (
+                <li>
+                  <a href={href(`/${section.slug}/${t.slug}/`)}>{t.title}</a>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))
+      }
+    </div>
+  </section>
+
+  <div class="fg-home__row">
+    <section aria-labelledby="home-start">
+      <h2 id="home-start" class="fg-home__h">Start with</h2>
+      <ol class="fg-home__list">
+        {
+          startWith.map((t) => (
+            <li>
+              <a href={href(`/${t.id}/`)}>
+                {t.number} {t.title}
+              </a>
+              <span>{t.summary}</span>
+            </li>
+          ))
+        }
+      </ol>
+    </section>
+    <section aria-labelledby="home-ref">
+      <h2 id="home-ref" class="fg-home__h">Reference</h2>
+      <ul class="fg-home__list">
+        {
+          reference.map((r) => (
+            <li>
+              <a href={href(r.path)}>{r.label}</a>
+            </li>
+          ))
+        }
+      </ul>
+    </section>
+    <section aria-labelledby="home-recent">
+      <h2 id="home-recent" class="fg-home__h">Recently updated</h2>
+      <ul class="fg-home__list fg-home__recent">
+        {
+          recent.map((r) => (
+            <li>
+              <time datetime={r.date}>{r.date}</time>
+              <span>{r.text}</span>
+            </li>
+          ))
+        }
+      </ul>
+      <p class="fg-home__more">
+        <a href={href("/about/changelog/")}>Full changelog</a>
+      </p>
+    </section>
+  </div>
+</div>

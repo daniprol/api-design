@@ -1,0 +1,38 @@
+---
+/**
+ * A sourced side note, at most 90 words, ending on the design consequence.
+ *
+ *   <Note kind="incident" title="Google Web Accelerator" year="2005" source="https://…">…</Note>
+ */
+type Kind = "incident" | "history" | "practice" | "curiosity" | "aside";
+
+interface Props {
+  kind?: Kind;
+  title?: string;
+  year?: string | number;
+  /** URL of the primary source. Required: notes are never unsourced. */
+  source: string;
+}
+
+const labels: Record<Kind, string> = {
+  incident: "Incident",
+  history: "History",
+  practice: "In practice",
+  curiosity: "Curiosity",
+  aside: "Aside",
+};
+
+const { kind = "aside", title, year, source } = Astro.props;
+if (!source) throw new Error(`Note "${title ?? kind}" needs a source`);
+---
+
+<aside class="fg-note" aria-label={labels[kind]}>
+  <p class="fg-note__head">
+    <span class="fg-label">{labels[kind]}{year && <> · {year}</>}</span>
+    {title && <span class="fg-note__title">{title}</span>}
+  </p>
+  <div class="fg-note__body">
+    <slot />
+    <p class="fg-note__source"><a href={source} rel="noopener">Source ↗</a></p>
+  </div>
+</aside>

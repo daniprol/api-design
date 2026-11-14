@@ -1,0 +1,281 @@
+---
+title: Methods
+description: Method semantics are a contract with software you never see. Pick methods for their safety and idempotency guarantees, not for how the verb reads.
+sources:
+  - label: RFC 9110 §9
+    title: "RFC 9110: HTTP Semantics, §9 Methods"
+    url: https://www.rfc-editor.org/rfc/rfc9110#section-9
+    accessed: 2026-11
+  - label: RFC 5789
+    title: "RFC 5789: PATCH Method for HTTP"
+    url: https://www.rfc-editor.org/rfc/rfc5789
+    accessed: 2026-11
+  - label: RFC 7396
+    title: "RFC 7396: JSON Merge Patch"
+    url: https://www.rfc-editor.org/rfc/rfc7396
+    accessed: 2026-11
+  - label: RFC 6902
+    title: "RFC 6902: JavaScript Object Notation (JSON) Patch"
+    url: https://www.rfc-editor.org/rfc/rfc6902
+    accessed: 2026-11
+  - label: RFC 10008
+    title: "RFC 10008: The HTTP QUERY Method (2026)"
+    url: https://www.rfc-editor.org/rfc/rfc10008
+    accessed: 2026-11
+  - label: 37signals, 2005
+    title: "37signals: Google Web Accelerator: Hey, not so fast (6 May 2005)"
+    url: https://signalvnoise.com/archives2/google_web_accelerator_hey_not_so_fast_an_alert_for_web_app_designers
+    accessed: 2026-11
+related:
+  - reliability/idempotency
+  - reliability/concurrency
+  - collections/filtering
+  - http/status-codes
+---
+
+import {
+  InBrief,
+  Note,
+  Compare,
+  Prefer,
+  Avoid,
+  Rule,
+  RuleGroup,
+  SelfCheck,
+  Question,
+  WorkedProblem,
+  Solution,
+  Status,
+  Tabs,
+  TabItem,
+} from "@components/kit";
+
+<InBrief>
+
+- Never change state behind `GET` or `HEAD`. Prefetchers, link unfurlers and crawlers will call them.
+- Use `PATCH` with JSON Merge Patch for updates; offer `PUT` only where clients really hold the whole resource.
+- Treat every `POST` as a retry hazard and give it an idempotency key.
+- For queries too large for a URL, use `POST` to a search resource today, and plan for `QUERY` (RFC 10008, 2026) as your infrastructure learns it.
+
+</InBrief>
+
+Method semantics are a contract with intermediaries you don't control: caches, prefetchers, retry middleware, the link preview in a chat app. None of them read your documentation. They read the method. The decisions that still cause bugs in mature APIs are `PUT` versus `PATCH`, which patch format to accept, when `POST` responses are cacheable, and what to do when a query doesn't fit in a URL.
+
+## Safety and idempotency are the only properties that matter
+
+A **safe** method is a read: the client doesn't request a state change, so any software may issue it speculatively. An **idempotent** method has the same intended effect whether it arrives once or five times, so any software may retry it after a dropped connection. RFC 9110 defines both, and generic HTTP clients, proxies and service meshes act on them without asking you.
+
+| Method          | Safe | Idempotent | Cacheable by default                                |
+| --------------- | ---- | ---------- | --------------------------------------------------- |
+| `GET`, `HEAD`   | yes  | yes        | yes                                                 |
+| `OPTIONS`       | yes  | yes        | no                                                  |
+| `PUT`, `DELETE` | no   | yes        | no                                                  |
+| `POST`          | no   | no         | only with explicit freshness and `Content-Location` |
+| `PATCH`         | no   | no         | no                                                  |
+| `QUERY`         | yes  | yes        | yes, keyed on the body                              |
+
+Idempotent describes the effect on the server, not the response. A second `DELETE /orders/ord_42` may return <Status code={404} /> where the first returned <Status code={204} />; the order is gone either way, so the contract holds.
+
+<Note kind="incident" title="Google Web Accelerator" year="2005" source="https://signalvnoise.com/archives2/google_web_accelerator_hey_not_so_fast_an_alert_for_web_app_designers">
+
+Google Web Accelerator prefetched the links on pages its users visited, which the spec permits because `GET` is safe. Web apps that deleted records through plain links lost data as users browsed; 37signals published a warning within days. Safety is assumed by software you never see, so any state change behind `GET` is a latent bug, including one-click unsubscribe links.
+
+</Note>
+
+## Prefer PATCH with JSON Merge Patch for updates
+
+`PUT` replaces the target's state with the representation in the body. Anything the client omits is gone. That suits resources clients own completely, such as a configuration document or a file, and fails badly for resources that grow fields: an old client that `PUT`s a customer without the `phone` field it has never heard of erases the phone number.
+
+`PATCH` sends only the change. The method is generic, so the media type decides what the body means:
+
+- **JSON Merge Patch** (`application/merge-patch+json`, RFC 7396) is a partial document. Present fields are set, `null` removes a field, and absent fields are untouched. Clients can write it without a library. It can't express "append to this array" or "set this field to `null`", which is why APIs that use it avoid nullable fields.
+- **JSON Patch** (`application/json-patch+json`, RFC 6902) is a list of operations (`add`, `remove`, `replace`, `move`, `copy`, `test`) addressed by JSON Pointer. It handles array edits and has a built-in precondition (`test`), at the cost of being harder to validate and authorise per field.
+
+Start with Merge Patch. Add JSON Patch only for a resource with large arrays that clients edit in place.
+
+```http
+PATCH /customers/cus_7 HTTP/1.1
+Content-Type: application/merge-patch+json
+If-Match: "v12"
+
+{ "email": "ada@example.com", "nickname": null }
+```
+
+A Merge Patch is idempotent in practice even though `PATCH` isn't by definition: applying the same document twice yields the same state. The `If-Match` header guards against a different problem, two clients editing at once (see [Concurrency control](/reliability/concurrency/)).
+
+_Assumes:_ FastAPI with Pydantic v2, Django REST Framework 3.15, Hono 4 with Zod.
+
+<Tabs syncKey="stack">
+<TabItem label="FastAPI">
+
+```python
+class CustomerPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = None
+    email: EmailStr | None = None
+    nickname: str | None = None
+
+@app.patch("/customers/{customer_id}")
+def patch_customer(customer_id: str, patch: CustomerPatch) -> Customer:
+    customer = customers.get_or_404(customer_id)
+    # exclude_unset separates "absent" (untouched) from "null" (remove)
+    changes = patch.model_dump(exclude_unset=True)
+    return customers.save(customer.model_copy(update=changes))
+```
+
+</TabItem>
+<TabItem label="Django">
+
+```python
+class CustomerViewSet(viewsets.ModelViewSet):
+    queryset = Customer.objects.all()
+    serializer_class = CustomerSerializer
+    # PATCH maps to partial_update(): serializer(partial=True) validates only sent fields.
+    # Drop PUT entirely if clients never hold the full resource:
+    http_method_names = ["get", "post", "patch", "delete", "head", "options"]
+```
+
+</TabItem>
+<TabItem label="Hono">
+
+```ts
+const CustomerPatch = z
+  .object({ name: z.string(), email: z.string().email(), nickname: z.string().nullable() })
+  .partial()
+  .strict();
+
+app.patch("/customers/:id", zValidator("json", CustomerPatch), async (c) => {
+  const current = await customers.get(c.req.param("id"));
+  if (!current) return c.notFound();
+  return c.json(await customers.save({ ...current, ...c.req.valid("json") }));
+});
+```
+
+</TabItem>
+</Tabs>
+
+## Treat every POST as a retry hazard
+
+`POST` means "process this according to the resource's own semantics". Its main use is creating a subordinate resource whose ID the server assigns, answered with <Status code={201} /> and a `Location` header. Because it isn't idempotent, a timeout leaves the client unable to tell whether the order exists. Generic retry middleware won't retry it, and your client developers will, by hand, at the worst moment. The fix is an `Idempotency-Key` header, covered in [Idempotency and retries](/reliability/idempotency/).
+
+Two details that rarely get attention:
+
+- A `POST` response is cacheable only when it carries explicit freshness information and a `Content-Location` equal to the request URI (RFC 9110 §9.3.3). Almost no shared cache implements this, so don't design around it.
+- `POST` is also the honest method for operations that aren't CRUD: `POST /orders/ord_42/cancellation` creates a cancellation. How to model those is in [Resources and actions](/modelling/resources/).
+
+<Compare>
+<Prefer>
+
+```http
+GET  /orders?status=shipped
+POST /orders/ord_42/cancellation
+POST /orders/search
+```
+
+</Prefer>
+<Avoid>
+
+```http
+GET /orders/ord_42/delete
+GET /newsletter/unsubscribe?email=…
+GET /orders  (with a JSON body)
+```
+
+</Avoid>
+</Compare>
+
+## When a query doesn't fit in a URL, POST to a search resource
+
+RFC 9110 gives a body on `GET` no defined semantics, and enough proxies, CDNs and client libraries strip or reject it that it isn't usable on the public internet. The established workaround is `POST /orders/search` with the query in the body. It works everywhere, but you lose what `GET` gave you: the request is no longer safe, idempotent or cacheable as far as intermediaries know.
+
+`QUERY` is the protocol's answer. Published as RFC 10008 in June 2026, it defines a method that is safe and idempotent like `GET` but carries a body like `POST`, with caches keying on the body. Server frameworks can accept it today because they route on arbitrary method strings, but browser `fetch` CORS preflights, API gateways and many proxies still need to learn it. Design search endpoints so that moving from `POST /orders/search` to `QUERY /orders` later is a routing change, not a redesign: same body schema, no side effects.
+
+<Note kind="history" title="PATCH, then and now" year="2010" source="https://www.rfc-editor.org/rfc/rfc5789">
+
+`PATCH` was listed in RFC 2068, the first HTTP/1.1 spec (1997), dropped from RFC 2616 in 1999, and returned as RFC 5789 in 2010. For eleven years, partial updates went through `POST` and overloaded `PUT`, which is why so many older APIs still treat `PUT` as a merge. Check what a `PUT` actually does before assuming it replaces.
+
+</Note>
+
+<RuleGroup>
+
+<Rule guide="zalando" id="148" level="MUST" title="Use HTTP methods correctly" />
+<Rule guide="zalando" id="149" level="MUST" title="Fulfill common method properties" />
+<Rule
+  guide="zalando"
+  id="229"
+  level="SHOULD"
+  title="Consider to design POST and PATCH idempotent"
+/>
+
+</RuleGroup>
+
+<WorkedProblem kind="Review" title="An email preference endpoint">
+
+A marketing email contains this link, and a security scanner at a customer's company opens every link in incoming mail to check it:
+
+```http
+GET /customers/cus_7/subscriptions/newsletter/unsubscribe?token=k3j…
+```
+
+What goes wrong, and how would you change the endpoint without making the user's job harder?
+
+<Solution>
+
+The scanner unsubscribes users who never clicked. Any state change behind `GET` will be triggered by software that only wanted to look.
+
+Make the link land on a page that confirms the action with a `POST` (`DELETE /customers/cus_7/subscriptions/newsletter` from your own frontend is fine too). For mail clients that support it, add RFC 8058 one-click unsubscribe: a `List-Unsubscribe-Post: List-Unsubscribe=One-Click` header tells the client to send a `POST`, which scanners don't do.
+
+**Alternatives.** Keeping `GET` and trying to detect scanners by user agent is a losing game; they deliberately look like browsers.
+
+</Solution>
+</WorkedProblem>
+
+<SelfCheck>
+
+<Question
+  q='A client sends <code>PUT /profiles/7</code> with only <code>{"nickname": "ada"}</code>. Under RFC 9110 semantics, what happens to the stored <code>bio</code>?'
+  answer={1}
+  options={[
+    {
+      text: "It stays as it was, because it wasn't sent.",
+      why: "That's merge behaviour, which is what <code>PATCH</code> with Merge Patch gives you. Many older APIs implement <code>PUT</code> this way, which is non-standard.",
+    },
+    {
+      text: "It's removed or reset to its default.",
+      why: "<code>PUT</code> replaces the target's state with the enclosed representation. Omitted fields are gone.",
+    },
+    {
+      text: "The server must reject the request with 422.",
+      why: "A server may reject an incomplete representation, but nothing requires it to.",
+    },
+    {
+      text: "It depends on whether the client sent <code>If-Match</code>.",
+      why: "<code>If-Match</code> decides whether the request applies at all, not how it applies.",
+    },
+  ]}
+/>
+
+<Question
+  q="Which change lets intermediaries treat a complex search exactly like a <code>GET</code>?"
+  answer={2}
+  options={[
+    {
+      text: "Send the query as a JSON body on <code>GET</code>.",
+      why: "A body on <code>GET</code> has no defined semantics and is dropped or rejected by many proxies and libraries.",
+    },
+    {
+      text: "<code>POST /orders/search</code> with <code>Cache-Control: public</code>.",
+      why: "This works for clients, but caches won't store <code>POST</code> responses this way and retry middleware won't replay them.",
+    },
+    {
+      text: "Use the <code>QUERY</code> method.",
+      why: "<code>QUERY</code> is defined as safe and idempotent with a body, so caches and retry logic can treat it like <code>GET</code>, once the infrastructure in between supports it.",
+    },
+    {
+      text: "Base64-encode the body into a query parameter.",
+      why: "It is still a <code>GET</code>, but you hit URL length limits (often around 8 KB) and the URL becomes unreadable in logs.",
+    },
+  ]}
+/>
+
+</SelfCheck>

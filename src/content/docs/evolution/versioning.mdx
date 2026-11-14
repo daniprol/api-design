@@ -1,0 +1,218 @@
+---
+title: Versioning
+description: Evolve compatibly so you rarely need a version. When a break is unavoidable, choose the versioning scheme whose cost you can carry, and keep each version's lifetime explicit.
+sources:
+  - label: Stripe, 2017
+    title: "Stripe: APIs as infrastructure: future-proofing Stripe with versioning (2017)"
+    url: https://stripe.com/blog/api-versioning
+    accessed: 2026-11
+  - label: AIP-185
+    title: "Google AIP-185: API Versioning"
+    url: https://google.aip.dev/185
+    accessed: 2026-11
+  - label: GitHub, 2022
+    title: "GitHub Blog: To infinity and beyond: enabling the future of GitHub's REST API with API versioning (2022)"
+    url: https://github.blog/developer-skills/github/to-infinity-and-beyond-enabling-the-future-of-githubs-rest-api-with-api-versioning/
+    accessed: 2026-11
+  - label: RFC 6838 §3
+    title: "RFC 6838: Media Type Specifications and Registration Procedures, §3 Registration Trees"
+    url: https://www.rfc-editor.org/rfc/rfc6838#section-3
+    accessed: 2026-11
+  - label: Zalando #114
+    title: "Zalando RESTful API Guidelines: Use media type versioning"
+    url: https://opensource.zalando.com/restful-api-guidelines/#114
+    accessed: 2026-11
+related:
+  - evolution/compatibility
+  - evolution/deprecation
+  - http/headers
+  - foundations/principles
+---
+
+import {
+  InBrief,
+  Note,
+  Compare,
+  Prefer,
+  Avoid,
+  Rule,
+  RuleGroup,
+  SelfCheck,
+  Question,
+  GuidesDiffer,
+  Tabs,
+  TabItem,
+} from "@components/kit";
+
+<InBrief>
+
+- Treat a new version as a new API you'll run in parallel for years. Most changes should be additive and need no version at all.
+- Decide on day one where the version lives, because changing the scheme later is itself a breaking change.
+- URL majors (`/v1/`) are the most visible and coarsest; media-type versions are the most precise; date-pinned versions scale best and cost the most to build.
+- Use major versions or dates only. Never put minor or patch numbers in URLs or headers.
+- Publish each version's support window when you launch it, not when you retire it.
+
+</InBrief>
+
+Versioning is the topic where API designers argue loudest. Experienced teams mostly agree on the uncomfortable part: the best version is the one you never ship. Every version you publish is a second API you build, test, document, support and eventually retire. The strategy you pick decides how painful the rare unavoidable break will be.
+
+## Evolve compatibly first
+
+Following [Compatibility](/evolution/compatibility/) removes the need for most versions: add fields, add endpoints, add optional inputs, and make enums open-ended. Many large APIs go years between breaking changes. A breaking change should cost a deliberate decision, with a list of affected clients and a migration plan, not appear as a side effect of a refactoring.
+
+## Choose where the version lives by what you can afford
+
+<GuidesDiffer id="versioning" />
+
+| Scheme          | Example                                                       | Strengths                                                  | Costs                                                                                      |
+| --------------- | ------------------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| URL major       | `GET /v2/orders/ord_42`                                       | Visible in logs and browsers, trivial to route             | Versions the whole surface; one order has two URLs; links and stored IDs carry the version |
+| Media type      | `Accept: application/x.shop.order+json;version=2`             | Versions one representation; URLs stay stable              | Less visible; needs negotiation and `Vary: Accept`                                         |
+| Request header  | `Api-Version: 2`                                              | Stable URLs, simple to send                                | Invisible in URLs; caches need `Vary`                                                      |
+| Query parameter | `?api-version=2024-05-01`                                     | Explicit on every request, easy to test                    | Pollutes cache keys and URLs                                                               |
+| Date-pinned     | `Stripe-Version: 2024-06-20`, defaulting to the account's pin | Per-client pinning; many small breaks without forking code | Requires a transformation layer per change, maintained for years                           |
+
+None is wrong. What matters is that the cost profile fits your organisation. A team of five can't run Stripe's model, and a platform with ten thousand integrators can't run on URL majors and annual rewrites.
+
+Use the media type tree correctly if you version that way: `vnd.` is the vendor tree for types registered with IANA (`application/vnd.github+json`), and `x.` is for unregistered, private types (`application/x.shop.order+json`).
+
+_Assumes:_ two representations of an order, `OrderV1` and `OrderV2`, built from the same domain object.
+
+<Tabs syncKey="stack">
+<TabItem label="FastAPI">
+
+```python
+MEDIA = re.compile(r"application/x\.shop\.order\+json;\s*version=(\d+)")
+
+@app.get("/orders/{order_id}")
+def get_order(order_id: str, accept: Annotated[str, Header()] = "application/json"):
+    order = orders.get_or_404(order_id)
+    version = int(m.group(1)) if (m := MEDIA.search(accept)) else 1
+    body = (OrderV2 if version == 2 else OrderV1).from_domain(order)
+    return JSONResponse(body.model_dump(mode="json"), headers={"Vary": "Accept"},
+                        media_type=f"application/x.shop.order+json;version={version}")
+```
+
+</TabItem>
+<TabItem label="Django">
+
+```python
+# settings.py
+REST_FRAMEWORK = {
+    "DEFAULT_VERSIONING_CLASS": "rest_framework.versioning.AcceptHeaderVersioning",
+    "DEFAULT_VERSION": "1",
+    "ALLOWED_VERSIONS": ["1", "2"],
+}
+
+class OrderViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = Order.objects.all()
+
+    def get_serializer_class(self):  # Accept: application/json; version=2
+        return OrderV2Serializer if self.request.version == "2" else OrderV1Serializer
+```
+
+</TabItem>
+<TabItem label="Hono">
+
+```ts
+const versionOf = (accept = "") =>
+  Number(/x\.shop\.order\+json;\s*version=(\d+)/.exec(accept)?.[1] ?? 1);
+
+app.get("/orders/:id", async (c) => {
+  const order = await orders.get(c.req.param("id"));
+  if (!order) return problem(c, 404, "order-not-found");
+  const version = versionOf(c.req.header("Accept"));
+  c.header("Vary", "Accept");
+  c.header("Content-Type", `application/x.shop.order+json;version=${version}`);
+  return c.body(JSON.stringify(version === 2 ? toV2(order) : toV1(order)));
+});
+```
+
+</TabItem>
+</Tabs>
+
+## Keep versions major-only, and give each one an end date
+
+<Compare caption="The preferred lines are three alternative schemes. An API uses one of them, not all three.">
+<Prefer>
+
+```http
+GET /v2/orders/ord_42
+Accept: application/x.shop.order+json;version=2
+Stripe-Version: 2024-06-20
+```
+
+</Prefer>
+<Avoid>
+
+```http
+GET /v1.4/orders
+GET /api/v2-beta-new/orders
+GET /orders?version=latest
+```
+
+</Avoid>
+</Compare>
+
+Minor and patch numbers describe compatible changes, which by definition need no client action, so they don't belong in a request. `latest` defeats the point of versioning: a client that asks for it gets broken by the next release. Pre-release channels (`v1beta1` in Google's scheme) are fine if their weaker stability promise is explicit.
+
+When you launch a version, publish how long the previous one will be supported, for example "v1 is supported until 12 months after v2 reaches general availability". The [deprecation](/evolution/deprecation/) process then runs on a known clock.
+
+<Note kind="practice" title="Stripe's version change modules" year="2017" source="https://stripe.com/blog/api-versioning">
+
+Stripe pins each account to the API version current at its first request, identified by a date. Every breaking change ships as a small, self-contained "version change" module that transforms responses backwards. A request pinned to an old version passes through each module between the current version and its pin. The core code only knows the latest shape, and by 2017 almost a hundred breaking changes stayed supported this way.
+
+</Note>
+
+<Note kind="practice" title="GitHub switches schemes" year="2022" source="https://github.blog/developer-skills/github/to-infinity-and-beyond-enabling-the-future-of-githubs-rest-api-with-api-versioning/">
+
+GitHub's REST API used media types for years, `application/vnd.github.v3+json` plus "preview" media types for experiments. In 2022 it moved to date-based versions in a header, `X-GitHub-Api-Version: 2022-11-28`, with a 24-month support promise for each. Changing the scheme took a long transition with both mechanisms running side by side. That's why choosing well on day one matters.
+
+</Note>
+
+<RuleGroup>
+
+<Rule guide="zalando" id="113" level="SHOULD" title="Avoid versioning" />
+<Rule guide="zalando" id="114" level="MUST" title="Use media type versioning" />
+<Rule guide="zalando" id="115" level="MUST" title="Not use URL versioning" />
+<Rule guide="zalando" id="116" level="MUST" title="Use semantic versioning" />
+
+</RuleGroup>
+
+<SelfCheck>
+
+<Question
+  q="What's the main cost of <code>/v2/</code> in the URL compared with media type versioning?"
+  answer={1}
+  options={[
+    {
+      text: "Browsers can't call it.",
+      why: "They can; visibility in browsers is one of its strengths.",
+    },
+    {
+      text: "It versions the whole API, giving every resource a second URL even if only one representation changed.",
+      why: "URL versions are coarse: one break creates a whole new surface, and stored links carry the version.",
+    },
+    { text: "HTTP doesn't allow it.", why: "Paths are opaque to HTTP; anything goes." },
+    { text: "It disables caching.", why: "Each URL caches fine." },
+  ]}
+/>
+
+<Question
+  q="A client pins <code>Api-Version: latest</code>. What's the problem?"
+  answer={3}
+  options={[
+    {
+      text: "None: it always gets the newest features.",
+      why: "And the newest breaking changes, without warning.",
+    },
+    { text: "Caches can't store the response.", why: "They can, with <code>Vary</code>." },
+    { text: "It's slower.", why: "Performance is unaffected." },
+    {
+      text: "The client opts out of the protection versioning exists to provide, so the next breaking release breaks it.",
+      why: "Versioning works only if clients pin a specific version.",
+    },
+  ]}
+/>
+
+</SelfCheck>
