@@ -1,0 +1,12 @@
+---
+/** Two columns, <Prefer> then <Avoid>; stacked on narrow screens. */
+interface Props {
+  caption?: string;
+}
+const { caption } = Astro.props;
+---
+
+<figure class="fg-compare">
+  <div class="fg-compare__cols"><slot /></div>
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>

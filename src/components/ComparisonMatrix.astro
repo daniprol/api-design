@@ -1,0 +1,39 @@
+---
+/** Matrix of every "Where guides differ" entry: questions by guideline. */
+import { differences } from "../data/differences";
+import { findTopic } from "../data/guide";
+import { marked } from "../scripts/inline-md";
+
+const base = import.meta.env.BASE_URL.replace(/\/+$/, "");
+const who = [...new Set(differences.flatMap((d) => d.positions.map((p) => p.who)))];
+---
+
+<div class="fg-matrix not-content">
+  <table>
+    <thead>
+      <tr>
+        <th scope="col">Decision</th>
+        {who.map((w) => <th scope="col">{w}</th>)}
+      </tr>
+    </thead>
+    <tbody>
+      {
+        differences.map((d) => {
+          const topic = findTopic(d.topic);
+          return (
+            <tr>
+              <th scope="row">
+                <a href={`${base}/${d.topic}/`}>{d.question}</a>
+                {topic && <span class="fg-matrix__topic">{topic.number}</span>}
+              </th>
+              {who.map((w) => {
+                const p = d.positions.find((x) => x.who === w);
+                return <td>{p ? <a href={p.url} rel="noopener" set:html={marked(p.decision)} /> : "—"}</td>;
+              })}
+            </tr>
+          );
+        })
+      }
+    </tbody>
+  </table>
+</div>

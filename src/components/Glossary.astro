@@ -1,0 +1,28 @@
+---
+import { glossary } from "../data/glossary";
+import { findTopic } from "../data/guide";
+import { marked } from "../scripts/inline-md";
+
+const base = import.meta.env.BASE_URL.replace(/\/+$/, "");
+const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+const terms = [...glossary].sort((a, b) => a.term.localeCompare(b.term));
+const label = (path: string) => findTopic(path)?.title ?? "Read more";
+---
+
+<dl class="fg-glossary">
+  {
+    terms.map((t) => (
+      <>
+        <dt id={slug(t.term)}>
+          {t.term}
+          <a class="fg-anchor" href={`#${slug(t.term)}`} aria-label={`Link to ${t.term}`}>
+            #
+          </a>
+        </dt>
+        <dd>
+          <span set:html={marked(t.definition)} /> See <a href={`${base}${t.see}`}>{label(t.see)}</a>.
+        </dd>
+      </>
+    ))
+  }
+</dl>

@@ -1,0 +1,14 @@
+---
+/** A numbered figure with a hairline frame and caption. */
+interface Props {
+  n: number;
+  caption: string;
+  id?: string;
+}
+const { n, caption, id } = Astro.props;
+---
+
+<figure class="fg-figure" id={id}>
+  <div class="fg-figure__body"><slot /></div>
+  <figcaption><span class="fg-figure__n">Figure {n}.</span> {caption}</figcaption>
+</figure>

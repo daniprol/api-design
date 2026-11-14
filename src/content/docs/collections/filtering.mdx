@@ -1,0 +1,296 @@
+---
+title: Filtering and sorting
+description: Use a small conventional vocabulary of query parameters, name filters after fields, allow-list what can be sorted, and move complex or sensitive queries into a request body.
+sources:
+  - label: Zalando #137
+    title: "Zalando RESTful API Guidelines: Stick to conventional query parameters"
+    url: https://opensource.zalando.com/restful-api-guidelines/#137
+    accessed: 2026-11
+  - label: OpenAPI 3.1 §4.8.12.4
+    title: "OpenAPI Specification 3.1.1: Style values (form, explode)"
+    url: https://spec.openapis.org/oas/v3.1.1.html#style-values
+    accessed: 2026-11
+  - label: AIP-160
+    title: "Google AIP-160: Filtering"
+    url: https://google.aip.dev/160
+    accessed: 2026-11
+  - label: EFF, 2015
+    title: "EFF: HealthCare.gov Sends Personal Data to Dozens of Tracking Websites (20 January 2015)"
+    url: https://www.eff.org/deeplinks/2015/01/healthcare.gov-sends-personal-data
+    accessed: 2026-11
+related:
+  - collections/pagination
+  - http/methods
+  - collections/caching
+  - security/limits
+---
+
+import {
+  InBrief,
+  Note,
+  Compare,
+  Prefer,
+  Avoid,
+  Rule,
+  RuleGroup,
+  SelfCheck,
+  Question,
+  Tabs,
+  TabItem,
+} from "@components/kit";
+
+<InBrief>
+
+- Use one vocabulary across the API: `q`, `sort`, `fields`, `embed`, `limit`, `cursor`, plus filters named after the field they filter.
+- Choose one multi-value format, either `?status=a,b` or `?status=a&status=b`, and use it everywhere.
+- Allow-list filterable and sortable fields, back them with indexes, and append a unique tiebreaker to every sort.
+- Move complex boolean queries, and any query on sensitive values, into `POST` on a search resource.
+- Document implicit filtering, such as "returns only the caller's orders".
+
+</InBrief>
+
+Once collections are paginated, the next request is always some version of "only the shipped orders from last week, newest first, just the IDs and totals". If every endpoint answers that with its own parameter names, every client reads every page of docs. With a small shared vocabulary, clients guess, and they guess right.
+
+## Use one small vocabulary everywhere
+
+| Parameter                                         | Meaning                              | Example                               |
+| ------------------------------------------------- | ------------------------------------ | ------------------------------------- |
+| `q`                                               | Free-text search                     | `?q=linen+shirt`                      |
+| `sort`                                            | Sort keys, `-` for descending        | `?sort=-created_at,id`                |
+| `fields`                                          | Return only these fields             | `?fields=id,status,total`             |
+| `embed`                                           | Inline related resources             | `?embed=customer,line_items`          |
+| `limit`                                           | Page size                            | `?limit=50`                           |
+| `cursor`                                          | Opaque position from a previous page | `?cursor=eyJj…`                       |
+| _field name_                                      | Exact-match filter                   | `?status=shipped&customer_id=cus_7`   |
+| _field_`_after` / `_before`, `min_`/`max_`_field_ | Ranges                               | `?created_after=2026-11-01T00:00:00Z` |
+
+<Compare>
+<Prefer>
+
+```http
+GET /orders?status=shipped&sort=-created_at&limit=20
+```
+
+</Prefer>
+<Avoid>
+
+```http
+GET /orders?filterBy=state&filterVal=2&orderDir=DESC&orderCol=ts&pgSz=20
+```
+
+A dialect every client has to learn.
+
+</Avoid>
+</Compare>
+
+## Pick one multi-value format
+
+For "any of these values", both forms are common:
+
+```http
+GET /orders?status=shipped,delivered            # OpenAPI style: form, explode: false
+GET /orders?status=shipped&status=delivered     # OpenAPI style: form, explode: true
+```
+
+Comma-separated is shorter and easier to type. Repeated parameters need no escaping when values themselves contain commas. Either is fine. Mixing them in one API is the mistake, and so is leaving the `explode` setting unspecified in the spec, because code generators then guess.
+
+`sort=-price,name` means price descending, then name ascending. Zalando also allows `+` for ascending, but a literal `+` in a query string decodes to a space, so clients have to send `%2B`. Leaving the prefix off for ascending avoids that.
+
+## Allow-list fields, and index what you allow
+
+Every filterable or sortable field is a query plan you have promised to keep fast. Allow-list them explicitly, return <code>422</code> with the allowed list for anything else, and make sure each one is covered by an index that also works with your pagination order. Append the primary key to every sort internally so [pagination](/collections/pagination/) stays stable.
+
+_Assumes:_ SQLAlchemy 2 for FastAPI, django-filter 24 for DRF, Zod for Hono.
+
+<Tabs syncKey="stack">
+<TabItem label="FastAPI">
+
+```python
+SORTABLE = {"created_at", "total", "id"}
+
+@app.get("/orders")
+def list_orders(
+    status: Annotated[str | None, Query(description="Comma-separated: shipped,delivered")] = None,
+    customer_id: str | None = None,
+    created_after: AwareDatetime | None = None,
+    sort: str = "-created_at",
+):
+    q = select(OrderRow)
+    if status:
+        q = q.where(OrderRow.status.in_(status.split(",")))
+    if customer_id:
+        q = q.where(OrderRow.customer_id == customer_id)
+    if created_after:
+        q = q.where(OrderRow.created_at > created_after)
+    for key in [*sort.split(","), "id"]:  # unique tiebreaker last
+        name = key.lstrip("-")
+        if name not in SORTABLE:
+            raise problem(422, "unsortable-field", field=name, sortable=sorted(SORTABLE))
+        col = getattr(OrderRow, name)
+        q = q.order_by(col.desc() if key.startswith("-") else col.asc())
+    ...
+```
+
+</TabItem>
+<TabItem label="Django">
+
+```python
+class CharInFilter(django_filters.BaseInFilter, django_filters.CharFilter):
+    pass
+
+class OrderFilter(django_filters.FilterSet):
+    status = CharInFilter(field_name="status")  # ?status=a,b
+    created_after = django_filters.IsoDateTimeFilter(field_name="created_at", lookup_expr="gt")
+
+    class Meta:
+        model = Order
+        fields = ["status", "customer_id", "created_after"]
+
+class OrderViewSet(viewsets.ReadOnlyModelViewSet):
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filterset_class = OrderFilter
+    search_fields = ["reference", "customer__email"]
+    ordering_fields = ["created_at", "total"]  # the allow-list
+    ordering = ["-created_at", "-id"]
+
+# settings.py: conventional names instead of DRF's search= and ordering=
+REST_FRAMEWORK = {"SEARCH_PARAM": "q", "ORDERING_PARAM": "sort"}
+```
+
+</TabItem>
+<TabItem label="Hono">
+
+```ts
+const SortKey = /^-?(created_at|total|id)$/;
+
+const OrderQuery = z.object({
+  status: z
+    .string()
+    .transform((s) => s.split(","))
+    .pipe(z.array(z.enum(["placed", "shipped", "delivered"])))
+    .optional(),
+  customer_id: z.string().optional(),
+  created_after: z.string().datetime({ offset: true }).optional(),
+  sort: z
+    .string()
+    .default("-created_at")
+    .refine((s) => s.split(",").every((k) => SortKey.test(k)), "unsortable field"),
+});
+
+app.get("/orders", zValidator("query", OrderQuery), async (c) => {
+  const q = c.req.valid("query");
+  const orderBy = [...q.sort.split(","), "id"].map((k) =>
+    k.startsWith("-") ? { [k.slice(1)]: "desc" } : { [k]: "asc" },
+  );
+  return c.json({ items: await orders.find({ ...q, orderBy }) });
+});
+```
+
+</TabItem>
+</Tabs>
+
+## Trim responses with fields and embed
+
+`fields` lets a mobile client ask for three properties instead of forty, and `embed` lets it inline related resources to save round trips. Both multiply the response shapes you must test and cache, so support them where measurements show they matter: large resources and chatty mobile screens. Unknown names should produce <code>422</code>, not be silently ignored, so typos are caught. Caching implications are covered in [Caching](/collections/caching/).
+
+## Move complex and sensitive queries into a body
+
+When a query needs nested AND/OR, long ID lists, or many ranges, the query string becomes unreadable, and some proxies cap URLs at a few kilobytes. Model the search as a resource:
+
+```http
+POST /orders/search
+Content-Type: application/json
+
+{
+  "filter": { "and": [
+    { "field": "status", "in": ["shipped", "delivered"] },
+    { "or": [ { "field": "total.amount", "gte": "100.00" }, { "field": "customer.tier", "eq": "gold" } ] }
+  ]},
+  "sort": ["-created_at"],
+  "limit": 50
+}
+```
+
+This gives up HTTP caching and safe-method retries, which is why simple queries stay on `GET`, and why the [`QUERY` method](/http/methods/) is worth watching. Google takes a different route with AIP-160: a single `filter` string in a small, specified expression language (`status = "shipped" AND total > 100`), which keeps `GET` at the cost of a parser on both sides.
+
+The same move applies to sensitive filters. URLs end up in access logs, proxy logs, browser history, APM tools and `Referer` headers. An email address or a national ID used as a filter belongs in a body.
+
+<Note kind="incident" title="HealthCare.gov" year="2015" source="https://www.eff.org/deeplinks/2015/01/healthcare.gov-sends-personal-data">
+
+The EFF found that HealthCare.gov was passing details such as age, income, ZIP code, smoking status and pregnancy to third-party analytics and advertising services, partly because those values sat in URLs that tracking scripts and `Referer` headers carried along. Treat every query string as something that will be logged and shared, because eventually it will be.
+
+</Note>
+
+## Document implicit filtering
+
+`GET /orders` returning only the caller's orders is normal. Leaving it undocumented means an admin and a customer calling the same URL see different results, and nobody can tell whether it's a bug. State the implicit scope in the endpoint description, and consider making it explicit for privileged callers (`?customer_id=…`).
+
+<RuleGroup>
+
+<Rule guide="zalando" id="137" level="MUST" title="Stick to conventional query parameters" />
+<Rule
+  guide="zalando"
+  id="154"
+  level="MUST"
+  title="Define collection format of header and query parameters"
+/>
+<Rule
+  guide="zalando"
+  id="236"
+  level="SHOULD"
+  title="Design simple query languages using query parameters"
+/>
+<Rule guide="zalando" id="237" level="SHOULD" title="Design complex query languages using JSON" />
+<Rule guide="zalando" id="226" level="MUST" title="Document implicit response filtering" />
+
+</RuleGroup>
+
+<SelfCheck>
+
+<Question
+  q="What does <code>?sort=-price,name</code> mean under these conventions?"
+  answer={1}
+  options={[
+    {
+      text: "Exclude price, sort by name.",
+      why: "The minus sign is a direction, not an exclusion.",
+    },
+    {
+      text: "Price descending, then name ascending.",
+      why: "Keys apply left to right; <code>-</code> means descending.",
+    },
+    {
+      text: "Price ascending, then name descending.",
+      why: "The prefix applies to the key it's attached to.",
+    },
+    {
+      text: "Invalid: only one sort key is allowed.",
+      why: "Multiple keys are the norm; they act as tiebreakers.",
+    },
+  ]}
+/>
+
+<Question
+  q="Support staff need to look up orders by customer email. Which design is safest?"
+  answer={2}
+  options={[
+    {
+      text: "<code>GET /orders?email=jane@example.com</code>",
+      why: "The email ends up in access logs, APM traces and possibly <code>Referer</code> headers.",
+    },
+    {
+      text: "<code>GET /orders?email=</code> with the value base64-encoded.",
+      why: "Encoding isn't protection; logs still contain a reversible value.",
+    },
+    {
+      text: "<code>POST /orders/search</code> with the email in the body.",
+      why: "Bodies are not logged by default, and the search resource can be scoped to support roles.",
+    },
+    {
+      text: "<code>GET /customers/jane@example.com/orders</code>",
+      why: "Same logging problem, and the email becomes a path identifier.",
+    },
+  ]}
+/>
+
+</SelfCheck>

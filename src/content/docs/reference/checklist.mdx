@@ -1,0 +1,76 @@
+---
+title: Review checklist
+description: The Guide condensed into a checklist for design reviews. Print it, paste it into a pull request template, or turn items into linter rules.
+---
+
+One line per decision, in the order a reviewer meets them. Each section links to the chapter with the reasoning. Items marked with a linter rule in your own setup can be dropped from human review.
+
+## Contract and ownership
+
+- [ ] The OpenAPI description is in the repository and generated or validated on every build. [Specs in CI](/evolution/specs-in-ci/)
+- [ ] `info` has a SemVer version, an owner, a stable API ID and an audience.
+- [ ] The spec was reviewed before implementation started. [Principles](/foundations/principles/)
+
+## Resources and URLs
+
+- [ ] Paths name things; methods name actions. No verbs in paths. [Resources and actions](/modelling/resources/)
+- [ ] State transitions with their own data or rules are resources (`/cancellation`), not writable status fields.
+- [ ] Plural collections, kebab-case path segments, snake_case query parameters. [URL design](/modelling/urls/)
+- [ ] No trailing slashes, file extensions or `/api` prefix; nesting stops at two or three levels.
+- [ ] IDs are opaque strings.
+
+## HTTP
+
+- [ ] `GET` and `HEAD` never change state. [Methods](/http/methods/)
+- [ ] `PUT` replaces, `PATCH` uses JSON Merge Patch, `POST` creates or runs a process.
+- [ ] `201` with `Location` on creation; `204` when there's nothing to return. [Status codes](/http/status-codes/)
+- [ ] The most specific status code; never an error inside a `200`.
+- [ ] Every error is `application/problem+json` with a stable `type`; validation errors are `422` with per-field details. [Errors](/http/errors/)
+- [ ] No stack traces, SQL or internal hostnames in responses; a trace ID instead.
+- [ ] Registered headers before custom ones; W3C Trace Context propagated. [Headers](/http/headers/)
+
+## Representations
+
+- [ ] One property casing everywhere; top-level responses are objects. [JSON conventions](/representations/json/)
+- [ ] Enum values are lowercase snake_case strings, documented as open-ended.
+- [ ] Absent and `null` mean the same thing; no nullable booleans; empty arrays, not `null`.
+- [ ] RFC 3339 timestamps with an offset, named `*_at`. [Data formats](/representations/data-formats/)
+- [ ] Money is a decimal string plus a currency; ISO codes for countries, currencies and languages.
+- [ ] Links are absolute URIs. [Links](/representations/links/)
+- [ ] Large files go through presigned or resumable uploads, not JSON. [Files](/representations/files/)
+
+## Collections
+
+- [ ] Every collection is paginated from the first release, with a default and maximum `limit`. [Pagination](/collections/pagination/)
+- [ ] Opaque cursors and a `next` link; total counts are opt-in.
+- [ ] Conventional filter and `sort` parameters; complex searches as a resource. [Filtering and sorting](/collections/filtering/)
+- [ ] Compression on; `ETag` and explicit `Cache-Control` on cacheable reads. [Caching](/collections/caching/)
+
+## Reliability
+
+- [ ] Every unsafe `POST` is idempotent through a natural key or an `Idempotency-Key`. [Idempotency](/reliability/idempotency/)
+- [ ] Concurrent writes are protected with `ETag` and `If-Match`, answering `412` or `428`. [Concurrency control](/reliability/concurrency/)
+- [ ] Slow work returns `202` and an operation resource; batches report per item. [Long-running operations](/reliability/long-running-operations/)
+
+## Security
+
+- [ ] Every operation declares its security scheme and scopes. [Auth](/security/auth/)
+- [ ] Every object access checks that this caller may see this object.
+- [ ] Input models list writable fields explicitly and reject unknown ones.
+- [ ] Page size, body size, array lengths and execution time are bounded. [Limits](/security/limits/)
+- [ ] Rate limits per client, `429` with `Retry-After`, and quotas in `RateLimit` headers.
+- [ ] Sensitive business flows have flow-level limits.
+
+## Evolution
+
+- [ ] The change is additive, or treated as a new API. [Compatibility](/evolution/compatibility/)
+- [ ] Breaking changes fail CI unless explicitly approved. [Specs in CI](/evolution/specs-in-ci/)
+- [ ] If versioned: major versions only, with a published support window. [Versioning](/evolution/versioning/)
+- [ ] Deprecations are in the spec and on the wire, with usage measured by client. [Deprecation](/evolution/deprecation/)
+
+## Events and webhooks
+
+- [ ] Event types are registered, owned and versioned, with `eid`, `event_type`, `occurred_at` and a schema version. [Event design](/events/event-design/)
+- [ ] Events are published through an outbox, partitioned by entity, with an ordering field.
+- [ ] Events carry identifiers, not personal data. [Consuming events](/events/consuming-events/)
+- [ ] Webhooks are signed over ID, timestamp and body, retried for days, and sent from workers that can't reach internal networks. [Webhooks](/events/webhooks/)

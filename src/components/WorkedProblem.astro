@@ -1,0 +1,19 @@
+---
+/**
+ * A collapsed exercise: "Design" (build something) or "Review" (find the bug).
+ * Put the prompt and starter code in the body and the answer in <Solution>.
+ */
+interface Props {
+  kind: "Design" | "Review";
+  title: string;
+}
+const { kind, title } = Astro.props;
+---
+
+<details class="fg-fold fg-problem">
+  <summary>
+    <span class="fg-fold__title">Worked problem · {kind}</span>
+    <span class="fg-fold__meta">{title}</span>
+  </summary>
+  <div class="fg-fold__body"><slot /></div>
+</details>

@@ -1,0 +1,300 @@
+---
+title: Data formats
+description: RFC 3339 timestamps in UTC, dates as dates, money as a decimal with its currency, identifiers as strings, and ISO codes for everything with a standard.
+sources:
+  - label: RFC 3339
+    title: "RFC 3339: Date and Time on the Internet: Timestamps"
+    url: https://www.rfc-editor.org/rfc/rfc3339
+    accessed: 2026-11
+  - label: RFC 9557
+    title: "RFC 9557: Date and Time on the Internet: Timestamps with Additional Information"
+    url: https://www.rfc-editor.org/rfc/rfc9557
+    accessed: 2026-11
+  - label: RFC 7493 §2.2
+    title: "RFC 7493: The I-JSON Message Format, §2.2 Numbers"
+    url: https://www.rfc-editor.org/rfc/rfc7493#section-2.2
+    accessed: 2026-11
+  - label: RFC 9562
+    title: "RFC 9562: Universally Unique IDentifiers (UUIDs), including UUIDv7"
+    url: https://www.rfc-editor.org/rfc/rfc9562
+    accessed: 2026-11
+  - label: X IDs
+    title: "X Developer Platform: X IDs (Snowflake and id_str)"
+    url: https://docs.x.com/fundamentals/x-ids
+    accessed: 2026-11
+  - label: ISO 4217
+    title: "ISO 4217: Currency codes"
+    url: https://www.iso.org/iso-4217-currency-codes.html
+    accessed: 2026-11
+related:
+  - representations/json
+  - modelling/urls
+  - http/headers
+  - events/event-design
+---
+
+import {
+  InBrief,
+  Note,
+  Compare,
+  Prefer,
+  Avoid,
+  Rule,
+  RuleGroup,
+  SelfCheck,
+  Question,
+  Tabs,
+  TabItem,
+} from "@components/kit";
+
+<InBrief>
+
+- Send instants as RFC 3339 strings in UTC (`2026-03-14T09:26:53Z`), and calendar dates as dates (`2026-03-20`), never as midnight timestamps.
+- Send money as a decimal amount with an ISO 4217 currency, always together. Never as a binary float.
+- Make identifiers strings, even when they are integers in your database. Integers above 2⁵³ don't survive JavaScript.
+- Use ISO 3166 country codes, BCP 47 language tags and ISO 8601 durations instead of inventing values.
+- Declare `format` for every number in the spec (`int32`, `int64`, `decimal`), so generators pick the right type.
+
+</InBrief>
+
+Every developer eventually loses a day to a time zone, a rounding error on an invoice, or an ID that changed when JavaScript touched it. The fix is never clever code. It's choosing the dull, standard formats that thousands of people have already debugged.
+
+## Send instants in UTC as RFC 3339, and dates as dates
+
+RFC 3339 is a strict profile of ISO 8601: `2026-03-14T09:26:53Z` or `2026-03-14T10:26:53+01:00`. Always include the offset, and prefer `Z`. A timestamp without an offset is ambiguous by construction, and every client will guess differently.
+
+<Compare caption="A birthday stored as midnight UTC shows the previous day for every user west of Greenwich.">
+<Prefer>
+
+```json
+{
+  "created_at": "2026-03-14T09:26:53Z",
+  "delivery_date": "2026-03-20",
+  "opens_at": { "time": "09:00", "time_zone": "Europe/Madrid" },
+  "return_window": "P14D"
+}
+```
+
+</Prefer>
+<Avoid>
+
+```json
+{
+  "created_at": "14/03/2026 10:26",
+  "updated": 1773480413,
+  "delivery_date": "2026-03-20T00:00:00"
+}
+```
+
+</Avoid>
+</Compare>
+
+- Suffix instants with `_at` (`created_at`, `shipped_at`) and calendar dates with `_date` (`birth_date`). The name then tells the client which parser to use.
+- Use the right type. A birthday, an invoice date or a delivery date is a calendar date with no time zone.
+- For a local time that must stay local, such as a shop opening at 09:00 Europe/Madrid regardless of DST, send the local time with an IANA zone name. RFC 9557 standardises the suffix form `2026-03-14T09:00:00+01:00[Europe/Madrid]`, which is also what JavaScript's Temporal API emits.
+- Durations use ISO 8601 (`PT1H30M`, `P14D`). Intervals use either `start`/`end` fields or the ISO form `start/end`.
+
+<Note kind="history" title="2038" source="https://en.wikipedia.org/wiki/Year_2038_problem">
+
+Systems that store time as seconds since 1970 in a signed 32-bit integer overflow on 19 January 2038 at 03:14:07 UTC and wrap to December 1901. Most platforms have moved to 64-bit time, but embedded devices, old database columns and file formats haven't. RFC 3339 strings don't have this problem, and they're readable in logs.
+
+</Note>
+
+## Send money as a decimal with its currency
+
+```python
+>>> 0.1 + 0.2
+0.30000000000000004
+```
+
+Binary floating point can't represent most decimal fractions exactly, which is fine for physics and unacceptable for invoices. An amount without its currency isn't money either: is `19.99` euros, dollars or yen? Two representations work:
+
+| Representation                 | Example                                  | Trade-off                                                                                          |
+| ------------------------------ | ---------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Decimal string + currency      | `{"amount": "19.99", "currency": "EUR"}` | No float can sneak in; clients need a decimal type to compute                                      |
+| Integer minor units + currency | `{"amount": 1999, "currency": "EUR"}`    | Integer arithmetic; clients must know each currency's exponent (`JPY` has 0 decimals, `KWD` has 3) |
+
+Stripe uses minor units. Zalando uses a JSON number declared as `format: decimal`, which works if every client parses it as a decimal, an assumption that's hard to enforce in JavaScript. This guide uses decimal strings.
+
+## Make identifiers strings
+
+JavaScript numbers are IEEE 754 doubles, so integers above 2⁵³ − 1 (about 9 × 10¹⁵) silently lose precision when parsed. RFC 7493 (I-JSON) tells protocol designers not to expect interoperability beyond that range.
+
+```js
+JSON.parse('{"id": 1234567890123456789}').id;
+// 1234567890123456800  (a different ID)
+```
+
+Send IDs as strings even when they're 64-bit integers in your database. That also lets you change the generation scheme later. As for the scheme:
+
+- **Prefixed opaque IDs** (`ord_8xK2`, `cus_7Hq2`) are readable in logs, self-describing and short.
+- **UUIDv7** (RFC 9562) is time-ordered, which keeps B-tree indexes compact; random UUIDv4 keys scatter inserts across the index. Use it when IDs are generated in many places without coordination.
+- **Never** expose an ID that encodes something you might want to hide or change, such as a sequence number or a shard.
+
+<Note kind="incident" title="Twitter's id_str" year="2010" source="https://docs.x.com/fundamentals/x-ids">
+
+When Twitter moved tweet IDs to Snowflake, 64-bit integers generated across many machines, the new IDs were too large for JavaScript numbers, which silently round anything above 2⁵³. Twitter added a second field, `id_str`, carrying the same ID as a string, and told JavaScript clients to use it. For over a decade every tweet in the API carried its ID twice. Strings from day one would have cost nothing.
+
+</Note>
+
+## Use ISO codes instead of inventing values
+
+| What                | Standard           | Example                       |
+| ------------------- | ------------------ | ----------------------------- |
+| Country             | ISO 3166-1 alpha-2 | `"DE"`, `"ES"`, `"US"`        |
+| Language and locale | BCP 47             | `"de"`, `"en-GB"`, `"es-419"` |
+| Currency            | ISO 4217           | `"EUR"`, `"JPY"`              |
+| Duration            | ISO 8601           | `"P14D"`                      |
+| Phone number        | E.164              | `"+34911234567"`              |
+
+Never `"Germany"`, `"german"` or `"€"`: they can't be validated and they differ by locale.
+
+## Declare number formats, and keep binary out of JSON
+
+JSON has one number type. Your spec should say what each one really is with `format` (`int32`, `int64`, `float`, `double`, `decimal`), so code generators choose `Long` over `Integer` and validators can reject overflow.
+
+When small binary values must travel inside JSON, such as a signature or a thumbnail, use base64. Prefer the URL-safe alphabet (base64url, RFC 4648 §5) so the value can also appear in a URL. For anything larger, use a real media type or a download URL ([Files and large payloads](/representations/files/)).
+
+_Assumes:_ Pydantic v2, DRF 3.15 with `USE_TZ = True`, Zod 3.23 or later.
+
+<Tabs syncKey="stack">
+<TabItem label="FastAPI">
+
+```python
+DecimalStr = Annotated[Decimal, PlainSerializer(str, return_type=str)]
+
+class Money(BaseModel):
+    amount: DecimalStr
+    currency: Annotated[str, Field(pattern=r"^[A-Z]{3}$")]
+
+class Order(BaseModel):
+    id: str  # a bigint internally, a string on the wire
+    total: Money
+    created_at: AwareDatetime  # rejects naive datetimes without an offset
+    delivery_date: date
+    return_window: timedelta  # serialised as an ISO 8601 duration, "P14D"
+```
+
+</TabItem>
+<TabItem label="Django">
+
+```python
+# settings.py
+USE_TZ = True
+REST_FRAMEWORK = {"COERCE_DECIMAL_TO_STRING": True}  # the default: Decimals become "19.99"
+
+class MoneySerializer(serializers.Serializer):
+    amount = serializers.DecimalField(max_digits=12, decimal_places=2)
+    currency = serializers.RegexField(r"^[A-Z]{3}$")
+
+class OrderSerializer(serializers.ModelSerializer):
+    id = serializers.CharField(source="public_id", read_only=True)
+    total = MoneySerializer(source="*")
+
+    class Meta:
+        model = Order
+        fields = ["id", "total", "created_at", "delivery_date"]
+```
+
+</TabItem>
+<TabItem label="Hono">
+
+```ts
+const Money = z.object({
+  amount: z.string().regex(/^-?\d+(\.\d+)?$/), // compute with a decimal library, never Number()
+  currency: z.string().regex(/^[A-Z]{3}$/),
+});
+
+const Order = z.object({
+  id: z.string(),
+  total: Money,
+  created_at: z.string().datetime({ offset: true }),
+  delivery_date: z.string().date(),
+  return_window: z.string().duration(),
+});
+
+const toApi = (row: OrderRow) => ({ ...row, id: row.id.toString() }); // bigint → string
+```
+
+</TabItem>
+</Tabs>
+
+<RuleGroup>
+
+<Rule
+  guide="zalando"
+  id="169"
+  level="MUST"
+  title="Use standard formats for date and time properties"
+/>
+<Rule
+  guide="zalando"
+  id="235"
+  level="SHOULD"
+  title="Use naming convention for date/time properties"
+/>
+<Rule
+  guide="zalando"
+  id="170"
+  level="MUST"
+  title="Use standard formats for country, language and currency properties"
+/>
+<Rule
+  guide="zalando"
+  id="127"
+  level="SHOULD"
+  title="Use standard formats for time duration and interval properties"
+/>
+<Rule guide="zalando" id="173" level="MUST" title="Use the common money object" />
+<Rule guide="zalando" id="171" level="MUST" title="Define a format for number and integer types" />
+<Rule guide="zalando" id="239" level="MUST" title="Encode binary data in base64url" />
+<Rule guide="zalando" id="144" level="SHOULD" title="Only use UUIDs if necessary" />
+
+</RuleGroup>
+
+<SelfCheck>
+
+<Question
+  q="Which is the best representation of a product price?"
+  answer={2}
+  options={[
+    {
+      text: "<code>&quot;price&quot;: 19.99</code>",
+      why: "No currency, and every JavaScript client parses it as a binary float.",
+    },
+    {
+      text: "<code>&quot;price&quot;: &quot;19,99 €&quot;</code>",
+      why: "Locale-formatted text can't be computed with and differs by locale.",
+    },
+    {
+      text: "<code>&quot;price&quot;: {&quot;amount&quot;: &quot;19.99&quot;, &quot;currency&quot;: &quot;EUR&quot;}</code>",
+      why: "A decimal amount and an ISO 4217 code, always together.",
+    },
+    {
+      text: "<code>&quot;price_eur&quot;: 19.99</code>",
+      why: "The currency is in the field name, so a new currency needs a new field, and the float problem remains.",
+    },
+  ]}
+/>
+
+<Question
+  q='An API returns <code>"birth_date": "1990-05-01T00:00:00Z"</code>. A client in New York formats it with the local time zone. What does the user see?'
+  answer={0}
+  options={[
+    {
+      text: "30 April 1990.",
+      why: "Midnight UTC is 8 p.m. the previous day in New York. A calendar date must be sent as <code>1990-05-01</code>.",
+    },
+    { text: "1 May 1990.", why: "Only in time zones at or east of UTC." },
+    {
+      text: "An error: dates can't have times.",
+      why: "It's a valid timestamp; that's the problem.",
+    },
+    {
+      text: "It depends on the server's time zone.",
+      why: "The value is in UTC, so the server's zone doesn't matter; the client's does.",
+    },
+  ]}
+/>
+
+</SelfCheck>

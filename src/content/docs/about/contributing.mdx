@@ -1,0 +1,31 @@
+---
+title: Contributing
+description: How to report an error or propose a change, the writing rules every page follows, and how to run the checks locally.
+---
+
+Corrections are the most valuable contribution: a wrong status code, a misquoted rule, a broken link, an example that wouldn't run. Open an [issue](https://github.com/daniprol/api-design/issues) or a pull request.
+
+## Writing rules
+
+- **Page shape.** In brief (three to five bullets), a short paragraph on why the topic matters, sections whose headings are claims ("Paginate with cursors"), code tabs, a Prefer/Avoid comparison, at most two sourced notes, the related guideline rules, and two self-check questions.
+- **Plain, direct sentences.** Write for an experienced engineer in a hurry. Active voice, no filler, no hype. Dry wit is welcome; emoji, exclamation marks and jokes in code comments are not.
+- **Sources for every factual claim** about a standard, a guideline or a real system, with the month accessed.
+- **One domain.** Examples use the shop: `ord_`, `cus_` and `sku-` identifiers, snake_case JSON, lowercase enum values, `422` for validation errors, Problem Details for every error.
+- **Three stacks.** Code tabs are FastAPI, Django and Hono, in that order, preceded by an _Assumes:_ line.
+- **Links between pages are root-relative** (`/http/errors/`); the build adds the base path.
+
+## Running the site
+
+Node.js 22.23 or later (see `.nvmrc`) and pnpm are required.
+
+```sh
+pnpm install
+pnpm dev       # http://localhost:4321/api-design/
+pnpm verify    # lint, format check, type check, build and internal link check
+```
+
+`pnpm verify` is what CI runs on every pull request. A pre-commit hook formats and lints staged files.
+
+## Adding a guideline
+
+Add an entry to `src/data/guides.ts`, cite rules on the relevant pages with `<Rule guide="…" id="…" level="…" title="…" />`, and add a page under `guidelines/`. The rule index builds itself from the pages. Disagreements between guidelines go in `src/data/differences.ts`.

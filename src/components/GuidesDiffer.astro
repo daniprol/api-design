@@ -1,0 +1,33 @@
+---
+/** "Where guides differ": one row per guideline, from src/data/differences.ts. */
+import { marked } from "../scripts/inline-md";
+import { findDifference } from "../data/differences";
+
+interface Props {
+  id: string;
+}
+const d = findDifference(Astro.props.id);
+---
+
+<section class="fg-differ not-content" aria-label={`Where guides differ: ${d.question}`}>
+  <p class="fg-label">Where guides differ · {d.question}</p>
+  <table>
+    <tbody>
+      {
+        d.positions.map((p) => (
+          <tr>
+            <th scope="row">
+              <a href={p.url} rel="noopener">
+                {p.who}
+              </a>
+            </th>
+            <td>
+              <span class="fg-differ__decision" set:html={marked(p.decision)} />
+              <span class="fg-differ__reason">{p.reason}</span>
+            </td>
+          </tr>
+        ))
+      }
+    </tbody>
+  </table>
+</section>

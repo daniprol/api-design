@@ -1,0 +1,46 @@
+---
+/** Book-style table of contents for the Guide. */
+import { guide } from "../data/guide";
+
+const base = import.meta.env.BASE_URL.replace(/\/+$/, "");
+---
+
+<div class="fg-contents not-content">
+  {
+    guide.map((section, i) => (
+      <section class="fg-contents__section" aria-labelledby={`s-${section.slug}`}>
+        <h2 id={`s-${section.slug}`}>
+          <span class="fg-contents__n">{i + 1}</span> {section.title}
+        </h2>
+        <p class="fg-contents__summary">{section.summary}</p>
+        <ol>
+          {section.topics.map((topic, j) => (
+            <li>
+              <a href={`${base}/${section.slug}/${topic.slug}/`}>
+                <span class="fg-contents__num">
+                  {i + 1}.{j + 1}
+                </span>
+                <span class="fg-contents__title">{topic.title}</span>
+                <span class="fg-contents__desc">{topic.summary}</span>
+              </a>
+            </li>
+          ))}
+        </ol>
+      </section>
+    ))
+  }
+  <section class="fg-contents__section" aria-labelledby="s-appendix">
+    <h2 id="s-appendix">
+      <span class="fg-contents__n">A</span> Appendix
+    </h2>
+    <ol>
+      <li>
+        <a href={`${base}/guide/design-review/`}>
+          <span class="fg-contents__num">A</span>
+          <span class="fg-contents__title">Annotated design review</span>
+          <span class="fg-contents__desc">A flawed shop API, reviewed finding by finding.</span>
+        </a>
+      </li>
+    </ol>
+  </section>
+</div>

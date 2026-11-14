@@ -1,13 +1,14 @@
-# 🥋 API Design Dojo
+# HTTP API Design
 
-A fun, example-driven course on **web API design**, built with [Astro](https://astro.build) + [Starlight](https://starlight.astro.build).
+A practical reference for designing HTTP APIs that stay pleasant to use and cheap to change: modelling, HTTP semantics, payloads, collections, reliability, security, evolution, events and webhooks.
 
 **Live site:** https://daniprol.github.io/api-design/
 
-- 9 modules, 28 short lessons: resources, HTTP, payloads, pagination, idempotency, evolution, security, events.
-- Every concept shown in **FastAPI**, **Django REST Framework** and **Hono** (pick your stack once, every page remembers it).
-- Stories & history, do's & don'ts, quick quizzes, and progress tracking saved in your browser.
-- Company rules shown in context. Today: [Zalando RESTful API Guidelines](https://opensource.zalando.com/restful-api-guidelines/). Next: Google AIP.
+- **Guide:** 27 chapters in nine sections, each with a clear recommendation, examples in FastAPI, Django REST Framework and Hono, sourced notes on history and real incidents, and a short self-check. Appendix A walks through a full design review.
+- **Reference:** status codes, headers, media types, a review checklist, a glossary, an RFC index and a rule index.
+- **Guidelines:** where Zalando, Google AIP, Microsoft Azure and Stripe agree and differ, with Zalando rules cited chapter by chapter.
+
+Built with [Astro](https://astro.build) and [Starlight](https://starlight.astro.build).
 
 ## Development
 
@@ -35,48 +36,51 @@ Git hooks (lefthook): `pre-commit` formats and lints staged files, `pre-push` ru
 ```text
 src/
 ├── content/docs/
-│   ├── index.mdx               # home page
-│   ├── start-here.mdx
-│   ├── course/<module>/<lesson>.mdx
-│   ├── guides/                 # company guides (zalando, google-aip…)
-│   └── reference/              # cheat sheets, glossary
+│   ├── index.mdx                 # home page
+│   ├── guide/                    # contents and Appendix A
+│   ├── <section>/<topic>.mdx     # the Guide: foundations, modelling, http, …, events
+│   ├── reference/                # tables: status codes, headers, glossary, rule index…
+│   ├── guidelines/               # comparison and per-guideline pages
+│   └── about/                    # about, sources, changelog, contributing, license
 ├── data/
-│   ├── curriculum.ts           # ⭐ single source of truth: modules & lessons
-│   └── guides.ts               # registry of company guidelines
-├── components/                 # lesson components (Hook, Story, DoDont, Rule, Quiz…)
-│   └── overrides/              # Starlight overrides (lesson header, completion footer)
+│   ├── guide.ts                  # sections and topics: sidebar, numbering, contents, prev/next
+│   ├── guides.ts                 # registry of company guidelines
+│   └── differences.ts            # "Where guides differ" entries and the comparison matrix
+├── components/                   # page kit (InBrief, Note, Compare, Rule, SelfCheck…), exported from kit.ts
+│   └── overrides/                # Starlight overrides: Header, PageTitle, Footer
 ├── plugins/remark-base-links.ts
-└── styles/                     # theme + component styles
+└── styles/                       # theme, components, print
+CHANGELOG.md                      # dated changes; the home page shows the latest three
 ```
 
-### Writing a lesson
+### Writing a chapter
 
-1. Create `src/content/docs/course/<module>/<lesson>.mdx`.
-2. Add it to `src/data/curriculum.ts` (this drives the sidebar, course map and lesson numbering).
-3. Import the building blocks in one line:
+1. Create `src/content/docs/<section>/<topic>.mdx` with `title`, `description`, `sources` and `related` in the frontmatter.
+2. Add the topic to `src/data/guide.ts`.
+3. Import components from the kit:
 
 ```mdx
 import {
-  Hook,
-  Story,
-  DoDont,
-  Do,
-  Dont,
+  InBrief,
+  Note,
+  Compare,
+  Prefer,
+  Avoid,
   Rule,
-  Quiz,
-  Takeaways,
+  RuleGroup,
+  SelfCheck,
+  Question,
   Tabs,
   TabItem,
-  Status,
-} from "@components/lesson";
+} from "@components/kit";
 ```
 
-Write root-relative links (`/course/...`): the base path is added automatically. Inside JSX components, leave a blank line around Markdown content so the formatter keeps it intact.
-
-### Adding a company guide
-
-Add an entry to `src/data/guides.ts`, a page in `src/content/docs/guides/`, and `<Rule guide="<id>" id="…" level="…" title="…" />` boxes in lessons. The guide's rule index builds itself from the lessons.
+The page shape and writing rules are on the site under [Contributing](https://daniprol.github.io/api-design/about/contributing/). Write root-relative links (`/http/errors/`); the base path is added automatically. Inside JSX components, leave a blank line around Markdown content so the formatter keeps it intact.
 
 ## Deployment
 
 Pushing to `main` runs `.github/workflows/deploy.yml`, which builds the site and deploys it to GitHub Pages. Pull requests run `.github/workflows/ci.yml` (lint, format, type check, build, link check).
+
+## License
+
+Text: [CC BY 4.0](LICENSE-CONTENT.md). Code: [MIT](LICENSE).

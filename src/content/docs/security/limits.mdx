@@ -1,0 +1,250 @@
+---
+title: Abuse and resource limits
+description: Bound everything a request can consume, rate-limit per client with 429 and Retry-After, publish quotas in headers, and protect sensitive business flows from automation.
+sources:
+  - label: RFC 6585 §4
+    title: "RFC 6585: Additional HTTP Status Codes, §4 429 Too Many Requests"
+    url: https://www.rfc-editor.org/rfc/rfc6585#section-4
+    accessed: 2026-11
+  - label: RateLimit draft
+    title: "RateLimit header fields for HTTP (draft-ietf-httpapi-ratelimit-headers)"
+    url: https://datatracker.ietf.org/doc/draft-ietf-httpapi-ratelimit-headers/
+    accessed: 2026-11
+  - label: OWASP API4:2023
+    title: "OWASP API Security Top 10 (2023): API4 Unrestricted Resource Consumption"
+    url: https://owasp.org/API-Security/editions/2023/en/0xa4-unrestricted-resource-consumption/
+    accessed: 2026-11
+  - label: OWASP API6:2023
+    title: "OWASP API Security Top 10 (2023): API6 Unrestricted Access to Sensitive Business Flows"
+    url: https://owasp.org/API-Security/editions/2023/en/0xa6-unrestricted-access-to-sensitive-business-flows/
+    accessed: 2026-11
+  - label: Stripe, 2017
+    title: "Stripe Engineering: Scaling your API with rate limiters (2017)"
+    url: https://stripe.com/blog/rate-limiters
+    accessed: 2026-11
+related:
+  - security/auth
+  - reliability/idempotency
+  - collections/pagination
+  - events/webhooks
+---
+
+import {
+  InBrief,
+  Note,
+  Compare,
+  Prefer,
+  Avoid,
+  Rule,
+  RuleGroup,
+  SelfCheck,
+  Question,
+  Status,
+  Tabs,
+  TabItem,
+} from "@components/kit";
+
+<InBrief>
+
+- Bound every dimension of a request: page size, body size, array lengths, query complexity, execution time.
+- Rate-limit per authenticated client (per IP only for anonymous traffic), and answer <Status code={429} /> with `Retry-After` and a problem body.
+- Publish the quota on every response with the `RateLimit` and `RateLimit-Policy` headers, so clients slow down before they hit the wall.
+- Use a token bucket for request rate and a separate concurrency limit for expensive endpoints.
+- Protect business flows that bots love, such as sign-up, checkout and coupon redemption, with limits on the flow, not just the endpoint.
+
+</InBrief>
+
+Sooner or later, a client calls you in a tight loop: a bug, a misconfigured cron job, a scraper, or a very successful partner. Without limits, one client can degrade the API for everyone, or quietly run up your cloud bill. Limits keep the service up. Good limit responses let well-behaved clients cooperate instead of guessing.
+
+## Bound everything a request can consume
+
+Rate limits cap how often. Resource limits cap how much per request, and OWASP lists their absence as API4, unrestricted resource consumption. Each of these needs an explicit, documented maximum:
+
+| Dimension        | Limit                                           | Response when exceeded                         |
+| ---------------- | ----------------------------------------------- | ---------------------------------------------- |
+| Page size        | `limit` ≤ 100                                   | <Status code={422} /> (or clamp, documented)   |
+| Request body     | e.g. 1 MB for JSON                              | <Status code={413} />                          |
+| Arrays in a body | e.g. 100 items per batch                        | <Status code={422} />                          |
+| String lengths   | per field                                       | <Status code={422} />                          |
+| Query complexity | filter depth, `embed` depth, GraphQL cost       | <Status code={422} />                          |
+| Execution time   | server-side timeout below the gateway's         | <Status code={503} /> or <Status code={504} /> |
+| Upstream fan-out | e.g. outbound webhooks, emails, SMS per account | <Status code={429} />                          |
+
+The last row is the expensive one. An endpoint that sends an SMS costs real money on every call. Without a per-account cap, an attacker can make you pay for theirs.
+
+## Respond with 429, Retry-After and a problem body
+
+```http
+HTTP/1.1 429 Too Many Requests
+Content-Type: application/problem+json
+Retry-After: 30
+RateLimit-Policy: "default";q=100;w=60
+RateLimit: "default";r=0;t=30
+
+{
+  "type": "https://api.example.com/problems/rate-limit-exceeded",
+  "title": "Too many requests",
+  "status": 429,
+  "detail": "This API key allows 100 requests per minute. Retry in 30 seconds."
+}
+```
+
+`Retry-After` is what clients act on; [retry logic](/reliability/idempotency/) should honour it in preference to its own backoff. Use <Status code={503} /> with `Retry-After` instead when the whole service is overloaded rather than one client being over quota, so clients don't conclude it's their fault.
+
+## Publish the quota on every response
+
+Clients behave better when they can see the wall coming. For years, every API invented its own `X-RateLimit-*` headers with incompatible semantics: GitHub's `X-RateLimit-Reset` is a Unix timestamp, others use seconds remaining. The IETF HTTPAPI working group's `RateLimit-Policy` (the quota) and `RateLimit` (current state) headers standardise this as Structured Fields. Several gateways already emit them. Use them for new APIs, and keep any legacy headers you've already published.
+
+## Choose the algorithm by what you're protecting
+
+- **Token bucket** refills at N tokens per second up to a burst size, and each request takes one. It allows short bursts and enforces an average, which suits most APIs. Stripe described running exactly this, in Redis, as their primary limiter.
+- **Fixed window** counts per calendar minute. It's simple, but it allows twice the rate across a window edge.
+- **Sliding window** weighs the previous window. It's smoother than fixed and cheap enough.
+- **Concurrency limit** caps in-flight requests per client. It's the right tool for slow, expensive endpoints, where rate alone doesn't capture cost.
+
+Key limits by the authenticated client (API key, OAuth client, account). IP-based limits punish everyone behind a corporate NAT or a mobile carrier and are trivial to evade with a botnet. Use them only for anonymous endpoints such as login.
+
+_Assumes:_ Redis-backed limits shared across instances; `request.state.client_id` set by authentication middleware.
+
+<Tabs syncKey="stack">
+<TabItem label="FastAPI">
+
+```python
+def client_key(request: Request) -> str:
+    return getattr(request.state, "client_id", None) or get_remote_address(request)
+
+limiter = Limiter(key_func=client_key, storage_uri="redis://redis:6379", headers_enabled=True)
+app.state.limiter = limiter
+
+@app.exception_handler(RateLimitExceeded)
+async def on_limit(request: Request, exc: RateLimitExceeded):
+    return problem_response(429, {"type": f"{PROBLEMS}/rate-limit-exceeded", "title": "Too many requests",
+                                  "detail": str(exc.detail)}, headers={"Retry-After": "30"})
+
+@app.get("/orders/search")
+@limiter.limit("100/minute")
+def search(request: Request, response: Response, q: str): ...
+```
+
+</TabItem>
+<TabItem label="Django">
+
+```python
+# settings.py: DRF throttling, with a shared cache backend (Redis) across instances
+REST_FRAMEWORK = {
+    "DEFAULT_THROTTLE_CLASSES": ["rest_framework.throttling.AnonRateThrottle",
+                                 "rest_framework.throttling.UserRateThrottle"],
+    "DEFAULT_THROTTLE_RATES": {"anon": "20/minute", "user": "100/minute", "sms": "5/hour"},
+}
+
+class PhoneVerification(APIView):
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "sms"  # an expensive side effect gets its own, much lower limit
+# Exceeding a limit returns 429 with Retry-After automatically.
+```
+
+</TabItem>
+<TabItem label="Hono">
+
+```ts
+app.use(
+  "/orders/*",
+  rateLimiter({
+    windowMs: 60_000,
+    limit: 100,
+    standardHeaders: "draft-7", // RateLimit headers in an older draft syntax
+    keyGenerator: (c) => c.get("clientId") ?? c.req.header("x-forwarded-for") ?? "anon",
+    store: new RedisStore({ client: redis }),
+    handler: (c) => problem(c, 429, "rate-limit-exceeded", "Retry after the time in Retry-After."),
+  }),
+);
+```
+
+</TabItem>
+</Tabs>
+
+## Protect sensitive business flows, not just endpoints
+
+Some abuse stays within every per-endpoint limit: a bot that buys the whole stock of a limited sneaker release, creates thousands of accounts for sign-up bonuses, or tries every coupon code. OWASP lists this separately as API6. Defences live at the level of the flow:
+
+- Limits per account, per payment instrument or per shipping address, not just per API key.
+- Friction where it's cheap for humans and expensive for bots: email or phone verification, proof-of-work, CAPTCHA on anonymous flows.
+- Device and behavioural signals, and holding suspicious orders for review instead of rejecting them outright.
+
+<Compare>
+<Prefer>
+
+```text
+POST /coupons/redeem   5 attempts per account per hour,
+                       20 per payment instrument per day
+```
+
+</Prefer>
+<Avoid>
+
+```text
+POST /coupons/redeem   1000 requests per minute per API key
+                       (a bot with one key can try 1.4M codes a day)
+```
+
+</Avoid>
+</Compare>
+
+<Note kind="curiosity" title="420 Enhance Your Calm" source="https://en.wikipedia.org/wiki/List_of_HTTP_status_codes#Unofficial_codes">
+
+Before RFC 6585 registered 429 in 2012, Twitter's original API answered rate-limited clients with an unofficial 420 "Enhance Your Calm". It worked only for clients written against Twitter's docs. Generic HTTP tooling had no idea what 420 meant and treated it as an ordinary 4xx. Once a standard code exists, use it, because the tooling already knows it.
+
+</Note>
+
+<RuleGroup>
+
+<Rule guide="zalando" id="153" level="MUST" title="Use code 429 with headers for rate limits" />
+
+</RuleGroup>
+
+<SelfCheck>
+
+<Question
+  q="Your API is overloaded because of a database incident, not because any client exceeded its quota. What should requests receive?"
+  answer={3}
+  options={[
+    {
+      text: "429 with <code>Retry-After</code>.",
+      why: "429 tells the client it sent too many requests, which isn't true here.",
+    },
+    {
+      text: "500 Internal Server Error.",
+      why: "Better than 429, but it doesn't tell clients when to come back.",
+    },
+    { text: "400 Bad Request.", why: "The requests are fine." },
+    {
+      text: "503 with <code>Retry-After</code>.",
+      why: "Service-wide, transient unavailability, and clients know when to retry.",
+    },
+  ]}
+/>
+
+<Question
+  q="Why key rate limits on the authenticated client rather than the IP address?"
+  answer={0}
+  options={[
+    {
+      text: "Many users share one IP behind NAT or mobile carriers, and attackers can rotate IPs cheaply.",
+      why: "IP is a poor proxy for identity in both directions.",
+    },
+    {
+      text: "IP addresses aren't available behind a load balancer.",
+      why: "They are, through forwarded headers, but that doesn't make them a good key.",
+    },
+    {
+      text: "It's required by RFC 6585.",
+      why: "The RFC defines 429, not how you identify clients.",
+    },
+    {
+      text: "IP limits are slower to compute.",
+      why: "Performance is similar; the problem is accuracy.",
+    },
+  ]}
+/>
+
+</SelfCheck>

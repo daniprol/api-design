@@ -1,0 +1,273 @@
+---
+title: Deprecation
+description: Retire endpoints as a process, not an event. Announce in the spec and on the wire with Deprecation and Sunset headers, measure who still calls, run brownouts, and remove only at zero.
+sources:
+  - label: RFC 9745
+    title: "RFC 9745: The Deprecation HTTP Response Header Field"
+    url: https://www.rfc-editor.org/rfc/rfc9745
+    accessed: 2026-11
+  - label: RFC 8594
+    title: "RFC 8594: The Sunset HTTP Header Field"
+    url: https://www.rfc-editor.org/rfc/rfc8594
+    accessed: 2026-11
+  - label: Twitter, 2013
+    title: "Twitter Developer Blog: API v1 Retirement: Final Dates (2013)"
+    url: https://blog.x.com/developer/en_us/a/2013/api-v1-retirement-final-dates
+    accessed: 2026-11
+  - label: Zalando #189
+    title: "Zalando RESTful API Guidelines: Add Deprecation and Sunset header to responses"
+    url: https://opensource.zalando.com/restful-api-guidelines/#189
+    accessed: 2026-11
+related:
+  - evolution/versioning
+  - evolution/compatibility
+  - evolution/specs-in-ci
+  - http/headers
+---
+
+import {
+  InBrief,
+  Note,
+  Compare,
+  Prefer,
+  Avoid,
+  Rule,
+  RuleGroup,
+  SelfCheck,
+  Question,
+  Tabs,
+  TabItem,
+} from "@components/kit";
+
+<InBrief>
+
+- Mark deprecations in three places: the spec (`deprecated: true`), every response (`Deprecation`, `Sunset`, a `Link` to the migration guide) and a dated changelog entry.
+- Log every call to a deprecated endpoint with the caller's identity. Removal is a decision about named clients, not traffic in aggregate.
+- Run scheduled brownouts before the sunset, so remaining callers find out in a planned hour rather than on removal day.
+- Remove only when usage is at or near zero and remaining consumers have agreed. Then return <code>410 Gone</code> with a problem body for a while.
+
+</InBrief>
+
+Every endpoint eventually dies. The question is whether it dies gracefully, announced, measured and migrated, or suddenly at 9 a.m. on a Monday, breaking a partner's checkout. Deprecation is a process with a clock, and the API's job is to make that process visible to people and to software.
+
+## Follow a lifecycle with dates
+
+```text
+active ──► deprecated ──────────────────────────► sunset ──► gone (410)
+             │  announce · measure · migrate · brownouts  │
+             └────────── published support window ─────────┘
+```
+
+1. **Deprecate.** Mark it in the spec and on the wire. It still works.
+2. **Announce.** Changelog, direct email to known consumers, migration guide.
+3. **Measure.** Who still calls it, how often, from which client versions.
+4. **Migrate.** Help the remaining consumers by name. Most stragglers are a team that missed the email.
+5. **Brown out.** Disable it briefly on announced dates.
+6. **Sunset.** Remove it when usage is at zero, and return <code>410</code> with a pointer to the replacement.
+
+## Mark it in the spec and on the wire
+
+```yaml
+paths:
+  /orders/{order_id}/shipping-info:
+    get:
+      deprecated: true
+      description: |
+        Deprecated since 2026-01-01. Use GET /shipments?order_id={order_id}.
+        Will be removed on 2027-06-30. Migration guide: https://api.example.com/docs/migrations/shipping-info
+```
+
+The spec reaches developers who read docs. Response headers reach the software in between: SDKs that log warnings, gateways that report on deprecated traffic, and test suites that fail on them.
+
+```http
+HTTP/1.1 200 OK
+Deprecation: @1767225600
+Sunset: Wed, 30 Jun 2027 23:59:59 GMT
+Link: <https://api.example.com/docs/migrations/shipping-info>; rel="deprecation"
+```
+
+- `Deprecation` (RFC 9745, 2025) carries the date the resource was or will be deprecated, as a Structured Field date: `@` plus a Unix timestamp. Early drafts used `true`, and you'll still see that in the wild.
+- `Sunset` (RFC 8594) is the HTTP date after which the resource is expected to stop responding.
+- `Link` with `rel="deprecation"` points at human-readable migration information.
+
+_Assumes:_ structured logging with the caller's client ID available from authentication.
+
+<Tabs syncKey="stack">
+<TabItem label="FastAPI">
+
+```python
+def deprecated(since: datetime, sunset: datetime, guide: str):
+    def mark(request: Request, response: Response):
+        response.headers["Deprecation"] = f"@{int(since.timestamp())}"
+        response.headers["Sunset"] = format_datetime(sunset, usegmt=True)
+        response.headers["Link"] = f'<{guide}>; rel="deprecation"'
+        log.info("deprecated_call", path=request.url.path, client=request.state.client_id)
+    return Depends(mark)
+
+@app.get("/orders/{order_id}/shipping-info", deprecated=True,  # marked in the OpenAPI output
+         dependencies=[deprecated(datetime(2026, 1, 1, tzinfo=UTC), datetime(2027, 6, 30, 23, 59, 59, tzinfo=UTC),
+                                  "https://api.example.com/docs/migrations/shipping-info")])
+def shipping_info(order_id: str): ...
+```
+
+</TabItem>
+<TabItem label="Django">
+
+```python
+def deprecated(since: datetime, sunset: datetime, guide: str):
+    def decorator(view):
+        @wraps(view)
+        def wrapper(self, request, *args, **kwargs):
+            log.info("deprecated_call", path=request.path, client=getattr(request.auth, "client_id", None))
+            response = view(self, request, *args, **kwargs)
+            response["Deprecation"] = f"@{int(since.timestamp())}"
+            response["Sunset"] = http_date(sunset.timestamp())
+            response["Link"] = f'<{guide}>; rel="deprecation"'
+            return response
+        return wrapper
+    return decorator
+
+class ShippingInfoView(APIView):
+    @extend_schema(deprecated=True)
+    @deprecated(SINCE, SUNSET, "https://api.example.com/docs/migrations/shipping-info")
+    def get(self, request, pk): ...
+```
+
+</TabItem>
+<TabItem label="Hono">
+
+```ts
+const deprecated = (since: Date, sunset: Date, guide: string) =>
+  createMiddleware(async (c, next) => {
+    await next();
+    c.header("Deprecation", `@${Math.floor(since.getTime() / 1000)}`);
+    c.header("Sunset", sunset.toUTCString());
+    c.header("Link", `<${guide}>; rel="deprecation"`);
+    log.info({ event: "deprecated_call", path: c.req.path, client: c.get("clientId") });
+  });
+
+app.get("/orders/:id/shipping-info", deprecated(SINCE, SUNSET, GUIDE), shippingInfo);
+```
+
+</TabItem>
+</Tabs>
+
+## Measure by caller, not by traffic
+
+"Traffic is down 98 percent" sounds like permission to remove. It isn't, if the remaining 2 percent is your largest customer's nightly reconciliation job. Log deprecated calls with the client identity and keep a list of remaining callers with owners and contact details. The removal decision is made against that list. Watch for deprecated endpoints in your own code too. A service that starts depending on a deprecated API extends its life.
+
+## Brown out before you sunset
+
+A brownout disables the deprecated endpoint for a short, announced window, returning the same <code>410</code> it will return after sunset. Clients that ignored emails and headers find out during a planned hour, with time left to migrate, instead of on removal day. Schedule a few, increasing in length, and announce each one.
+
+<Note kind="practice" title="Twitter's v1 blackout tests" year="2013" source="https://blog.x.com/developer/en_us/a/2013/api-v1-retirement-final-dates">
+
+Before retiring API v1, Twitter scheduled a blackout test for 16 April 2013, during which v1 calls failed, so developers could see what would break, and warned that more might follow. It later moved the final retirement from 7 May to 11 June 2013. Brownouts are cheap to run, and they turn surprise outages into calendar entries.
+
+</Note>
+
+## Remove at zero, then answer 410
+
+When the deprecated endpoint is finally removed, don't let it fall through to a generic <code>404</code>. Return <code>410 Gone</code> with a problem body naming the replacement and the migration guide for a few months. Clients that missed everything at least get an actionable error.
+
+<Compare>
+<Prefer>
+
+```http
+HTTP/1.1 410 Gone
+Content-Type: application/problem+json
+{ "type": "https://api.example.com/problems/endpoint-removed",
+  "detail": "Removed on 2027-06-30. Use GET /shipments?order_id=…",
+  "migration_guide": "https://api.example.com/docs/migrations/shipping-info" }
+```
+
+</Prefer>
+<Avoid>
+
+```http
+HTTP/1.1 404 Not Found
+Content-Type: text/html
+
+<h1>Not Found</h1>
+```
+
+</Avoid>
+</Compare>
+
+<RuleGroup>
+
+<Rule
+  guide="zalando"
+  id="185"
+  level="MUST"
+  title="Obtain approval of clients before API shut down"
+/>
+<Rule
+  guide="zalando"
+  id="186"
+  level="MUST"
+  title="Collect external partner consent on deprecation time span"
+/>
+<Rule guide="zalando" id="187" level="MUST" title="Reflect deprecation in API specifications" />
+<Rule
+  guide="zalando"
+  id="188"
+  level="MUST"
+  title="Monitor usage of deprecated API scheduled for sunset"
+/>
+<Rule
+  guide="zalando"
+  id="189"
+  level="SHOULD"
+  title="Add Deprecation and Sunset header to responses"
+/>
+<Rule guide="zalando" id="191" level="MUST" title="Not start using deprecated APIs" />
+
+</RuleGroup>
+
+<SelfCheck>
+
+<Question
+  q="Usage of a deprecated endpoint has dropped from 50,000 to 400 calls a day. What should happen next?"
+  answer={2}
+  options={[
+    {
+      text: "Remove it: 99 percent have migrated.",
+      why: "The 400 calls could be one critical integration.",
+    },
+    {
+      text: "Extend the sunset date indefinitely.",
+      why: "That rewards not migrating and keeps the cost forever.",
+    },
+    {
+      text: "Identify the remaining callers by client ID, contact them, and run a brownout.",
+      why: "Removal is a decision about named consumers, and a brownout shows them what will break.",
+    },
+    {
+      text: "Return random errors to encourage migration.",
+      why: "Unannounced failures destroy trust; brownouts are announced and scheduled.",
+    },
+  ]}
+/>
+
+<Question
+  q="What does <code>Deprecation: @1767225600</code> communicate?"
+  answer={0}
+  options={[
+    {
+      text: "The date (as a Unix timestamp) when the resource was or will be deprecated.",
+      why: "RFC 9745 uses a Structured Field date: <code>@</code> plus seconds since the epoch.",
+    },
+    {
+      text: "The date the resource will stop working.",
+      why: "That's the <code>Sunset</code> header.",
+    },
+    {
+      text: "The version number of the replacement.",
+      why: "The header carries a date, not a version.",
+    },
+    { text: "An internal tracking ID.", why: "It's a date in Structured Field syntax." },
+  ]}
+/>
+
+</SelfCheck>

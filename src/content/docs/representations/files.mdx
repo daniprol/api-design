@@ -1,0 +1,305 @@
+---
+title: Files and large payloads
+description: Keep large bytes out of your API servers. Upload directly to object storage with presigned URLs, resume interrupted uploads, serve ranges, and set explicit limits.
+sources:
+  - label: RFC 9110 §14
+    title: "RFC 9110: HTTP Semantics, §14 Range Requests"
+    url: https://www.rfc-editor.org/rfc/rfc9110#section-14
+    accessed: 2026-11
+  - label: RFC 7578
+    title: "RFC 7578: Returning Values from Forms: multipart/form-data"
+    url: https://www.rfc-editor.org/rfc/rfc7578
+    accessed: 2026-11
+  - label: RFC 9530
+    title: "RFC 9530: Digest Fields (Repr-Digest, Content-Digest)"
+    url: https://www.rfc-editor.org/rfc/rfc9530
+    accessed: 2026-11
+  - label: Resumable uploads draft
+    title: "Resumable Uploads for HTTP (draft-ietf-httpbis-resumable-upload)"
+    url: https://datatracker.ietf.org/doc/draft-ietf-httpbis-resumable-upload/
+    accessed: 2026-11
+  - label: tus
+    title: "tus: resumable upload protocol 1.0"
+    url: https://tus.io/protocols/resumable-upload
+    accessed: 2026-11
+  - label: S3 presigned URLs
+    title: "Amazon S3 User Guide: Uploading objects with presigned URLs"
+    url: https://docs.aws.amazon.com/AmazonS3/latest/userguide/PresignedUrlUploadObject.html
+    accessed: 2026-11
+related:
+  - representations/data-formats
+  - reliability/long-running-operations
+  - security/limits
+  - collections/caching
+---
+
+import {
+  InBrief,
+  Note,
+  Compare,
+  Prefer,
+  Avoid,
+  Rule,
+  RuleGroup,
+  SelfCheck,
+  Question,
+  WorkedProblem,
+  Solution,
+  Status,
+  Tabs,
+  TabItem,
+} from "@components/kit";
+
+<InBrief>
+
+- Accept small files (up to a few MB) as `multipart/form-data` or a raw body with the right `Content-Type`. Never base64 them into JSON.
+- For anything larger, issue a short-lived presigned URL and let the client upload straight to object storage, then confirm.
+- Make uploads above roughly 100 MB resumable: tus today, the IETF resumable upload protocol as it matures.
+- Serve downloads with `Accept-Ranges`, `ETag` and <Status code={206} />, so clients can resume and seek.
+- Set and document explicit size and type limits, verify content rather than trusting the declared type, and checksum the bytes.
+
+</InBrief>
+
+A JSON API sends kilobytes. Files are megabytes or gigabytes, over mobile networks that drop connections. They break assumptions everywhere in the stack: request timeouts, body-size limits in proxies, worker memory, and the cost of retrying from zero. The design question is mostly how to keep those bytes off your application servers.
+
+## Choose the upload path by size
+
+| Size                                   | Path                                                       | Why                                                         |
+| -------------------------------------- | ---------------------------------------------------------- | ----------------------------------------------------------- |
+| Up to a few MB                         | `multipart/form-data` or a raw body to your API            | One request, metadata alongside, simple clients             |
+| Tens of MB and up                      | Presigned URL to object storage                            | Bytes skip your servers; storage scales and retries for you |
+| Hundreds of MB, or unreliable networks | Resumable upload (tus, or object storage multipart upload) | A dropped connection costs a chunk, not the whole file      |
+
+Base64 inside JSON is the option missing from the table. It inflates the payload by a third, forces the whole file into memory to parse, and defeats streaming. Keep it for small values such as signatures, as discussed in [Data formats](/representations/data-formats/).
+
+## Upload large files directly to storage with presigned URLs
+
+The API issues an upload slot, the client sends the bytes straight to object storage, and the API confirms. Your servers handle a few hundred bytes of JSON; the storage service handles the gigabytes.
+
+```http
+POST /orders/ord_42/attachments
+{ "filename": "invoice.pdf", "content_type": "application/pdf", "size": 48213760 }
+
+HTTP/1.1 201 Created
+Location: https://api.example.com/orders/ord_42/attachments/att_9
+{
+  "id": "att_9",
+  "status": "pending_upload",
+  "upload": {
+    "method": "PUT",
+    "url": "https://uploads.s3.eu-west-1.amazonaws.com/att_9?X-Amz-Signature=…",
+    "headers": { "Content-Type": "application/pdf" },
+    "expires_at": "2026-11-14T10:15:00Z"
+  }
+}
+```
+
+The client then `PUT`s the bytes to `upload.url`. Completion is detected either by a storage event notification or by the client calling `POST /orders/ord_42/attachments/att_9/completion`. Then the attachment moves from `pending_upload` to `processing` (virus scan, thumbnailing) to `ready`.
+
+Constrain the slot tightly. Sign the content type and the exact length (or use a presigned `POST` policy with `content-length-range` when you need a maximum; a presigned `PUT` can't express one), keep the expiry to minutes, and use a key you generate rather than the client's filename. The URL is a bearer credential: anyone who has it can upload until it expires.
+
+_Assumes:_ boto3 for S3 in Python, `@aws-sdk/s3-request-presigner` in TypeScript.
+
+<Tabs syncKey="stack">
+<TabItem label="FastAPI">
+
+```python
+MAX_BYTES = 100 * 1024 * 1024
+ALLOWED = {"application/pdf", "image/png", "image/jpeg"}
+
+@app.post("/orders/{order_id}/attachments", status_code=201)
+def create_attachment(order_id: str, body: AttachmentIn) -> AttachmentOut:
+    if body.content_type not in ALLOWED:
+        raise problem(422, "unsupported-attachment-type", allowed=sorted(ALLOWED))
+    if body.size > MAX_BYTES:
+        raise problem(422, "attachment-too-large", max_bytes=MAX_BYTES)
+    att = attachments.create(order_id, body, status="pending_upload")
+    url = s3.generate_presigned_url(
+        "put_object",
+        Params={"Bucket": BUCKET, "Key": att.storage_key, "ContentType": body.content_type,
+                "ContentLength": body.size},
+        ExpiresIn=600,
+    )
+    return AttachmentOut.pending(att, upload_url=url)
+```
+
+</TabItem>
+<TabItem label="Django">
+
+```python
+class AttachmentViewSet(mixins.CreateModelMixin, viewsets.GenericViewSet):
+    serializer_class = AttachmentInSerializer  # validates content_type ∈ ALLOWED, size ≤ MAX_BYTES
+
+    def perform_create(self, serializer):
+        att = serializer.save(order=self.get_order(), status=Attachment.Status.PENDING_UPLOAD)
+        att.upload_url = s3.generate_presigned_url(
+            "put_object",
+            Params={"Bucket": BUCKET, "Key": att.storage_key,
+                    "ContentType": att.content_type, "ContentLength": att.size},
+            ExpiresIn=600,
+        )
+```
+
+</TabItem>
+<TabItem label="Hono">
+
+```ts
+app.post("/orders/:id/attachments", zValidator("json", AttachmentIn), async (c) => {
+  const body = c.req.valid("json"); // schema enforces type allow-list and max size
+  const att = await attachments.create(c.req.param("id"), body);
+  const url = await getSignedUrl(
+    s3,
+    new PutObjectCommand({
+      Bucket: BUCKET,
+      Key: att.storageKey,
+      ContentType: body.content_type,
+      ContentLength: body.size,
+    }),
+    { expiresIn: 600 },
+  );
+  return c.json(
+    {
+      ...toApi(att),
+      upload: { method: "PUT", url, headers: { "Content-Type": body.content_type } },
+    },
+    201,
+  );
+});
+```
+
+</TabItem>
+</Tabs>
+
+## Make big uploads resumable
+
+A 2 GB upload over a train's Wi-Fi will be interrupted. Without resumption, the client starts again from byte zero and may never finish. Two options:
+
+- **tus**, an open protocol since 2013 with servers and clients for most platforms. The client creates an upload, sends chunks with `PATCH` and an `Upload-Offset` header, and after a disconnect asks the server with `HEAD` how far it got.
+- **The IETF resumable upload protocol** (draft-ietf-httpbis-resumable-upload), which builds on tus's experience and aims to let any HTTP client resume uploads natively. Track it, and design so you can adopt it later.
+
+Object stores have their own variants (S3 multipart upload, GCS resumable uploads) that pair well with presigned URLs: one presigned URL per part.
+
+<Note kind="history" title="tus" year="2013" source="https://tus.io/protocols/resumable-upload">
+
+tus started at Transloadit, a file-processing company whose customers kept losing uploads on mobile networks. They published the protocol openly instead of building another proprietary resume scheme, and it later became the starting point for the IETF HTTP working group's resumable upload draft. A small company's fix for a support problem is turning into part of HTTP.
+
+</Note>
+
+## Serve downloads with ranges and validators
+
+Large downloads should be resumable and seekable, which HTTP range requests provide (RFC 9110 §14). Advertise `Accept-Ranges: bytes`, answer a `Range: bytes=1048576-` request with <Status code={206} /> and `Content-Range`, and send an `ETag`, so a client resuming with `If-Range` gets the remainder only if the file hasn't changed, and the whole new file if it has.
+
+```http
+GET /orders/ord_42/attachments/att_9/content
+Range: bytes=1048576-
+If-Range: "a1b2c3"
+
+HTTP/1.1 206 Partial Content
+Content-Range: bytes 1048576-48213759/48213760
+Content-Type: application/pdf
+```
+
+In practice you rarely implement this yourself. Redirect with <Status code={303} /> or <Status code={307} /> to a short-lived presigned download URL, or serve through a CDN, and both handle ranges. Add `Content-Disposition: attachment; filename="invoice.pdf"` when browsers should download the file instead of rendering it.
+
+## Set limits, verify content, and checksum
+
+- **Size.** Enforce a maximum before reading the body and return <Status code={413} /> with the limit in a problem body. Document it, because the gateway's default (often 1 MB or 10 MB) is otherwise your real limit, and nobody knows it.
+- **Type.** Treat the declared `Content-Type` and the filename as hints. Sniff the magic bytes, allow-list the result and return <Status code={415} /> otherwise. Never serve user uploads from your API's origin with a type the browser will execute.
+- **Integrity.** Ask clients to send a digest, `Content-Digest` or `Repr-Digest` (RFC 9530), or the storage service's checksum header, and verify it. Silent corruption on long uploads is rare but real.
+- **Processing.** Scan, transcode and extract asynchronously, and expose the status on the resource ([Long-running operations](/reliability/long-running-operations/)).
+
+<Compare>
+<Prefer>
+
+```json
+{
+  "id": "att_9",
+  "status": "processing",
+  "content": { "href": "https://api.example.com/…/att_9/content" }
+}
+```
+
+</Prefer>
+<Avoid>
+
+```json
+{ "id": "att_9", "filename": "invoice.pdf", "data": "JVBERi0xLjcKJeLjz9MKMSAwIG9iago8PC9U…" }
+```
+
+</Avoid>
+</Compare>
+
+<WorkedProblem kind="Review" title="Profile picture upload">
+
+```python
+@app.post("/customers/{customer_id}/avatar")
+async def upload_avatar(customer_id: str, request: Request):
+    body = await request.json()
+    data = base64.b64decode(body["image"])
+    path = f"/var/www/static/avatars/{body['filename']}"
+    open(path, "wb").write(data)
+    return {"url": f"https://www.example.com/static/avatars/{body['filename']}"}
+```
+
+What's wrong, ordered by severity?
+
+<Solution>
+
+1. **Path traversal.** `filename` is used unsanitised: `../../app/settings.py` overwrites code. Generate the storage key server-side.
+2. **Stored XSS.** Files are served from the main web origin with whatever type the extension implies. An `.html` or `.svg` "avatar" runs script in your users' sessions. Serve uploads from a separate, cookieless domain, and allow-list types by sniffing content.
+3. **No limits.** No size check, and base64 JSON means the whole image is in memory three times over. Cap the size, and accept a raw `image/*` body or `multipart/form-data`.
+4. **No authorisation check** that the caller owns `customer_id`.
+5. **Synchronous local disk.** This doesn't work with more than one server. Use object storage.
+
+</Solution>
+</WorkedProblem>
+
+<SelfCheck>
+
+<Question
+  q="Why issue presigned upload URLs instead of proxying large uploads through the API?"
+  answer={0}
+  options={[
+    {
+      text: "The bytes never touch your servers, so worker memory, request timeouts and proxy body limits stop being your problem.",
+      why: "That's the main win; your API handles only small JSON requests.",
+    },
+    {
+      text: "Presigned URLs make uploads faster on every network.",
+      why: "Not necessarily; they move the load, they don't change the physics.",
+    },
+    {
+      text: "They remove the need for authorisation.",
+      why: "Authorisation happens when the API issues the URL, and the URL itself is a short-lived credential.",
+    },
+    {
+      text: "They're the only way to support files over 10 MB.",
+      why: "Streaming uploads to your API also works; it costs you more.",
+    },
+  ]}
+/>
+
+<Question
+  q='A client resumes a download with <code>Range: bytes=5000000-</code> and <code>If-Range: "v1"</code>, but the file has since been replaced (now <code>"v2"</code>). What should the server send?'
+  answer={2}
+  options={[
+    {
+      text: "206 with bytes from 5,000,000 of the new file.",
+      why: "That would splice two different files together.",
+    },
+    {
+      text: "412 Precondition Failed.",
+      why: "<code>If-Range</code> doesn't fail; it falls back to a full response.",
+    },
+    {
+      text: "200 with the whole new file.",
+      why: "If the validator doesn't match, the range is ignored and the full current representation is sent.",
+    },
+    {
+      text: "416 Range Not Satisfiable.",
+      why: "The range would be satisfiable; the issue is the version.",
+    },
+  ]}
+/>
+
+</SelfCheck>

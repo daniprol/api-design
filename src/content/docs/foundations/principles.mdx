@@ -1,0 +1,281 @@
+---
+title: Principles
+description: An API is a product whose interface outlives its implementation. Design the contract first, for the consumer's job, and keep it separate from your storage.
+sources:
+  - label: Zalando §1
+    title: "Zalando RESTful API Guidelines: Principles and API design principles"
+    url: https://opensource.zalando.com/restful-api-guidelines/#api-first
+    accessed: 2026-11
+  - label: OpenAPI 3.1
+    title: "OpenAPI Specification v3.1.1"
+    url: https://spec.openapis.org/oas/v3.1.1.html
+    accessed: 2026-11
+  - label: Yegge, 2011
+    title: "Steve Yegge: Stevey's Google Platforms Rant (12 October 2011), archived copy"
+    url: https://courses.cs.washington.edu/courses/cse452/22wi/papers/yegge-platform-rant.html
+    accessed: 2026-11
+  - label: Hyrum's Law
+    title: "Hyrum Wright: Hyrum's Law"
+    url: https://www.hyrumslaw.com/
+    accessed: 2026-11
+related:
+  - foundations/rest-and-alternatives
+  - evolution/compatibility
+  - evolution/specs-in-ci
+  - representations/json
+---
+
+import {
+  InBrief,
+  Note,
+  Compare,
+  Prefer,
+  Avoid,
+  Rule,
+  RuleGroup,
+  SelfCheck,
+  Question,
+  WorkedProblem,
+  Solution,
+  Tabs,
+  TabItem,
+} from "@components/kit";
+
+<InBrief>
+
+- Treat any API with a consumer outside your team as a product with users, support costs and a retirement date.
+- Write and review the contract before the implementation. The format matters less than the review.
+- Keep an explicit API model between storage and the wire. Never serialise ORM rows directly.
+- Optimise for consistency over local elegance: a consumer who learns one endpoint should be able to guess the rest.
+
+</InBrief>
+
+Changing a design on a whiteboard costs five minutes. Changing it after three teams have integrated costs a quarter, two migration guides and an awkward meeting. Every principle below exists to move mistakes to the cheap end of that curve.
+
+## Design for the consumer's job, not your schema
+
+The moment someone outside your team calls your endpoint, the API has users, a learning curve, a support channel and a lifecycle. Product questions come before code: who calls this, what are they trying to get done, and what is the smallest surface that lets them do it?
+
+The most common way to fail those questions is to expose storage. Both responses below describe the same order:
+
+<Compare caption="The right-hand version makes every consumer learn your internal codes and couples your contract to your column names.">
+<Prefer label="Designed for the consumer">
+
+```json
+{
+  "id": "ord_8xK2",
+  "status": "shipped",
+  "total": { "amount": "59.90", "currency": "EUR" },
+  "created_at": "2026-03-14T09:26:53Z"
+}
+```
+
+</Prefer>
+<Avoid label="Leaking the database">
+
+```json
+{
+  "ORD_PK": 1842,
+  "stat_cd": 3,
+  "tot_amt_cents": 5990,
+  "cur_fk": 978,
+  "crt_ts": 1773480413
+}
+```
+
+</Avoid>
+</Compare>
+
+## Keep an explicit API model between storage and the wire
+
+Frameworks make it trivial to serialise a model straight to JSON, and that convenience is how schemas leak. A separate API model costs a mapping function per resource. In exchange, you can rename a column, split a table or add a sensitive field without a public change.
+
+_Assumes:_ Pydantic v2, Django REST Framework 3.15, Hono 4. `Order` rows come from your persistence layer.
+
+<Tabs syncKey="stack">
+<TabItem label="FastAPI">
+
+```python
+class Money(BaseModel):
+    amount: str  # decimal string: no binary floating point on the wire
+    currency: str  # ISO 4217
+
+class OrderOut(BaseModel):  # the public contract, not the ORM model
+    id: str
+    status: Literal["placed", "paid", "shipped", "delivered", "cancelled"]
+    total: Money
+    created_at: datetime
+
+def to_api(row: OrderRow) -> OrderOut:
+    return OrderOut(
+        id=row.public_id,
+        status=STATUS_NAMES[row.stat_cd],
+        total=Money(amount=f"{row.total:.2f}", currency=row.currency),
+        created_at=row.created_at,
+    )
+```
+
+</TabItem>
+<TabItem label="Django">
+
+```python
+class OrderSerializer(serializers.ModelSerializer):
+    id = serializers.CharField(source="public_id")
+    status = serializers.CharField(source="get_status_display")
+    total = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Order
+        fields = ["id", "status", "total", "created_at"]  # never "__all__"
+
+    def get_total(self, order: Order) -> dict:
+        return {"amount": f"{order.total:.2f}", "currency": order.currency}
+```
+
+</TabItem>
+<TabItem label="Hono">
+
+```ts
+type OrderOut = {
+  id: string;
+  status: "placed" | "paid" | "shipped" | "delivered" | "cancelled";
+  total: { amount: string; currency: string };
+  created_at: string;
+};
+
+const toApi = (row: OrderRow): OrderOut => ({
+  id: row.publicId,
+  status: STATUS_NAMES[row.statCd],
+  total: { amount: row.total.toFixed(2), currency: row.currency },
+  created_at: row.createdAt.toISOString(),
+});
+```
+
+</TabItem>
+</Tabs>
+
+`fields = "__all__"` or `return c.json(row)` in a public handler is a design decision made by accident: every future migration becomes a potential breaking change.
+
+## Review the contract before the implementation
+
+API first means the contract is a deliberate artefact, reviewed by people who will call it, before the code exists. It does not require hand-written YAML. Two workflows reach the same place:
+
+| Approach     | How                                                                   | Fits                                                       |
+| ------------ | --------------------------------------------------------------------- | ---------------------------------------------------------- |
+| Design first | Write OpenAPI, review it, generate mocks, then implement against it   | Public APIs, several consuming teams, long-lived contracts |
+| Code first   | Write typed route stubs, generate the spec, review the generated diff | Small teams, internal APIs, fast iteration                 |
+
+What both need is a review step where consumers see the contract while changing it is still cheap, and a spec that is checked in, versioned and linted in CI ([Specs in CI](/evolution/specs-in-ci/) covers the tooling). A generated spec is only as good as the types and descriptions behind it, so treat a missing `description` the way you'd treat a missing test.
+
+```yaml title="openapi.yaml (excerpt)"
+paths:
+  /orders/{order_id}/cancellation:
+    post:
+      summary: Cancel an order
+      description: |
+        Only orders in status `placed` or `paid` can be cancelled.
+        Shipped orders are returned through POST /returns instead.
+      responses:
+        "201": { $ref: "#/components/responses/Cancellation" }
+        "409": { $ref: "#/components/responses/Problem" }
+```
+
+The description is where the useful knowledge lives: preconditions, the alternative path, and which error a client should expect. "Cancel order endpoint" tells the reader nothing the path didn't.
+
+<Note kind="history" title="The Bezos API mandate" year="2002" source="https://courses.cs.washington.edu/courses/cse452/22wi/papers/yegge-platform-rant.html">
+
+As Steve Yegge retold it in a 2011 Google+ post he accidentally made public, Jeff Bezos ordered that every Amazon team expose its data only through service interfaces designed to be externalisable, with no back doors into each other's databases. Teams that did so could later be sold to outsiders, which is roughly what AWS became. Designing internal APIs as if strangers will call them keeps that option open.
+
+</Note>
+
+## Optimise for consistency over local elegance
+
+Consumers learn your API by pattern-matching. If one collection paginates with `cursor` and another with `page`, if one resource uses `created_at` and another `creationDate`, each endpoint has to be learned separately and every client library grows special cases. A slightly worse convention applied everywhere beats a better one applied in one place. That's the real job of a style guide: it settles arguments once so reviews can focus on the domain.
+
+The qualities most guidelines aim for are much the same. The API should be easy to understand from names alone and easy to use correctly. It should be hard to misuse, so mistakes produce clear errors rather than corrupt data. It should be consistent and abstract from the backend. And it should be able to evolve for years without breaking anyone.
+
+<Note kind="aside" title="Hyrum's Law" source="https://www.hyrumslaw.com/">
+
+"With a sufficient number of users of an API, it does not matter what you promise in the contract: all observable behaviours of your system will be depended on by somebody." Response field order, error message wording, the latency of a slow endpoint. The practical consequence: expose as little as possible, because everything you expose becomes contract.
+
+</Note>
+
+<RuleGroup>
+
+<Rule guide="zalando" id="100" level="MUST" title="Follow API first principle" />
+<Rule guide="zalando" id="101" level="MUST" title="Provide API specification using OpenAPI" />
+<Rule guide="zalando" id="102" level="SHOULD" title="Provide API user manual" />
+<Rule guide="zalando" id="103" level="MUST" title="Write APIs using U.S. English" />
+
+</RuleGroup>
+
+<WorkedProblem kind="Review" title="A new field for the mobile team">
+
+The mobile team needs `estimated_delivery` on orders. The quickest change is:
+
+```python
+class OrderSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Order
+        fields = "__all__"
+```
+
+What does this ship besides the new field?
+
+<Solution>
+
+Every column on `Order`, now and in future: internal status codes, foreign keys, and whatever someone adds next quarter, possibly a fraud score. Each later migration becomes a public change, and removing any of those fields is now a breaking change because someone will have started reading them.
+
+Add `estimated_delivery` to the explicit field list, with a type and description in the spec.
+
+**Alternatives.** If the field is expensive to compute, make it opt-in via a `fields` or `embed` parameter (see [Filtering and sorting](/collections/filtering/)) instead of adding it to every response.
+
+</Solution>
+</WorkedProblem>
+
+<SelfCheck>
+
+<Question
+  q="Which practice is the essential part of API first?"
+  answer={1}
+  options={[
+    {
+      text: "Writing the OpenAPI document by hand before any code.",
+      why: "Hand-written specs are one way to do it. Code-first with a reviewed, generated spec achieves the same goal.",
+    },
+    {
+      text: "Consumers review the contract before the implementation is built.",
+      why: "The review is what moves design mistakes to the cheap end of the curve. The file format is secondary.",
+    },
+    {
+      text: "Building the API before the frontend.",
+      why: "Sequencing teams doesn't help if nobody reviews the contract.",
+    },
+    {
+      text: "Publishing every internal service publicly.",
+      why: "Designing as if it could be external is useful; actually exposing everything isn't the point.",
+    },
+  ]}
+/>
+
+<Question
+  q="Two collections paginate differently: one with <code>page</code>, one with <code>cursor</code>. Both work. What's the cost?"
+  answer={2}
+  options={[
+    {
+      text: "None, as long as both are documented.",
+      why: "Documentation doesn't remove the special case every client must implement.",
+    },
+    { text: "Slightly larger responses.", why: "Payload size isn't the issue." },
+    {
+      text: "Every client and SDK needs two code paths, and consumers can't predict a third collection.",
+      why: "Inconsistency multiplies client work and kills pattern-matching, which is how people learn an API.",
+    },
+    {
+      text: "Offset pagination is always wrong, so the <code>page</code> collection must be removed.",
+      why: "Offset has legitimate uses (see Pagination). The problem here is the inconsistency.",
+    },
+  ]}
+/>
+
+</SelfCheck>

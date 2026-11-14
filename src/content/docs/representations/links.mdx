@@ -1,0 +1,262 @@
+---
+title: Links
+description: Give clients absolute links for self, pagination, related resources and state-dependent actions, so they follow URLs instead of building them.
+sources:
+  - label: RFC 8288
+    title: "RFC 8288: Web Linking"
+    url: https://www.rfc-editor.org/rfc/rfc8288
+    accessed: 2026-11
+  - label: IANA link relations
+    title: "IANA: Link Relations registry"
+    url: https://www.iana.org/assignments/link-relations/link-relations.xhtml
+    accessed: 2026-11
+  - label: RFC 7239
+    title: "RFC 7239: Forwarded HTTP Extension"
+    url: https://www.rfc-editor.org/rfc/rfc7239
+    accessed: 2026-11
+  - label: GitHub pagination
+    title: "GitHub REST API: Using pagination in the REST API"
+    url: https://docs.github.com/en/rest/using-the-rest-api/using-pagination-in-the-rest-api
+    accessed: 2026-11
+  - label: HAL draft
+    title: "JSON Hypertext Application Language (draft-kelly-json-hal)"
+    url: https://datatracker.ietf.org/doc/html/draft-kelly-json-hal
+    accessed: 2026-11
+related:
+  - foundations/rest-and-alternatives
+  - collections/pagination
+  - modelling/resources
+  - http/headers
+---
+
+import {
+  InBrief,
+  Note,
+  Compare,
+  Prefer,
+  Avoid,
+  Rule,
+  RuleGroup,
+  SelfCheck,
+  Question,
+  Tabs,
+  TabItem,
+} from "@components/kit";
+
+<InBrief>
+
+- Return absolute URIs in links. Relative references break as soon as a response is logged, queued or forwarded.
+- Use simple link objects (`{"href": …}`) in the body, named with registered relations where one exists: `self`, `next`, `prev`.
+- Add links for pagination, related resources and actions that depend on state. That captures most of hypermedia's value.
+- Configure forwarded-header handling, or your absolute links will point at internal hostnames.
+
+</InBrief>
+
+The web works because pages link to pages: nobody builds the URL of the next article by hand. APIs can borrow that without adopting a full hypermedia architecture. A few well-placed links remove URL templates from every client and leave you free to move resources later.
+
+## Prefer links over IDs plus URL templates
+
+```json
+{ "id": "ord_42", "customer_id": "cus_7" }
+```
+
+To fetch the customer, the client must know that customers live at `/customers/{id}` on a particular host. That rule is now compiled into every client. With a link, the client follows and doesn't construct:
+
+```json
+{
+  "id": "ord_42",
+  "customer_id": "cus_7",
+  "links": {
+    "self": { "href": "https://api.example.com/orders/ord_42" },
+    "customer": { "href": "https://customers.api.example.com/customers/cus_7" }
+  }
+}
+```
+
+Keep the ID as well: clients need it as a key in their own storage. The link is for navigation.
+
+Use the [IANA link relation registry](https://www.iana.org/assignments/link-relations/link-relations.xhtml) for common relations (`self`, `next`, `prev`, `first`, `last`, `related`, `collection`) and plain domain names (`customer`, `line_items`) for the rest. Choose one structure for links and use it everywhere. A `links` object, `_links` in HAL, or individual `{"href"}` properties all work, as long as there's only one. This site uses a `links` object of `{"href"}` objects for relations, and keeps pagination's `next` and `self` as top-level strings on collection pages, because every client reads those.
+
+## Make every link absolute
+
+<Compare>
+<Prefer>
+
+```json
+{ "links": { "customer": { "href": "https://api.example.com/customers/cus_7" } } }
+```
+
+Works wherever the response ends up: logs, queues, another service.
+
+</Prefer>
+<Avoid>
+
+```json
+{ "next": { "href": "/orders?cursor=b2Jq" } }
+```
+
+Relative to what? Behind a gateway, the client may have called a different host.
+
+</Avoid>
+</Compare>
+
+The non-obvious part is building them correctly. Your app usually sits behind a load balancer that terminates TLS and forwards to `http://10.0.3.7:8000`. A naive `url_for` then produces `http://10.0.3.7:8000/orders/ord_42`. The framework needs to trust the proxy's `X-Forwarded-Proto` and `X-Forwarded-Host` headers (or the standard `Forwarded` header, RFC 7239), and only from the proxy, otherwise clients can spoof them. Configure a canonical public base URL if your topology makes trust awkward.
+
+_Assumes:_ the app runs behind a reverse proxy that sets `X-Forwarded-*` headers.
+
+<Tabs syncKey="stack">
+<TabItem label="FastAPI">
+
+```python
+# uvicorn app:app --proxy-headers --forwarded-allow-ips="10.0.0.0/8"
+class Link(BaseModel):
+    href: str
+
+@app.get("/orders/{order_id}", name="get_order")
+def get_order(order_id: str, request: Request) -> OrderOut:
+    order = orders.get_or_404(order_id)
+    return OrderOut(
+        id=order.id,
+        customer_id=order.customer_id,
+        links={
+            "self": Link(href=str(request.url_for("get_order", order_id=order.id))),
+            "customer": Link(href=str(request.url_for("get_customer", customer_id=order.customer_id))),
+        },
+    )
+```
+
+</TabItem>
+<TabItem label="Django">
+
+```python
+# settings.py: trust the proxy for scheme and host
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+USE_X_FORWARDED_HOST = True
+
+class OrderSerializer(serializers.ModelSerializer):
+    links = serializers.SerializerMethodField()
+
+    def get_links(self, order):
+        request = self.context["request"]
+        return {
+            "self": {"href": reverse("order-detail", args=[order.public_id], request=request)},
+            "customer": {"href": reverse("customer-detail", args=[order.customer.public_id], request=request)},
+        }
+```
+
+</TabItem>
+<TabItem label="Hono">
+
+```ts
+const PUBLIC_BASE = process.env.PUBLIC_BASE_URL!; // e.g. https://api.example.com
+const link = (path: string) => ({ href: new URL(path, PUBLIC_BASE).toString() });
+
+app.get("/orders/:id", async (c) => {
+  const order = await orders.get(c.req.param("id"));
+  if (!order) return c.notFound();
+  return c.json({
+    ...toApi(order),
+    links: { self: link(`/orders/${order.id}`), customer: link(`/customers/${order.customerId}`) },
+  });
+});
+```
+
+</TabItem>
+</Tabs>
+
+## Put links in the body for JSON APIs
+
+HTTP has a `Link` header (RFC 8288), and some well-known APIs use it for pagination. For JSON APIs, links in the body are easier: every JSON parser sees them, they survive being stored or forwarded without headers, and they can sit next to the item they describe in a list. Reserve the `Link` header for responses without a JSON body, such as a file download that points to its metadata.
+
+<Note kind="practice" title="GitHub's Link header" source="https://docs.github.com/en/rest/using-the-rest-api/using-pagination-in-the-rest-api">
+
+GitHub's REST API paginates through the `Link` header: `<https://api.github.com/…&page=2>; rel="next", <…&page=34>; rel="last"`. It works, and it's standard. It also means every client needs a parser for a header format most developers have never seen, which is why GitHub's documentation devotes a page to it. Links in the JSON body need no special parsing.
+
+</Note>
+
+## Use links for actions that depend on state
+
+The most useful step towards hypermedia is advertising what can be done next, depending on the resource's state:
+
+```json
+{
+  "id": "ord_42",
+  "status": "placed",
+  "links": {
+    "self": { "href": "https://api.example.com/orders/ord_42" },
+    "cancellation": { "href": "https://api.example.com/orders/ord_42/cancellation" },
+    "payments": { "href": "https://api.example.com/orders/ord_42/payments" }
+  }
+}
+```
+
+Once the order ships, `cancellation` disappears and `returns` appears. A UI can decide whether to show a Cancel button by checking for the link, instead of duplicating the server's business rules about which states are cancellable. When those rules change, the UI follows without a release.
+
+Full HATEOAS goes further: clients discover the whole workflow at runtime, with nothing about it compiled in. That remains rare. Client developers read docs and write code against known flows, generic hypermedia clients never caught on, and the formats (HAL, JSON:API, Siren, JSON-LD with Hydra) never converged. Take the cheap, high-value parts and skip the rest.
+
+<RuleGroup>
+
+<Rule guide="zalando" id="163" level="MAY" title="Use REST maturity level 3 - HATEOAS" />
+<Rule guide="zalando" id="164" level="MUST" title="Use common hypertext controls" />
+<Rule
+  guide="zalando"
+  id="165"
+  level="SHOULD"
+  title="Use simple hypertext controls for pagination and self-references"
+/>
+<Rule
+  guide="zalando"
+  id="217"
+  level="MUST"
+  title="Use full, absolute URI for resource identification"
+/>
+<Rule guide="zalando" id="166" level="MUST" title="Not use link headers with JSON entities" />
+
+</RuleGroup>
+
+<SelfCheck>
+
+<Question
+  q="In production, your <code>self</code> links come out as <code>http://10.0.3.7:8000/orders/ord_42</code>. What's the fix?"
+  answer={1}
+  options={[
+    {
+      text: "Switch to relative links.",
+      why: "That hides the symptom and brings back the ambiguity relative links cause.",
+    },
+    {
+      text: "Make the framework trust the proxy's forwarded headers (only from the proxy), or set a canonical public base URL.",
+      why: "The app sees the internal request; it needs the proxy's view of scheme and host to build public URLs.",
+    },
+    {
+      text: "Hard-code <code>https://</code> in each handler.",
+      why: "Fixes the scheme but not the host, and scatters configuration through the code.",
+    },
+    {
+      text: "Remove links and document URL templates instead.",
+      why: "Gives up the benefit of links because of a configuration problem.",
+    },
+  ]}
+/>
+
+<Question
+  q="What's the main benefit of including a <code>cancellation</code> link only when an order can be cancelled?"
+  answer={3}
+  options={[
+    { text: "It makes responses smaller.", why: "Marginal, and not the point." },
+    {
+      text: "It's required for REST level 2.",
+      why: "Links are level 3; level 2 doesn't need them.",
+    },
+    {
+      text: "Clients no longer need to know any URLs.",
+      why: "They still need an entry point, and most still know some URLs.",
+    },
+    {
+      text: "Clients don't have to duplicate the server's rules about which states allow cancelling.",
+      why: "The link's presence carries the rule, so a change in the rule doesn't need a client release.",
+    },
+  ]}
+/>
+
+</SelfCheck>

@@ -1,71 +1,75 @@
 ---
 /**
- * Adds a "mark as complete" button at the end of each lesson.
+ * Page footer: References and Related (from frontmatter), prev/next, edit link,
+ * and the site line (licence, source, build date).
  */
-import Default from "@astrojs/starlight/components/Footer.astro";
-import { findLesson, lessons } from "../../data/curriculum";
+import EditLink from "@astrojs/starlight/components/EditLink.astro";
+import Pagination from "@astrojs/starlight/components/Pagination.astro";
+import { findTopic } from "../../data/guide";
 
-const lesson = findLesson(Astro.locals.starlightRoute.id);
-const remaining = lesson ? lessons.length - lesson.number : 0;
+const { entry, id } = Astro.locals.starlightRoute;
+const { sources = [], related = [] } = entry.data as typeof entry.data & {
+  sources?: { label: string; title: string; url: string; accessed?: string }[];
+  related?: string[];
+};
+const base = import.meta.env.BASE_URL.replace(/\/+$/, "");
+const relatedTopics = related.map((r) => {
+  const topic = findTopic(r);
+  if (!topic) throw new Error(`Unknown related topic "${r}" on ${id}`);
+  return topic;
+});
+const built = new Date().toISOString().slice(0, 10);
+const isHome = id === "";
 ---
 
-{
-  lesson && (
-    <dojo-complete class="dojo-complete" data-lesson={lesson.id}>
-      <div>
-        <p class="dojo-complete__title">Finished the lesson?</p>
-        <p class="dojo-complete__sub">
-          {remaining > 0
-            ? `${remaining} more to go. Your progress is saved in this browser.`
-            : "This is the last lesson. What a journey! 🎉"}
-        </p>
-      </div>
-      <button type="button" class="dojo-complete__button" aria-pressed="false">
-        <span class="when-todo">Mark as complete</span>
-        <span class="when-done">✓ Completed</span>
-      </button>
-    </dojo-complete>
-  )
-}
-<Default />
+<footer class="fg-footer">
+  {
+    sources.length > 0 && (
+      <section class="fg-refs" aria-labelledby="references">
+        <h2 id="references">References</h2>
+        <ol>
+          {sources.map((s) => (
+            <li>
+              <a href={s.url} rel="noopener">
+                {s.title}
+              </a>
+              {s.accessed && <span class="fg-refs__accessed">Accessed {s.accessed}.</span>}
+            </li>
+          ))}
+        </ol>
+      </section>
+    )
+  }
+  {
+    relatedTopics.length > 0 && (
+      <section class="fg-related" aria-labelledby="related">
+        <h2 id="related">Related</h2>
+        <ul>
+          {relatedTopics.map((t) => (
+            <li>
+              <a href={`${base}/${t.id}/`}>
+                <span class="fg-related__num">{t.number}</span> {t.title}
+              </a>
+            </li>
+          ))}
+        </ul>
+      </section>
+    )
+  }
+  {!isHome && <Pagination />}
+  <div class="fg-colophon">
+    <p>
+      Text <a href={`${base}/about/license/`}>CC BY 4.0</a>, code MIT ·{" "}
+      <a href="https://github.com/daniprol/api-design">Source on GitHub</a> · Last build{" "}
+      <time datetime={built}>{built}</time>
+    </p>
+    {!isHome && <EditLink />}
+  </div>
+</footer>
 
 <script>
-  import { getDone, onProgress, setDone } from "../../scripts/progress";
-
-  class DojoComplete extends HTMLElement {
-    connectedCallback() {
-      const id = this.dataset.lesson ?? "";
-      const button = this.querySelector("button");
-      if (!button) return;
-      const render = () => {
-        const done = getDone().has(id);
-        button.setAttribute("aria-pressed", String(done));
-        this.classList.toggle("is-done", done);
-      };
-      button.addEventListener("click", () => {
-        const done = !getDone().has(id);
-        setDone(id, done);
-        if (done) this.celebrate();
-      });
-      render();
-      onProgress(render);
-    }
-
-    celebrate() {
-      if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-      const emojis = ["🎉", "🥋", "✨", "🚀", "💜", "🧡"];
-      for (let i = 0; i < 18; i++) {
-        const span = document.createElement("span");
-        span.className = "dojo-confetti";
-        span.textContent = emojis[i % emojis.length] ?? "🎉";
-        span.style.setProperty("--x", `${(Math.random() - 0.5) * 360}px`);
-        span.style.setProperty("--y", `${-80 - Math.random() * 160}px`);
-        span.style.setProperty("--r", `${(Math.random() - 0.5) * 720}deg`);
-        this.append(span);
-        span.addEventListener("animationend", () => span.remove());
-      }
-    }
-  }
-
-  if (!customElements.get("dojo-complete")) customElements.define("dojo-complete", DojoComplete);
+  // Print every fold expanded: closed <details> content isn't rendered otherwise.
+  window.addEventListener("beforeprint", () => {
+    for (const d of document.querySelectorAll<HTMLDetailsElement>(".sl-markdown-content details")) d.open = true;
+  });
 </script>

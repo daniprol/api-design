@@ -1,0 +1,314 @@
+---
+title: Pagination
+description: Paginate every collection from the first release, prefer keyset cursors over offsets, return links instead of page numbers, and make total counts opt-in.
+sources:
+  - label: Use The Index, Luke
+    title: "Markus Winand: We need tool support for keyset pagination (No Offset)"
+    url: https://use-the-index-luke.com/no-offset
+    accessed: 2026-11
+  - label: Slack, 2017
+    title: "Slack Engineering: Evolving API Pagination at Slack (2017)"
+    url: https://slack.engineering/evolving-api-pagination-at-slack/
+    accessed: 2026-11
+  - label: AIP-158
+    title: "Google AIP-158: Pagination"
+    url: https://google.aip.dev/158
+    accessed: 2026-11
+  - label: Zalando #160
+    title: "Zalando RESTful API Guidelines: Prefer cursor-based pagination, avoid offset-based pagination"
+    url: https://opensource.zalando.com/restful-api-guidelines/#160
+    accessed: 2026-11
+related:
+  - collections/filtering
+  - representations/links
+  - collections/caching
+  - representations/json
+---
+
+import {
+  InBrief,
+  Note,
+  Compare,
+  Prefer,
+  Avoid,
+  Rule,
+  RuleGroup,
+  SelfCheck,
+  Question,
+  WorkedProblem,
+  Solution,
+  GuidesDiffer,
+  Figure,
+  Tabs,
+  TabItem,
+} from "@components/kit";
+
+<InBrief>
+
+- Paginate every collection from day one, with a server-enforced maximum page size. Adding pagination later is a breaking change.
+- Prefer keyset (cursor) pagination: constant cost at any depth and no duplicates or gaps under concurrent writes.
+- Keep cursors opaque, bind them to the query that produced them, and order by a unique tiebreaker.
+- Return a page object with a `next` link; its absence means the end. Clients shouldn't build URLs.
+- Avoid exact total counts on large collections. Offer `has_more`, an estimate, or an opt-in count.
+
+</InBrief>
+
+Every collection starts small. Then one day `GET /orders` returns two million rows, the database spends a minute serialising them and the mobile app times out. Pagination is cheap to add before the first release and a breaking change afterwards, and the kind you choose determines whether page 5,000 costs the same as page 1.
+
+## Prefer keyset pagination over offsets
+
+Offset pagination ("skip 40, take 20") is easy to explain and lets clients jump to page 37. It has two problems that grow with the data:
+
+1. **Cost grows with depth.** `OFFSET 1000000` makes the database read and discard a million rows before returning twenty.
+2. **Pages drift under writes.** An insert at the top shifts every row down one place, so the next page repeats an item. A delete shifts rows up, so an item is skipped. A sync job built on offsets silently misses records.
+
+<Figure n={1} caption="Offset pagination while a new order (Z) arrives between two requests. Order C appears twice.">
+
+```text
+Request 1   ?offset=0&limit=3    [ A  B  C ]  D  E  F
+            new order Z inserted at the top
+Request 2   ?offset=3&limit=3      Z  A  B  [ C  D  E ]   ← C again
+```
+
+</Figure>
+
+Keyset pagination, which APIs usually call cursor pagination, anchors on the last row seen instead of a position:
+
+```sql
+-- cursor decodes to (created_at, id) of the last row on the previous page
+SELECT * FROM orders
+WHERE (created_at, id) < ('2026-03-14T09:26:53Z', 'ord_42')
+ORDER BY created_at DESC, id DESC
+LIMIT 21;  -- one extra row tells you whether there's a next page
+```
+
+With an index on `(created_at, id)`, every page is an index seek, and inserts or deletes elsewhere can't cause duplicates or gaps. The cost is that clients can't jump to an arbitrary page. Feeds, syncs, exports and infinite scroll never need to; a back-office table with page numbers might, and offset is acceptable there if depth is capped.
+
+## Get the cursor details right
+
+The SQL is simple. The bugs are in the details:
+
+- **Order by a unique tiebreaker.** Sorting by `created_at` alone breaks when two orders share a timestamp: the page boundary falls between them and one is skipped. Append the primary key.
+- **Mixed sort directions need care.** Row-value comparison `(a, b) < (x, y)` only works when both columns sort in the same direction. For `ORDER BY total DESC, id ASC`, expand it: `total < x OR (total = x AND id > y)`.
+- **Make cursors opaque.** Encode them (base64url of JSON, or encrypted if they reveal anything) and document them as strings with no structure. Clients that can't parse cursors can't depend on their format.
+- **Bind the cursor to its query.** A cursor from `?status=shipped` reused with `?status=paid` produces nonsense. Embed a hash of the filter and sort parameters and reject a mismatch with `422`, or put the full query in the cursor so `next` needs nothing else.
+
+## Return links and a page object
+
+```json
+{
+  "items": [{ "id": "ord_42" }, { "id": "ord_41" }],
+  "next": "https://api.example.com/orders?status=shipped&limit=20&cursor=eyJjIjoi…",
+  "self": "https://api.example.com/orders?status=shipped&limit=20"
+}
+```
+
+No `next` means the end. The client loop has no URL building and no off-by-one errors:
+
+```ts
+for (let url: string | undefined = START; url;) {
+  const page = await fetch(url).then((r) => r.json());
+  await process(page.items);
+  url = page.next;
+}
+```
+
+An empty page with a `next` link is legal, for example when a filter rejected every row in a scanned batch. Clients must keep following `next` rather than stopping at the first empty page. Say so in the docs, because people get it wrong.
+
+<GuidesDiffer id="pagination" />
+
+_Assumes:_ FastAPI with SQLAlchemy 2, DRF's built-in `CursorPagination`, Hono with a repository returning rows ordered by `(created_at, id)`.
+
+<Tabs syncKey="stack">
+<TabItem label="FastAPI">
+
+```python
+def encode(cursor: dict) -> str:
+    return base64.urlsafe_b64encode(json.dumps(cursor).encode()).decode().rstrip("=")
+
+def decode(token: str) -> dict:
+    return json.loads(base64.urlsafe_b64decode(token + "=" * (-len(token) % 4)))
+
+@app.get("/orders")
+def list_orders(request: Request, status: str | None = None, cursor: str | None = None,
+                limit: int = Query(20, ge=1, le=100)) -> OrderPage:
+    query_hash = hashlib.sha256(f"{status}".encode()).hexdigest()[:8]
+    after = decode(cursor) if cursor else None
+    if after and after["q"] != query_hash:
+        raise problem(422, "cursor-query-mismatch")
+    rows = orders.page(status=status, after=after and (after["c"], after["id"]), limit=limit + 1)
+    page, has_more = rows[:limit], len(rows) > limit
+    next_url = None
+    if has_more:
+        last = page[-1]
+        token = encode({"c": last.created_at.isoformat(), "id": last.id, "q": query_hash})
+        next_url = str(request.url.include_query_params(cursor=token))
+    return OrderPage(items=page, next=next_url, self=str(request.url))
+```
+
+</TabItem>
+<TabItem label="Django">
+
+```python
+class OrderCursorPagination(CursorPagination):
+    ordering = ("-created_at", "-id")  # unique, stable ordering
+    page_size = 20
+    page_size_query_param = "limit"
+    max_page_size = 100
+
+    def get_paginated_response(self, data):
+        return Response({"items": data, "next": self.get_next_link(),
+                         "prev": self.get_previous_link(),
+                         "self": self.request.build_absolute_uri()})
+
+class OrderViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = Order.objects.all()
+    serializer_class = OrderSerializer
+    pagination_class = OrderCursorPagination  # cursor is an opaque base64 token
+```
+
+</TabItem>
+<TabItem label="Hono">
+
+```ts
+const encode = (o: object) =>
+  btoa(JSON.stringify(o)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+const decode = (s: string) => JSON.parse(atob(s.replaceAll("-", "+").replaceAll("_", "/")));
+
+app.get("/orders", zValidator("query", ListQuery), async (c) => {
+  const { cursor, limit, status } = c.req.valid("query"); // limit: 1..100, default 20
+  const after = cursor ? decode(cursor) : undefined;
+  if (after && after.q !== (status ?? "")) return problem(c, 422, "cursor-query-mismatch");
+  const rows = await orders.page({
+    status,
+    after,
+    limit: limit + 1,
+  });
+  const items = rows.slice(0, limit);
+  const last = items.at(-1);
+  const next = new URL(c.req.url);
+  if (last)
+    next.searchParams.set("cursor", encode({ c: last.createdAt, id: last.id, q: status ?? "" }));
+  return c.json({
+    items: items.map(toApi),
+    next: rows.length > limit ? next.toString() : undefined,
+    self: c.req.url,
+  });
+});
+```
+
+</TabItem>
+</Tabs>
+
+## Make total counts opt-in
+
+"1–20 of 1,284,302" looks helpful. On a large, filtered table, the exact `COUNT(*)` can cost more than fetching the page, because PostgreSQL has to visit every matching row to count it. Ask what the client does with the number. Usually it needs to know whether there's more, which the `next` link already says. If a count is needed, offer it as an opt-in (`?include=total_count`), cap it ("10,000+"), or return the planner's estimate and label it as one.
+
+<Compare>
+<Prefer>
+
+```http
+GET /orders?status=shipped&limit=20&cursor=eyJjIjoiMjAyNi0wMy0xNFQwOToyNjo1M1oiLCJpZCI6Im9yZF80MiJ9
+→ { "items": [...], "next": "https://api.example.com/orders?status=shipped&limit=20&cursor=…" }
+```
+
+</Prefer>
+<Avoid>
+
+```http
+GET /orders?status=shipped&page=5000&per_page=20
+→ { "items": [...], "page": 5000, "total_pages": 64215, "total": 1284302 }
+```
+
+</Avoid>
+</Compare>
+
+<Note kind="practice" title="Slack's move to cursors" year="2017" source="https://slack.engineering/evolving-api-pagination-at-slack/">
+
+Slack's Web API had grown several pagination styles, including page numbers and offsets. As workspaces reached hundreds of thousands of channels and users, those became slow and unreliable. Slack moved to one cursor scheme across methods, with `next_cursor` in `response_metadata` and an empty string meaning the end. Their write-up is a clear account of migrating a public API's pagination without breaking clients.
+
+</Note>
+
+<RuleGroup>
+
+<Rule guide="zalando" id="159" level="MUST" title="Support pagination" />
+<Rule
+  guide="zalando"
+  id="160"
+  level="SHOULD"
+  title="Prefer cursor-based pagination, avoid offset-based pagination"
+/>
+<Rule guide="zalando" id="248" level="SHOULD" title="Use pagination response page object" />
+<Rule guide="zalando" id="161" level="SHOULD" title="Use pagination links" />
+<Rule guide="zalando" id="254" level="SHOULD" title="Avoid a total result count" />
+
+</RuleGroup>
+
+<WorkedProblem kind="Review" title="A product listing cursor">
+
+```python
+@app.get("/products")
+def list_products(after: str | None = None, sort: str = "price", limit: int = 1000):
+    q = select(Product).order_by(getattr(Product, sort))
+    if after:
+        q = q.where(getattr(Product, sort) > after)
+    return session.scalars(q.limit(limit)).all()
+```
+
+Find the bugs.
+
+<Solution>
+
+1. **No unique tiebreaker.** Many products share a price, so `price > after` skips every remaining product that shares the boundary price. Order by `(price, id)` and compare both.
+2. **The cursor isn't opaque.** `after` is a raw price, so clients will construct it, and you can never change the scheme.
+3. **The cursor isn't bound to the sort.** A cursor taken while sorting by `price` and replayed with `sort=name` compares a price to names.
+4. **`sort` goes straight into `getattr`.** That allows sorting by any attribute, including unindexed or internal ones. Allow-list the sortable fields.
+5. **No maximum page size,** and a default of 1,000. Enforce something like 100.
+6. **A bare array response,** with no `next` link and no room for one.
+
+</Solution>
+</WorkedProblem>
+
+<SelfCheck>
+
+<Question
+  q="A client syncs all orders with <code>?offset=N&amp;limit=100</code> while new orders keep arriving at the top. What happens?"
+  answer={1}
+  options={[
+    {
+      text: "Nothing: offsets are stable.",
+      why: "Offsets are positions, and positions shift when rows are inserted or deleted ahead of them.",
+    },
+    {
+      text: "Some orders appear twice, and deletions cause others to be skipped.",
+      why: "Inserts push rows into the next page; deletes pull rows into the previous one.",
+    },
+    {
+      text: "The client gets 409 Conflict.",
+      why: "Nothing detects the drift; that's what makes it dangerous.",
+    },
+    { text: "Responses are cached incorrectly.", why: "Caching isn't involved." },
+  ]}
+/>
+
+<Question
+  q='A page comes back with <code>"items": []</code> and a <code>next</code> link. What should the client do?'
+  answer={3}
+  options={[
+    {
+      text: "Stop: an empty page means the end.",
+      why: "Only a missing <code>next</code> means the end. Empty pages can happen with filtered scans.",
+    },
+    {
+      text: "Report an error to the API owner.",
+      why: "It's legal behaviour, though worth documenting.",
+    },
+    { text: "Retry the same request.", why: "The same cursor gives the same empty page." },
+    {
+      text: "Follow <code>next</code>.",
+      why: "The end of the collection is signalled by the absence of <code>next</code>, nothing else.",
+    },
+  ]}
+/>
+
+</SelfCheck>

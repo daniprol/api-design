@@ -1,0 +1,275 @@
+---
+title: Caching
+description: Make caching an explicit, documented decision per endpoint. Compress everything, use validators for cheap revalidation, and keep personal data out of shared caches.
+sources:
+  - label: RFC 9111
+    title: "RFC 9111: HTTP Caching"
+    url: https://www.rfc-editor.org/rfc/rfc9111
+    accessed: 2026-11
+  - label: RFC 9110 §8.8, §13
+    title: "RFC 9110: HTTP Semantics, §8.8 Validator Fields and §13 Conditional Requests"
+    url: https://www.rfc-editor.org/rfc/rfc9110#section-13
+    accessed: 2026-11
+  - label: BREACH
+    title: "Gluck, Harris, Prado: BREACH, reviving the CRIME attack (Black Hat USA 2013)"
+    url: https://www.breachattack.com/
+    accessed: 2026-11
+  - label: Facebook, 2015
+    title: "Facebook Engineering: GraphQL: A data query language (14 September 2015)"
+    url: https://engineering.fb.com/2015/09/14/core-infra/graphql-a-data-query-language/
+    accessed: 2026-11
+related:
+  - reliability/concurrency
+  - collections/filtering
+  - http/headers
+  - representations/files
+---
+
+import {
+  InBrief,
+  Note,
+  Compare,
+  Prefer,
+  Avoid,
+  Rule,
+  RuleGroup,
+  SelfCheck,
+  Question,
+  WorkedProblem,
+  Solution,
+  Status,
+  Tabs,
+  TabItem,
+} from "@components/kit";
+
+<InBrief>
+
+- Send `Cache-Control` on every response. Default to `no-store` for anything user-specific, and document each cacheable endpoint.
+- Compress JSON (Brotli or gzip). It typically shrinks by 70 to 90 percent.
+- Emit an `ETag` from a version column, not from hashing the rendered body, and answer `If-None-Match` with <Status code={304} />.
+- Remember that `no-cache` means "revalidate before use", not "don't store". Use `no-store` for that.
+- Offer `fields` and `embed` where measurements show over-fetching or extra round trips matter.
+
+</InBrief>
+
+Your API is fast on a laptop on office Wi-Fi. Your users are on a train with one bar of signal, where each round trip costs hundreds of milliseconds. HTTP has decades of performance machinery built in: compression, conditional requests and shared caches. Used deliberately, it makes an API feel instant without touching the database. Used carelessly, it serves one customer's data to another.
+
+## Make every endpoint's caching an explicit decision
+
+With no `Cache-Control`, caches may apply heuristic freshness to some responses. RFC 9111 allows it for responses with a `Last-Modified` header and certain status codes. So "no header" doesn't mean "not cached". Send a header on every response:
+
+| Data                   | Header                                                                       | Meaning                                                            |
+| ---------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| Personal or per-user   | `Cache-Control: no-store`                                                    | Nobody stores it, anywhere                                         |
+| Per-user, revalidated  | `Cache-Control: private, no-cache` + `ETag`                                  | Browser may store, must check before use                           |
+| Public, changes rarely | `Cache-Control: public, max-age=300`                                         | Any cache serves it for 5 minutes                                  |
+| Public, CDN-friendly   | `Cache-Control: public, max-age=60, s-maxage=600, stale-while-revalidate=30` | Short in browsers, longer at the edge, refreshed in the background |
+
+Two subtleties catch experienced teams:
+
+- **`no-cache` doesn't mean "don't cache".** It means "store, but revalidate with the origin before every use". Only `no-store` prevents storage.
+- **`Authorization` keeps responses out of shared caches** unless the response explicitly says `public`, `s-maxage` or `must-revalidate` (RFC 9111 §3.5). Adding `public` to an authenticated endpoint therefore turns on CDN caching for per-user data. Never do it on anything user-specific.
+
+## Validate cheaply with ETags and version columns
+
+An `ETag` is a validator for the current version of a representation. The client sends it back in `If-None-Match`. If nothing changed, the server answers <Status code={304} /> with no body.
+
+```http
+GET /products/sku-123                        GET /products/sku-123
+                                             If-None-Match: "v42"
+→ 200 OK                                     → 304 Not Modified
+  ETag: "v42"                                  ETag: "v42"
+  Cache-Control: public, max-age=60
+  { …12 KB of product… }
+```
+
+Generic middleware computes the ETag by hashing the rendered body, which saves bandwidth but not work: the server still loads, serialises and hashes everything before discovering nothing changed. A version column (or `updated_at` plus ID) lets you answer 304 before touching the full row. The same ETag then serves [optimistic concurrency](/reliability/concurrency/) with `If-Match`, so one mechanism covers both.
+
+Weak ETags (`W/"v42"`) mean "semantically equivalent", not byte-identical. They're fine for `If-None-Match`, but `If-Match` requires strong comparison, so a weak ETag can never satisfy it. Some proxies weaken ETags when they compress responses, which quietly breaks conditional writes behind them.
+
+_Assumes:_ each resource row has an integer `version` incremented on every write.
+
+<Tabs syncKey="stack">
+<TabItem label="FastAPI">
+
+```python
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+@app.get("/products/{sku}")
+def get_product(sku: str, request: Request, response: Response):
+    version = products.version_of(sku)  # one indexed lookup
+    if version is None:
+        raise problem(404, "product-not-found")
+    etag = f'"v{version}"'
+    headers = {"ETag": etag, "Cache-Control": "public, max-age=60"}
+    if etag in request.headers.get("If-None-Match", ""):
+        return Response(status_code=304, headers=headers)
+    response.headers.update(headers)
+    return products.get(sku)
+```
+
+</TabItem>
+<TabItem label="Django">
+
+```python
+# settings.py
+MIDDLEWARE = ["django.middleware.gzip.GZipMiddleware", *MIDDLEWARE]
+
+def product_etag(request, pk):
+    version = Product.objects.filter(pk=pk).values_list("version", flat=True).first()
+    return None if version is None else f"v{version}"
+
+class ProductDetail(RetrieveAPIView):
+    queryset = Product.objects.all()
+    serializer_class = ProductSerializer
+
+    @method_decorator(condition(etag_func=product_etag))  # 304 before the view renders
+    @method_decorator(cache_control(public=True, max_age=60))
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
+```
+
+</TabItem>
+<TabItem label="Hono">
+
+```ts
+app.use("*", compress());
+
+app.get("/products/:sku", async (c) => {
+  const version = await products.versionOf(c.req.param("sku"));
+  if (version === undefined) return problem(c, 404, "product-not-found");
+  const etag = `"v${version}"`;
+  c.header("ETag", etag);
+  c.header("Cache-Control", "public, max-age=60");
+  if ((c.req.header("If-None-Match") ?? "").includes(etag)) return c.body(null, 304);
+  return c.json(await products.get(c.req.param("sku")));
+});
+```
+
+</TabItem>
+</Tabs>
+
+## Compress everything that isn't already compressed
+
+JSON repeats every field name on every object and typically compresses by 70 to 90 percent. Enable Brotli or gzip at the proxy or in the framework for responses over about 1 KB, send `Vary: Accept-Encoding`, and skip formats that are already compressed (images, archives, PDFs).
+
+<Note kind="incident" title="BREACH" year="2013" source="https://www.breachattack.com/">
+
+Researchers showed that when a compressed HTTPS response contains both a secret, such as a CSRF token, and text the attacker can influence, the attacker can recover the secret byte by byte by watching the compressed size. For APIs the mitigation is structural: don't reflect request input in the same compressed body as a secret, and keep tokens in headers.
+
+</Note>
+
+## Cut bytes and round trips with fields and embed
+
+`?fields=id,name,price` lets a list screen take 3 properties instead of 60. `?embed=customer,line_items` lets a detail screen fetch an order and its relations in one request instead of N+1. Both increase the number of representations per URL, so they interact with caching: the query string is part of the cache key, and too many shapes means low hit rates. Offer them where traces show the cost, not by default.
+
+<Compare caption="31 round trips on a mobile network is several seconds of spinner.">
+<Prefer>
+
+```http
+GET /orders/ord_42?embed=line_items&fields=id,status,line_items
+Accept-Encoding: br, gzip
+If-None-Match: "v7"
+```
+
+</Prefer>
+<Avoid>
+
+```http
+GET /orders/ord_42
+GET /orders/ord_42/line-items/li_1
+…
+GET /orders/ord_42/line-items/li_30
+```
+
+</Avoid>
+</Compare>
+
+<Note kind="history" title="Why GraphQL happened" year="2012" source="https://engineering.fb.com/2015/09/14/core-infra/graphql-a-data-query-language/">
+
+Facebook built GraphQL while rewriting its iOS News Feed natively. Each screen needed different fields from many resources over slow mobile networks, and their resource endpoints meant many round trips and lots of unused data. GraphQL let the client declare the exact shape it needed. `fields` and `embed` are the lightweight REST answer to the same problem, and are often enough.
+
+</Note>
+
+<RuleGroup>
+
+<Rule
+  guide="zalando"
+  id="155"
+  level="SHOULD"
+  title="Reduce bandwidth needs and improve responsiveness"
+/>
+<Rule guide="zalando" id="156" level="SHOULD" title="Use gzip compression" />
+<Rule guide="zalando" id="157" level="SHOULD" title="Support partial responses via filtering" />
+<Rule guide="zalando" id="158" level="SHOULD" title="Allow optional embedding of sub-resources" />
+<Rule
+  guide="zalando"
+  id="227"
+  level="MUST"
+  title="Document cacheable GET, HEAD, and POST endpoints"
+/>
+
+</RuleGroup>
+
+<WorkedProblem kind="Review" title="A CDN in front of the account endpoint">
+
+To cut load, a team puts a CDN in front of the whole API and adds this to every `GET`:
+
+```http
+Cache-Control: public, max-age=60
+```
+
+`GET /me` returns the caller's profile, authenticated with a bearer token. What happens?
+
+<Solution>
+
+`public` explicitly allows shared caches to store responses to requests carrying `Authorization`. The CDN's cache key is the URL, so the first user's profile is served to everyone who calls `/me` in the next 60 seconds. That's a data breach.
+
+Fix: `Cache-Control: private, no-store` (or `private, no-cache` with an `ETag`) on every per-user endpoint, and `public` only on an allow-list of endpoints that serve identical data to everyone. Add a test that asserts no authenticated route sends `public`.
+
+</Solution>
+</WorkedProblem>
+
+<SelfCheck>
+
+<Question
+  q='A client sends <code>If-None-Match: "v3"</code> and the current ETag is <code>"v3"</code>. What should the server return?'
+  answer={1}
+  options={[
+    { text: "200 with the full body.", why: "Wasteful: the client already has this version." },
+    { text: "304 Not Modified, with no body.", why: "The client's copy is current; it reuses it." },
+    {
+      text: "412 Precondition Failed.",
+      why: "That's for failed <code>If-Match</code> on writes, a different mechanism.",
+    },
+    {
+      text: "204 No Content.",
+      why: '204 means success with no content, not "use your cached copy".',
+    },
+  ]}
+/>
+
+<Question
+  q="Which header prevents a response from being stored anywhere?"
+  answer={3}
+  options={[
+    {
+      text: "<code>Cache-Control: no-cache</code>",
+      why: "It allows storage but requires revalidation before each use.",
+    },
+    {
+      text: "<code>Cache-Control: private</code>",
+      why: "Allows the browser cache to store it, but not shared caches.",
+    },
+    {
+      text: "<code>Pragma: no-cache</code>",
+      why: "An HTTP/1.0 request header with no defined meaning on responses.",
+    },
+    {
+      text: "<code>Cache-Control: no-store</code>",
+      why: "The only directive that forbids storing the response.",
+    },
+  ]}
+/>
+
+</SelfCheck>

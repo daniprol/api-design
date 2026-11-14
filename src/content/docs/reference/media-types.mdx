@@ -1,0 +1,29 @@
+---
+title: Media types
+description: The media types an HTTP API commonly sends and accepts, what each is for, and where it's defined.
+related:
+  - http/headers
+  - representations/files
+  - evolution/versioning
+---
+
+Send the most specific registered type that's true. Clients and tooling dispatch on it, so `application/problem+json` is worth more than `application/json` with an error inside.
+
+| Media type                                | Use for                                                                 | Spec        | Chapter                                    |
+| ----------------------------------------- | ----------------------------------------------------------------------- | ----------- | ------------------------------------------ |
+| `application/json`                        | Ordinary request and response bodies. Always UTF-8.                     | RFC 8259    | [JSON conventions](/representations/json/) |
+| `application/problem+json`                | Error responses.                                                        | RFC 9457    | [Errors](/http/errors/)                    |
+| `application/merge-patch+json`            | `PATCH` bodies that set, keep or remove fields.                         | RFC 7396    | [Methods](/http/methods/)                  |
+| `application/json-patch+json`             | `PATCH` as a list of operations (`add`, `remove`, `test`).              | RFC 6902    | [Methods](/http/methods/)                  |
+| `application/x-ndjson`                    | Streams and bulk exports, one JSON value per line. Not IANA-registered. | ndjson.org  |                                            |
+| `multipart/form-data`                     | File uploads with metadata in one request.                              | RFC 7578    | [Files](/representations/files/)           |
+| `application/octet-stream`                | Raw binary of unknown or generic type.                                  | RFC 2046    | [Files](/representations/files/)           |
+| `text/csv`                                | Tabular exports for spreadsheets.                                       | RFC 4180    | [Headers](/http/headers/)                  |
+| `application/x.shop.order+json;version=2` | Versioned, unregistered vendor representation (`x.` tree).              | RFC 6838 §3 | [Versioning](/evolution/versioning/)       |
+| `application/vnd.example.order+json`      | Versioned vendor representation registered with IANA (`vnd.` tree).     | RFC 6838 §3 | [Versioning](/evolution/versioning/)       |
+
+## Rules of thumb
+
+- Declare `charset` only on `text/*` types. JSON is UTF-8 by definition, and `application/json; charset=utf-8` is harmless but redundant.
+- Use the `+json` structured syntax suffix for your own JSON-based types, so generic tools still recognise them as JSON.
+- Answer <code>415</code> to a `Content-Type` you don't accept, and <code>406</code> when nothing in `Accept` can be produced.

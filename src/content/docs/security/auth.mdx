@@ -1,0 +1,292 @@
+---
+title: Authentication and authorization
+description: Authenticate with standard OAuth 2.0 bearer tokens, validate them fully, grant narrow scopes, and check authorisation on every object and every writable property.
+sources:
+  - label: RFC 6750
+    title: "RFC 6750: The OAuth 2.0 Authorization Framework: Bearer Token Usage"
+    url: https://www.rfc-editor.org/rfc/rfc6750
+    accessed: 2026-11
+  - label: RFC 9700
+    title: "RFC 9700: Best Current Practice for OAuth 2.0 Security"
+    url: https://www.rfc-editor.org/rfc/rfc9700
+    accessed: 2026-11
+  - label: RFC 8725
+    title: "RFC 8725: JSON Web Token Best Current Practices"
+    url: https://www.rfc-editor.org/rfc/rfc8725
+    accessed: 2026-11
+  - label: OWASP API Top 10
+    title: "OWASP API Security Top 10 (2023)"
+    url: https://owasp.org/API-Security/editions/2023/en/0x11-t10/
+    accessed: 2026-11
+  - label: Krebs, 2018
+    title: "Krebs on Security: USPS Site Exposed Data on 60 Million Users (21 November 2018)"
+    url: https://krebsonsecurity.com/2018/11/usps-site-exposed-data-on-60-million-users/
+    accessed: 2026-11
+  - label: GitHub, 2012
+    title: "GitHub Blog: Public Key Security Vulnerability and Mitigation (4 March 2012)"
+    url: https://github.blog/2012-03-04-public-key-security-vulnerability-and-mitigation/
+    accessed: 2026-11
+related:
+  - security/limits
+  - modelling/urls
+  - http/status-codes
+  - events/webhooks
+---
+
+import {
+  InBrief,
+  Note,
+  Compare,
+  Prefer,
+  Avoid,
+  Rule,
+  RuleGroup,
+  SelfCheck,
+  Question,
+  WorkedProblem,
+  Solution,
+  Status,
+  Tabs,
+  TabItem,
+} from "@components/kit";
+
+<InBrief>
+
+- Use OAuth 2.0 bearer tokens from an established authorisation server. Don't invent token formats.
+- Validate every token completely: signature against an allow-listed algorithm, issuer, audience, expiry.
+- Design scopes around what callers do (`orders:read`, `refunds:write`), and keep dangerous powers in separate scopes.
+- Check authorisation on every object access, and filter queries by the caller as defence in depth. This is the top API vulnerability.
+- Allow-list writable and readable properties per role, so a client can't set `is_admin` or read `cost_price`.
+
+</InBrief>
+
+APIs are now the main way data leaves a company, and so the main way it leaks. The breaches that make the news are rarely clever cryptography. Usually an API answered a question it should have refused, because it checked who was asking but not whether the answer was theirs. Security is a design property of the API, not a layer added in front of it.
+
+## Ask two questions, in order
+
+1. **Authentication: who is calling?** Fails with <Status code={401} /> and a `WWW-Authenticate` header naming the scheme.
+2. **Authorisation: may this caller do this to this specific object?** Fails with <Status code={403} />, or with <Status code={404} /> when the caller shouldn't learn that the object exists.
+
+Most real-world failures are in the second question, and specifically in its last three words.
+
+## Use OAuth 2.0 bearer tokens and validate them fully
+
+For APIs called by applications on behalf of users or services, OAuth 2.0 is the standard: the client obtains an access token from an authorisation server and sends it on each request (`Authorization: Bearer …`, RFC 6750). Use an established server (Keycloak, Auth0, Entra ID, Cognito, your platform's IdP) rather than building one. RFC 9700 collects what the last decade taught about doing OAuth safely: authorisation code with PKCE for every client type, no implicit grant, and sender-constrained tokens where possible.
+
+When tokens are JWTs, the API validates them itself, and each check exists because someone skipped it once:
+
+| Check                                     | Without it                                                         |
+| ----------------------------------------- | ------------------------------------------------------------------ |
+| Signature, with an allow-listed algorithm | `alg: none` or an HMAC/RSA key confusion makes forged tokens valid |
+| `iss` (issuer)                            | A token from another tenant's IdP is accepted                      |
+| `aud` (audience)                          | A token meant for the analytics API works against the payments API |
+| `exp` and `nbf`                           | Stolen tokens work forever                                         |
+
+Keep access tokens short-lived (minutes), never log them, and never accept credentials in query strings: URLs are logged everywhere.
+
+## Design scopes around what callers do
+
+A scope is a named, grantable permission. Name scopes from the API consumer's point of view, coarse enough to manage and fine enough for least privilege:
+
+```text
+orders:read      read orders
+orders:write     create and change orders
+refunds:write    issue refunds (a separate, more sensitive power)
+```
+
+A reporting dashboard gets `orders:read`; only the support tool gets `refunds:write`. Scopes say what kind of operation is allowed. They don't say which objects: a token with `orders:read` still only reads the caller's own orders.
+
+## Check authorisation on every object
+
+Broken object-level authorisation (BOLA) has been first on the OWASP API Security Top 10 since the list started. The pattern is always the same: the handler authenticates the caller, loads the object by the ID in the URL, and returns it without checking ownership.
+
+<Note kind="incident" title="USPS Informed Visibility" year="2018" source="https://krebsonsecurity.com/2018/11/usps-site-exposed-data-on-60-million-users/">
+
+A U.S. Postal Service API let any logged-in user query account details for other users, about 60 million of them, by changing a search parameter. The API checked that the caller was authenticated, not that the data was theirs, and accepted wildcard searches. The flaw had been reported a year earlier. Authentication answers who; every query still needs to answer whose.
+
+</Note>
+
+Two layers make it hard to forget:
+
+- **Scope queries by the caller.** Build queries from the caller's tenant or account (`Order.objects.filter(account=request.user.account)`) so another tenant's object is not found.
+- **Check the object explicitly** where the rules are richer than ownership, such as shared resources or delegated access.
+
+_Assumes:_ JWT access tokens from `https://auth.example.com` with audience `orders-api` and a space-separated `scope` claim.
+
+<Tabs syncKey="stack">
+<TabItem label="FastAPI">
+
+```python
+def principal(security_scopes: SecurityScopes, token: str = Depends(bearer)) -> Principal:
+    try:
+        claims = jwt.decode(token, jwks.key_for(token), algorithms=["RS256"],
+                            issuer="https://auth.example.com", audience="orders-api",
+                            options={"require": ["exp", "iss", "aud"]})
+    except jwt.InvalidTokenError:
+        raise HTTPException(401, headers={"WWW-Authenticate": 'Bearer error="invalid_token"'})
+    granted = set(claims.get("scope", "").split())
+    if missing := set(security_scopes.scopes) - granted:
+        raise problem(403, "insufficient-scope", missing=sorted(missing))
+    return Principal(account_id=claims["sub"], scopes=granted)
+
+@app.get("/orders/{order_id}")
+def get_order(order_id: str, me: Principal = Security(principal, scopes=["orders:read"])):
+    order = orders.get_for_account(me.account_id, order_id)  # scoped query
+    if order is None:
+        raise problem(404, "order-not-found")
+    return order
+```
+
+</TabItem>
+<TabItem label="Django">
+
+```python
+class HasScope(BasePermission):
+    required: frozenset[str] = frozenset()
+
+    @classmethod
+    def of(cls, *scopes):
+        return type("HasScope", (cls,), {"required": frozenset(scopes)})
+
+    def has_permission(self, request, view):
+        return self.required <= set(getattr(request.auth, "scopes", ()))
+
+class OrderViewSet(viewsets.ReadOnlyModelViewSet):
+    serializer_class = OrderSerializer
+    permission_classes = [IsAuthenticated, HasScope.of("orders:read")]
+
+    def get_queryset(self):  # another account's order is not found: 404
+        return Order.objects.filter(account=self.request.user.account)
+```
+
+</TabItem>
+<TabItem label="Hono">
+
+```ts
+app.use("/orders/*", jwk({ jwks_uri: "https://auth.example.com/.well-known/jwks.json" }));
+app.use("/orders/*", async (c, next) => {
+  const { iss, aud } = c.get("jwtPayload");
+  if (iss !== "https://auth.example.com" || ![aud].flat().includes("orders-api")) {
+    c.header("WWW-Authenticate", 'Bearer error="invalid_token"');
+    return problem(c, 401, "invalid-token");
+  }
+  await next();
+});
+
+app.get("/orders/:id", requireScope("orders:read"), async (c) => {
+  const order = await orders.getForAccount(c.get("jwtPayload").sub, c.req.param("id")); // scoped
+  return order ? c.json(toApi(order)) : problem(c, 404, "order-not-found");
+});
+```
+
+</TabItem>
+</Tabs>
+
+## Allow-list properties in both directions
+
+Object-level checks aren't enough if a caller can write fields they shouldn't, or read fields meant for staff. OWASP calls this broken object property level authorisation. It covers both mass assignment (`PATCH /customers/me {"credit_limit": 100000}`) and excessive data exposure (`cost_price` returned to shoppers).
+
+<Compare>
+<Prefer>
+
+```python
+class CustomerUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = None
+    email: EmailStr | None = None
+```
+
+Unknown or privileged fields are rejected.
+
+</Prefer>
+<Avoid>
+
+```python
+customer.update(**request.json())
+```
+
+Every column is writable by every caller.
+
+</Avoid>
+</Compare>
+
+<Note kind="incident" title="Mass assignment at GitHub" year="2012" source="https://github.blog/2012-03-04-public-key-security-vulnerability-and-mitigation/">
+
+Egor Homakov attached his public key to the Rails repository on GitHub by submitting the public-key form with an extra field: the endpoint assigned every submitted attribute to the model, including the key's owner. He then pushed a commit to Rails to prove it. Rails 3.2.3 made attribute allow-listing the default for new applications weeks later. Writable fields must be listed, never inferred.
+
+</Note>
+
+<RuleGroup>
+
+<Rule guide="zalando" id="104" level="MUST" title="Secure endpoints" />
+<Rule guide="zalando" id="105" level="MUST" title="Define and assign permissions (scopes)" />
+<Rule
+  guide="zalando"
+  id="225"
+  level="MUST"
+  title="Follow the naming convention for permissions (scopes)"
+/>
+
+</RuleGroup>
+
+<WorkedProblem kind="Review" title="An invoice download">
+
+```python
+@app.get("/invoices/{invoice_id}/pdf")
+def download(invoice_id: int, token: str = Query(...)):
+    claims = jwt.decode(token, options={"verify_signature": False})
+    if "invoices:read" not in claims["scope"]:
+        raise HTTPException(403)
+    return FileResponse(f"/invoices/{invoice_id}.pdf")
+```
+
+<Solution>
+
+1. **Signature not verified.** Anyone can mint a token with any scope. Verify against the issuer's keys with an allow-listed algorithm, and check `iss`, `aud` and `exp`.
+2. **Token in the query string.** It ends up in access logs, browser history and `Referer` headers. Use the `Authorization` header, or for browser downloads a short-lived, single-use signed URL.
+3. **No object-level check.** Any valid token reads any invoice, and sequential integer IDs make enumeration trivial. Look up the invoice through the caller's account and return 404 otherwise.
+4. **Scope check by substring.** `"invoices:read" in claims["scope"]` also matches `"invoices:read-summary"`. Split the claim and compare whole values.
+
+</Solution>
+</WorkedProblem>
+
+<SelfCheck>
+
+<Question
+  q="A valid token with <code>orders:read</code> for customer A requests <code>GET /orders/ord_99</code>, which belongs to customer B. What's the right outcome?"
+  answer={2}
+  options={[
+    {
+      text: "200: the token has the right scope.",
+      why: "Scopes grant kinds of operations, not access to every object. This is BOLA.",
+    },
+    {
+      text: "401: the token is for the wrong user.",
+      why: "The caller is authenticated; 401 would make the client refresh a valid token.",
+    },
+    {
+      text: "404, from a query scoped to A's account.",
+      why: "A never learns that <code>ord_99</code> exists, and the check can't be forgotten in one handler.",
+    },
+    {
+      text: "403 with the order's owner in the body.",
+      why: "Confirms existence and leaks who owns it.",
+    },
+  ]}
+/>
+
+<Question
+  q="Which JWT check prevents a token issued for your analytics API from being accepted by your payments API?"
+  answer={1}
+  options={[
+    { text: "Signature verification.", why: "Both tokens are validly signed by the same issuer." },
+    {
+      text: "Audience (<code>aud</code>) validation.",
+      why: "The audience names the API a token is intended for.",
+    },
+    { text: "Expiry (<code>exp</code>) validation.", why: "The token may well be unexpired." },
+    { text: "Issuer (<code>iss</code>) validation.", why: "Same issuer for both APIs." },
+  ]}
+/>
+
+</SelfCheck>

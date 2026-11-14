@@ -1,0 +1,301 @@
+---
+title: Webhooks
+description: A webhook is an event delivered by HTTP POST to a URL someone else controls. Sign every delivery over its ID, timestamp and body, retry with backoff for days, defend against SSRF, and ask receivers for a fast 2xx and deduplication.
+sources:
+  - label: Standard Webhooks
+    title: "Standard Webhooks specification"
+    url: https://github.com/standard-webhooks/standard-webhooks/blob/main/spec/standard-webhooks.md
+    accessed: 2026-11
+  - label: Stripe
+    title: "Stripe Docs: Receive Stripe events in your webhook endpoint"
+    url: https://docs.stripe.com/webhooks
+    accessed: 2026-11
+  - label: Lindsay, 2007
+    title: "Jeff Lindsay: Web hooks to revolutionize the web (2007)"
+    url: https://progrium.github.io/blog/2007/05/03/web-hooks-to-revolutionize-the-web
+    accessed: 2026-11
+  - label: OWASP API7:2023
+    title: "OWASP API Security Top 10 (2023): API7 Server Side Request Forgery"
+    url: https://owasp.org/API-Security/editions/2023/en/0xa7-server-side-request-forgery/
+    accessed: 2026-11
+  - label: RFC 2104
+    title: "RFC 2104: HMAC: Keyed-Hashing for Message Authentication"
+    url: https://www.rfc-editor.org/rfc/rfc2104
+    accessed: 2026-11
+related:
+  - events/event-design
+  - events/consuming-events
+  - security/auth
+  - reliability/idempotency
+---
+
+import {
+  InBrief,
+  Note,
+  Compare,
+  Prefer,
+  Avoid,
+  Rule,
+  RuleGroup,
+  SelfCheck,
+  Question,
+  WorkedProblem,
+  Solution,
+  Status,
+  Tabs,
+  TabItem,
+} from "@components/kit";
+
+<InBrief>
+
+- Sign every delivery with HMAC-SHA256 over the delivery ID, a timestamp and the raw body. Receivers verify before parsing, and reject stale timestamps.
+- Give each event a stable ID that stays the same across retries, so receivers can deduplicate.
+- Treat only 2xx as success. Retry everything else with exponential backoff and jitter for days, then disable the endpoint and tell a human.
+- Receiver URLs are attacker-supplied. Send from workers that can't reach your internal network.
+- Ask receivers to verify, enqueue and answer 2xx within seconds, and to process asynchronously.
+
+</InBrief>
+
+Polling is the API equivalent of a child in the back seat asking "are we there yet?" every thirty seconds. Most answers are no, each one costs a request, and the real answer still arrives up to thirty seconds late. A webhook inverts the conversation: the client registers a URL, and you `POST` to it when something happens. It's the cheapest way to push events across organisational boundaries, which is why every payment, source-control and messaging platform offers one. It's also an HTTP request from your servers to a URL a stranger typed into a form, and that sentence contains most of this page's advice.
+
+## Use a conventional envelope and headers
+
+Standard Webhooks, a specification written by a group of webhook-sending companies, settles the details that every provider used to invent differently. Adopt it unless you have a reason not to; receivers then verify your deliveries with an existing library.
+
+```http
+POST /hooks/shop HTTP/1.1
+Host: partner.example.net
+Content-Type: application/json
+webhook-id: msg_2KWPBgLlAfxdpx2AI54pPJ85f4W
+webhook-timestamp: 1767225600
+webhook-signature: v1,K5oZfzN95Z9UVu1EsfQmfVNQhnkZ2pj9o9NDN/H/pI4=
+
+{"type": "order.shipped", "timestamp": "2026-01-01T00:00:00Z",
+ "data": {"order_id": "ord_42", "shipment_id": "shp_9"}}
+```
+
+| Header              | Meaning                                                                                     |
+| ------------------- | ------------------------------------------------------------------------------------------- |
+| `webhook-id`        | The message ID. Identical on every retry of the same event, so receivers deduplicate on it. |
+| `webhook-timestamp` | Unix seconds when this attempt was signed. Receivers reject values too far from now.        |
+| `webhook-signature` | Space-separated list of `v1,<base64 HMAC>`. More than one entry during secret rotation.     |
+
+Public webhook types follow the `resource.past_tense` style that Stripe and GitHub use (`order.shipped`), which reads well in a subscription UI. Internal event types on a bus stay namespaced kebab-case (`shop.order-placed`, see [Event design](/events/event-design/)). Pick one style per audience and document it.
+
+Keep payloads small. A "thin" event that carries the type and the resource ID, and lets the receiver fetch the current state through the API, avoids stale snapshots, avoids leaking data to a URL that changed hands, and sidesteps ordering problems. Stripe now recommends this shape for new integrations.
+
+## Sign the ID, the timestamp and the body
+
+A webhook endpoint is a public URL that triggers business actions. Without a signature, anyone who learns it can mark orders as paid. The signature is an HMAC-SHA256 over `{webhook-id}.{webhook-timestamp}.{raw body}` with a per-endpoint secret. Including the timestamp stops replays of an old, captured delivery; including the ID stops an attacker from swapping IDs to defeat deduplication.
+
+The receiver must verify against the raw bytes before any JSON parsing, because re-serialising changes whitespace and key order and the signature no longer matches. Compare in constant time, accept any matching `v1` entry so secrets can rotate, and reject timestamps more than a few minutes old.
+
+_Assumes:_ the per-endpoint secret is stored base64-encoded after the `whsec_` prefix, as Standard Webhooks specifies; `TOLERANCE` is 300 seconds.
+
+<Tabs syncKey="stack">
+<TabItem label="FastAPI">
+
+```python
+def verify(secret: str, msg_id: str, ts: str, body: bytes, header: str) -> bool:
+    if abs(time.time() - int(ts)) > TOLERANCE:
+        return False
+    key = base64.b64decode(secret.removeprefix("whsec_"))
+    expected = base64.b64encode(hmac.new(key, f"{msg_id}.{ts}.".encode() + body, "sha256").digest()).decode()
+    return any(hmac.compare_digest(expected, sig.split(",", 1)[1])
+               for sig in header.split() if sig.startswith("v1,"))
+
+@app.post("/hooks/shop", status_code=204)
+async def receive(request: Request, webhook_id: Annotated[str, Header()],
+                  webhook_timestamp: Annotated[str, Header()], webhook_signature: Annotated[str, Header()]):
+    body = await request.body()  # raw bytes, not request.json()
+    if not verify(SECRET, webhook_id, webhook_timestamp, body, webhook_signature):
+        raise problem(401, "invalid-webhook-signature")
+    await queue.enqueue("shop-events", id=webhook_id, body=body)  # dedupe and process later
+```
+
+</TabItem>
+<TabItem label="Django">
+
+```python
+@csrf_exempt  # signed by the sender; there is no browser session to forge
+@require_POST
+def receive(request):
+    msg_id = request.headers["webhook-id"]
+    ts = request.headers["webhook-timestamp"]
+    if not verify(SECRET, msg_id, ts, request.body, request.headers["webhook-signature"]):
+        return problem(401, "invalid-webhook-signature")
+    with transaction.atomic():
+        _, created = InboundWebhook.objects.get_or_create(
+            webhook_id=msg_id, defaults={"body": request.body.decode()})
+    if created:
+        transaction.on_commit(lambda: process_webhook.delay(msg_id))
+    return HttpResponse(status=204)
+```
+
+</TabItem>
+<TabItem label="Hono">
+
+```ts
+app.post("/hooks/shop", async (c) => {
+  const body = await c.req.text(); // raw body, before any JSON.parse
+  const id = c.req.header("webhook-id") ?? "";
+  const ts = c.req.header("webhook-timestamp") ?? "";
+  if (Math.abs(Date.now() / 1000 - Number(ts)) > TOLERANCE) return problem(c, 401, "stale-webhook");
+
+  const key = await crypto.subtle.importKey(
+    "raw",
+    base64ToBytes(SECRET.slice(6)),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const mac = bytesToBase64(
+    new Uint8Array(await crypto.subtle.sign("HMAC", key, encode(`${id}.${ts}.${body}`))),
+  );
+  const sigs = (c.req.header("webhook-signature") ?? "")
+    .split(" ")
+    .filter((s) => s.startsWith("v1,"));
+  if (!sigs.some((s) => timingSafeEqual(s.slice(3), mac)))
+    return problem(c, 401, "invalid-webhook-signature");
+
+  await queue.send({ id, body });
+  return c.body(null, 204);
+});
+```
+
+</TabItem>
+</Tabs>
+
+## Retry for days, then stop and tell someone
+
+Receivers go down, deploy, and misconfigure TLS. Treat only 2xx as delivered. Redirects count as failures: the receiver should update the URL rather than have you follow it. Retry with exponential backoff and jitter on a schedule that spans days, because a weekend outage shouldn't lose Friday's events. Standard Webhooks gives an example schedule from immediately to 24-hour gaps over roughly three days, and Stripe retries live events for up to three days.
+
+| Response                                                                                   | Sender does                                 |
+| ------------------------------------------------------------------------------------------ | ------------------------------------------- |
+| 2xx                                                                                        | Done.                                       |
+| <Status code={410} />                                                                      | Disable the endpoint and stop sending.      |
+| <Status code={429} />, <Status code={502} />, <Status code={503} />, <Status code={504} /> | Slow down; honour `Retry-After` if present. |
+| 3xx, other 4xx and 5xx, timeout                                                            | Retry on the schedule.                      |
+
+Give each attempt a timeout of 15 to 30 seconds. When the schedule runs out, disable the endpoint and email its owner. Let them see delivery attempts and resend events from a dashboard or an API, so recovery doesn't need a support ticket.
+
+## Don't let receiver URLs reach your network
+
+A webhook URL is input. Register `http://169.254.169.254/latest/meta-data/` or `http://localhost:6379/` as an endpoint, and a naive sender will helpfully fetch cloud credentials or poke an internal Redis. This is server-side request forgery, API7 in the OWASP API Security Top 10, and webhook senders are the textbook target.
+
+- Send from workers in a network segment that can't reach internal services, or through an egress proxy that blocks private, loopback and link-local ranges.
+- Check the resolved IP at connection time, not only at registration, because DNS answers change.
+- Require HTTPS, don't follow redirects, and don't echo response bodies back to the endpoint owner.
+
+## Tell receivers what you expect of them
+
+Documentation for a webhook is half a contract with the sender and half instructions to the receiver. Say plainly:
+
+- **Verify first.** Reject unsigned or stale deliveries with <Status code={401} />.
+- **Answer fast.** Enqueue and return 2xx within a few seconds; do the work afterwards. Slow handlers time out and turn into retries.
+- **Expect duplicates and disorder.** Deduplicate on `webhook-id`, and fetch the current state when order matters (see [Consuming events](/events/consuming-events/)).
+- **Ignore unknown event types and fields.** New ones will appear.
+
+<Compare>
+<Prefer>
+
+```text
+POST /hooks/shop
+  verify signature and timestamp   → 401 if invalid
+  insert webhook-id, enqueue body  → 204 in ~50 ms
+worker: process, call APIs, send emails
+```
+
+</Prefer>
+<Avoid>
+
+```text
+POST /hooks/shop
+  json.loads(body), no signature check
+  update ledger, render invoice PDF, email customer
+  → 200 after 40 s, or a timeout and a retry that does it all again
+```
+
+</Avoid>
+</Compare>
+
+<Note kind="history" title="Web hooks" year="2007" source="https://progrium.github.io/blog/2007/05/03/web-hooks-to-revolutionize-the-web">
+
+Jeff Lindsay named the idea in a May 2007 blog post, describing web hooks as "user defined callbacks made with HTTP POST". The pitch was composition: any service could notify any other without either knowing the other's API. The mechanism hasn't changed since. What took the industry until the 2020s to write down in a shared specification was everything around it: IDs, retries, and how to sign the request.
+
+</Note>
+
+<RuleGroup>
+
+<Rule guide="zalando" id="211" level="MUST" title="Provide unique event identifiers" />
+<Rule
+  guide="zalando"
+  id="214"
+  level="MUST"
+  title="Be robust against duplicates when consuming events"
+/>
+
+</RuleGroup>
+
+<WorkedProblem kind="Review" title="An unsigned webhook">
+
+A shop sends `order.paid` webhooks to merchants. The docs say: "We POST JSON to your URL. To check it's us, compare the `X-Shop-Token` header with the token in your dashboard. We retry three times, a minute apart. Respond with 200 once you've fulfilled the order." What's wrong?
+
+<Solution>
+
+- **A static token isn't a signature.** It proves nothing about the body, and anyone who sees one request (a log, a proxy) can forge every future one. Use HMAC over ID, timestamp and body.
+- **No timestamp**, so a captured request can be replayed to fulfil the same order again.
+- **No delivery ID**, so receivers can't tell a retry from a second payment.
+- **Three retries a minute apart** lose every event sent during a ten-minute deploy. Retry for days with backoff.
+- **"Respond once you've fulfilled"** invites slow handlers, timeouts and retries that fulfil twice. Ask for a fast 2xx after enqueueing.
+- **No word on SSRF**, which is the sender's own problem: merchant URLs need egress filtering.
+
+</Solution>
+</WorkedProblem>
+
+<SelfCheck>
+
+<Question
+  q="Why does the signed content include <code>webhook-timestamp</code>?"
+  answer={2}
+  options={[
+    {
+      text: "So receivers can sort events in order.",
+      why: "It's the signing time of this attempt, not when the event happened.",
+    },
+    {
+      text: "So the signature is unique per endpoint.",
+      why: "The per-endpoint secret already does that.",
+    },
+    {
+      text: "So a captured delivery can't be replayed later: the receiver rejects stale timestamps, and the attacker can't change one without breaking the signature.",
+      why: "That's replay protection.",
+    },
+    {
+      text: "Because HMAC requires a timestamp.",
+      why: "HMAC signs any bytes; the timestamp is a design choice.",
+    },
+  ]}
+/>
+
+<Question
+  q="A receiver's handler takes 40 seconds and your timeout is 30. What happens, and who should change?"
+  answer={0}
+  options={[
+    {
+      text: "Every delivery times out and is retried, so the work runs repeatedly; the receiver should enqueue and answer 2xx at once.",
+      why: "Fast acknowledgement plus asynchronous processing is the receiver's side of the contract.",
+    },
+    {
+      text: "Nothing: the work finished eventually.",
+      why: "The sender saw a failure and will retry.",
+    },
+    {
+      text: "The sender should raise its timeout to five minutes.",
+      why: "That ties up sender workers and only hides the problem.",
+    },
+    { text: "The sender should stop retrying timeouts.", why: "Then real outages lose events." },
+  ]}
+/>
+
+</SelfCheck>

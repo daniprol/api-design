@@ -1,0 +1,273 @@
+---
+title: Headers and content negotiation
+description: Use standard headers before inventing your own, propagate W3C Trace Context, honour Prefer where it saves work, and let Accept and Accept-Language choose representations.
+sources:
+  - label: RFC 9110 §8, §12
+    title: "RFC 9110: HTTP Semantics, §8 Representation Data and Metadata, §12 Content Negotiation"
+    url: https://www.rfc-editor.org/rfc/rfc9110#section-12
+    accessed: 2026-11
+  - label: RFC 7240
+    title: "RFC 7240: Prefer Header for HTTP"
+    url: https://www.rfc-editor.org/rfc/rfc7240
+    accessed: 2026-11
+  - label: RFC 6648
+    title: 'RFC 6648: Deprecating the "X-" Prefix and Similar Constructs in Application Protocols'
+    url: https://www.rfc-editor.org/rfc/rfc6648
+    accessed: 2026-11
+  - label: W3C Trace Context
+    title: "W3C Recommendation: Trace Context"
+    url: https://www.w3.org/TR/trace-context/
+    accessed: 2026-11
+  - label: RFC 9651
+    title: "RFC 9651: Structured Field Values for HTTP"
+    url: https://www.rfc-editor.org/rfc/rfc9651
+    accessed: 2026-11
+  - label: BCP 47
+    title: "BCP 47 (RFC 5646): Tags for Identifying Languages"
+    url: https://www.rfc-editor.org/info/bcp47
+    accessed: 2026-11
+related:
+  - http/errors
+  - collections/caching
+  - reliability/long-running-operations
+  - representations/data-formats
+---
+
+import {
+  InBrief,
+  Note,
+  Compare,
+  Prefer,
+  Avoid,
+  Rule,
+  RuleGroup,
+  SelfCheck,
+  Question,
+  Status,
+  Tabs,
+  TabItem,
+} from "@components/kit";
+
+<InBrief>
+
+- Reach for a registered header before inventing one. If you must invent one, drop the `X-` prefix and use Structured Field syntax.
+- Propagate `traceparent` (W3C Trace Context) on every hop and return a trace ID in error bodies.
+- Support `Prefer: return=minimal` on writes and `respond-async` on slow operations, and confirm with `Preference-Applied`.
+- Let `Accept` choose formats and `Accept-Language` choose languages. Always send `Vary` for the headers you negotiated on.
+- Keep data in the body, not in headers: headers are for metadata that intermediaries act on.
+
+</InBrief>
+
+Headers are HTTP's envelope. The body is your format; headers are a shared language that every proxy, CDN, client library and tracing system already speaks. Using registered headers gets you behaviour for free. Inventing your own gets you behaviour nobody else implements.
+
+The [Headers reference](/reference/headers/) lists the ones that matter for APIs. This page covers the decisions behind them.
+
+## Use registered headers before inventing your own
+
+Most metadata an API needs already has a standard or draft-standard header: `Location` for where a created resource lives, `Retry-After` for when to try again, `ETag` and `If-Match` for versions, `Idempotency-Key` for retries, `RateLimit` and `RateLimit-Policy` for quotas (an IETF draft that many gateways already implement). Each comes with defined semantics and, often, existing client support.
+
+When nothing fits, define a header with a plain name and a value that follows Structured Field syntax (RFC 9651): a list, dictionary or item with defined parsing rules, instead of yet another ad hoc comma-separated format.
+
+<Note kind="history" title="The end of X-" year="2012" source="https://www.rfc-editor.org/rfc/rfc6648">
+
+For years, experimental headers were prefixed `X-` so they wouldn't collide with standard ones. The trouble was that successful experiments became de facto standards that couldn't be renamed: `X-Forwarded-For` is still everywhere, its standard replacement `Forwarded` far less so. RFC 6648 deprecated the convention in 2012. Name new headers as if they might succeed.
+
+</Note>
+
+## Keep Location and Content-Location apart
+
+`Location` points somewhere else: the resource just created (with <Status code={201} />), a status monitor (with <Status code={202} />) or a redirect target. `Content-Location` says that the enclosed body is a representation of the given URL. You rarely need the latter. Its one useful API case is a `POST` that returns the full state of another resource, which then becomes cacheable under that URL.
+
+Make `Location` absolute. Relative references are allowed since RFC 7231, but clients resolve them against whatever URL they used, and behind a gateway that may not be the URL you think.
+
+## Propagate W3C Trace Context on every hop
+
+One checkout can trigger thirty internal calls. A correlation ID carried through all of them is what lets you find the logs for one failing request. The standard is W3C Trace Context: a `traceparent` header carrying trace ID, parent span ID and flags, plus an optional `tracestate`. OpenTelemetry instrumentations read and write it automatically for most HTTP clients and servers, so the work is mostly making sure nothing drops it, such as a hand-rolled HTTP client or a message queue hop.
+
+```http
+traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+```
+
+Older organisations often have their own header, like Zalando's `X-Flow-ID`. If you have one, propagate both during migration, and put the trace ID into every [error body](/http/errors/) so a support ticket leads straight to the trace.
+
+_Assumes:_ OpenTelemetry auto-instrumentation is not available, so propagation is done by hand.
+
+<Tabs syncKey="stack">
+<TabItem label="FastAPI">
+
+```python
+trace_id: ContextVar[str] = ContextVar("trace_id", default="-")
+
+@app.middleware("http")
+async def trace_context(request: Request, call_next):
+    parent = request.headers.get("traceparent", "")
+    tid = parent.split("-")[1] if parent.count("-") == 3 else secrets.token_hex(16)
+    trace_id.set(tid)
+    response = await call_next(request)
+    response.headers["Trace-Id"] = tid  # handy for support; the body carries it on errors too
+    return response
+```
+
+</TabItem>
+<TabItem label="Django">
+
+```python
+class TraceContextMiddleware:
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        parent = request.headers.get("traceparent", "")
+        tid = parent.split("-")[1] if parent.count("-") == 3 else secrets.token_hex(16)
+        trace_id.set(tid)
+        response = self.get_response(request)
+        response["Trace-Id"] = tid
+        return response
+```
+
+</TabItem>
+<TabItem label="Hono">
+
+```ts
+app.use(async (c, next) => {
+  const parts = (c.req.header("traceparent") ?? "").split("-");
+  const tid = parts.length === 4 ? parts[1] : crypto.randomUUID().replaceAll("-", "");
+  c.set("traceId", tid);
+  await next();
+  c.header("Trace-Id", tid);
+});
+```
+
+</TabItem>
+</Tabs>
+
+## Honour Prefer where it saves work
+
+`Prefer` (RFC 7240) lets a client state optional preferences. The server may ignore them, and confirms the ones it applied with `Preference-Applied`.
+
+```http
+PATCH /orders/ord_42
+Prefer: return=minimal              → 204 No Content, Preference-Applied: return=minimal
+
+POST /reports
+Prefer: respond-async, wait=10      → 202 Accepted after 10 s if not finished
+```
+
+`return=minimal` saves bandwidth for clients that already know the new state. `respond-async` with `wait` lets one endpoint serve both quick and slow requests: synchronous when the work is fast, <Status code={202} /> when it isn't. That's more useful than two endpoints. `handling=strict` versus `handling=lenient` is the third common one, for clients that want unknown fields rejected rather than ignored.
+
+## Negotiate formats and languages with Accept
+
+If a resource has several representations (JSON, CSV, PDF), let the client choose with `Accept` rather than inventing `/orders.csv` or `?format=csv`:
+
+```http
+GET /orders?created_after=2026-11-01
+Accept: text/csv
+```
+
+Answer <Status code={406} /> if you can't produce any acceptable type, or fall back to your default type. RFC 9110 allows both, and the fallback is friendlier to browsers. Then add `Vary: Accept` so caches store the variants separately. Forgetting `Vary` is the classic bug: a CDN serves a cached CSV to the next client that asked for JSON.
+
+Languages work the same way. `Accept-Language: es-ES, es;q=0.9, en;q=0.5` uses BCP 47 tags with quality values, the response says what it chose in `Content-Language`, and `Vary: Accept-Language` keeps caches honest. Translate human-facing text such as problem `title` and `detail`, but never machine-facing values: enum values, problem `type` URIs and field names stay in one language.
+
+For data that legitimately exists in several languages at once, like product names in a catalogue, put a language map in the body instead of negotiating:
+
+```json
+{ "id": "sku-123", "name": { "en": "Linen shirt", "es": "Camisa de lino", "de": "Leinenhemd" } }
+```
+
+<Compare>
+<Prefer>
+
+```http
+Accept: application/json
+Accept-Language: es-ES
+Vary: Accept, Accept-Language
+```
+
+</Prefer>
+<Avoid>
+
+```http
+GET /orders.json?lang=es&format=json
+X-Response-Language: es
+```
+
+</Avoid>
+</Compare>
+
+<Note kind="curiosity" title="Referer" year="1996" source="https://www.rfc-editor.org/rfc/rfc1945#section-10.13">
+
+The `Referer` header is misspelled, and has been since HTTP/1.0 in RFC 1945. Nobody caught it before it shipped, so every browser sends it that way and every spec since keeps it. The later `Referrer-Policy` header is spelled correctly, so the web now has both. A header name is as permanent as a URL.
+
+</Note>
+
+<RuleGroup>
+
+<Rule guide="zalando" id="178" level="MUST" title="Use Content-* headers correctly" />
+<Rule
+  guide="zalando"
+  id="180"
+  level="SHOULD"
+  title="Use Location header instead of Content-Location header"
+/>
+<Rule
+  guide="zalando"
+  id="181"
+  level="MAY"
+  title="Consider to support Prefer header to handle processing preferences"
+/>
+<Rule guide="zalando" id="233" level="MUST" title="Support X-Flow-ID" />
+<Rule
+  guide="zalando"
+  id="244"
+  level="SHOULD"
+  title="Use content negotiation, if clients may choose from different resource representations"
+/>
+
+</RuleGroup>
+
+<SelfCheck>
+
+<Question
+  q="Your endpoint serves JSON or CSV depending on <code>Accept</code>. Users report occasionally receiving CSV in a JSON client behind your CDN. What's missing?"
+  answer={1}
+  options={[
+    {
+      text: "A <code>Content-Disposition</code> header.",
+      why: "That affects whether browsers download the file, not how caches key responses.",
+    },
+    {
+      text: "<code>Vary: Accept</code> on the responses.",
+      why: "Without it, the cache stores one variant per URL and serves it to everyone.",
+    },
+    {
+      text: "A <code>?format=</code> parameter.",
+      why: "It would work around the bug, but the real fix is telling caches what you negotiated on.",
+    },
+    {
+      text: "A 406 response for JSON clients.",
+      why: "JSON is acceptable; nothing should be refused here.",
+    },
+  ]}
+/>
+
+<Question
+  q="Which values should change with <code>Accept-Language</code>?"
+  answer={3}
+  options={[
+    {
+      text: "Enum values such as <code>&quot;shipped&quot;</code>.",
+      why: "Clients compare these in code; translating them breaks every client.",
+    },
+    {
+      text: "Problem <code>type</code> URIs.",
+      why: "Stable identifiers for code, never translated.",
+    },
+    { text: "Field names.", why: "The schema must not depend on a request header." },
+    {
+      text: "Problem <code>title</code> and <code>detail</code>, and other text meant for people.",
+      why: "Human-facing strings are what negotiation is for; anything code reads stays fixed.",
+    },
+  ]}
+/>
+
+</SelfCheck>

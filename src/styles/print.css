@@ -1,0 +1,48 @@
+/* Print: content only, every fold expanded, external URLs printed. */
+@media print {
+  header.header,
+  .sidebar-pane,
+  .right-sidebar-container,
+  mobile-starlight-toc,
+  .pagination-links,
+  .fg-areas,
+  .fg-question__show,
+  starlight-tabs [role="tablist"],
+  .expressive-code .copy {
+    display: none !important;
+  }
+
+  :root {
+    --sl-content-width: 100%;
+  }
+
+  body {
+    background: #fff;
+  }
+
+  .fg-fold > .fg-fold__body,
+  .fg-solution > .fg-solution__body,
+  .fg-question__why {
+    display: block !important;
+  }
+
+  .sl-markdown-content a[href^="http"]::after {
+    content: " (" attr(href) ")";
+    font-size: 0.8em;
+    color: #555;
+    word-break: break-all;
+  }
+
+  .fg-fold,
+  .fg-note,
+  .fg-differ,
+  .expressive-code,
+  table {
+    break-inside: avoid;
+  }
+
+  h2,
+  h3 {
+    break-after: avoid;
+  }
+}

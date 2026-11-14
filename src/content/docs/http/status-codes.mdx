@@ -1,0 +1,272 @@
+---
+title: Status codes
+description: The class is the contract. Get the first digit right everywhere, then use a specific code only where clients act differently on it.
+sources:
+  - label: RFC 9110 §15
+    title: "RFC 9110: HTTP Semantics, §15 Status Codes"
+    url: https://www.rfc-editor.org/rfc/rfc9110#section-15
+    accessed: 2026-11
+  - label: RFC 6585
+    title: "RFC 6585: Additional HTTP Status Codes (428, 429, 431, 511)"
+    url: https://www.rfc-editor.org/rfc/rfc6585
+    accessed: 2026-11
+  - label: RFC 2324
+    title: "RFC 2324: Hyper Text Coffee Pot Control Protocol (HTCPCP/1.0), 1 April 1998"
+    url: https://www.rfc-editor.org/rfc/rfc2324
+    accessed: 2026-11
+  - label: IANA registry
+    title: "IANA: HTTP Status Code Registry"
+    url: https://www.iana.org/assignments/http-status-codes/http-status-codes.xhtml
+    accessed: 2026-11
+related:
+  - http/errors
+  - http/methods
+  - reliability/concurrency
+  - security/limits
+---
+
+import {
+  InBrief,
+  Note,
+  Compare,
+  Prefer,
+  Avoid,
+  Rule,
+  RuleGroup,
+  SelfCheck,
+  Question,
+  WorkedProblem,
+  Solution,
+  Status,
+  Tabs,
+  TabItem,
+} from "@components/kit";
+
+<InBrief>
+
+- Never return <Status code={200} /> for a failure. Load balancers, retry policies and dashboards only read the number.
+- Use a specific code only where clients recover differently: <Status code={409} />, <Status code={412} /> and <Status code={429} /> earn their place; this site sends <Status code={400} /> only for bodies it can't parse and <Status code={422} /> for everything that parses but fails validation.
+- Send <Status code={401} /> only with a `WWW-Authenticate` header, and use <Status code={404} /> to hide resources the caller may not know about.
+- Answer creation with <Status code={201} /> and `Location`, and accepted-but-unfinished work with <Status code={202} /> and a status resource.
+
+</InBrief>
+
+A status code is the first thing a client reads and often the only thing generic tooling reads. Retry middleware, circuit breakers, CDN error pages, SLO dashboards and alerting rules all make decisions from three digits. Return <Status code={200} /> with `{"success": false}` and every one of them is blind.
+
+## The class is the contract
+
+A client that doesn't recognise a code must treat it as the `x00` of its class (RFC 9110 §15). An unknown <Status code={422} /> is still understood as "client error, don't retry unchanged"; an unknown <Status code={503} /> as "server problem, may be transient". So the first digit carries most of the meaning, and getting it right everywhere matters more than choosing between two 4xx codes.
+
+| Class | Promise to the client       | Typical client behaviour                               |
+| ----- | --------------------------- | ------------------------------------------------------ |
+| `2xx` | Done (or accepted) as asked | Proceed                                                |
+| `3xx` | Look elsewhere              | Follow `Location`, or use the cache on `304`           |
+| `4xx` | Your request is the problem | Don't retry unchanged; fix input, credentials or state |
+| `5xx` | Our side failed             | Retry idempotent requests with backoff                 |
+
+That last row is why misclassifying is expensive. A validation failure returned as <Status code={500} /> gets retried by every well-behaved client, and an outage returned as <Status code={400} /> is never retried and never pages anyone.
+
+## Use a specific code only where clients act differently
+
+Specific codes are useful when they map to a different recovery path. These do:
+
+| Code                  | Client's next step                                                     |
+| --------------------- | ---------------------------------------------------------------------- |
+| <Status code={401} /> | Obtain or refresh credentials (the `WWW-Authenticate` header says how) |
+| <Status code={403} /> | Stop; ask a human for permission                                       |
+| <Status code={404} /> | Check the ID or URL; the thing isn't there (or isn't yours to see)     |
+| <Status code={409} /> | Re-read the resource's state; the action doesn't fit it                |
+| <Status code={412} /> | Someone else changed it; re-fetch, merge, retry with the new `ETag`    |
+| <Status code={415} /> | Send a different `Content-Type`                                        |
+| <Status code={429} /> | Wait for `Retry-After`, then retry                                     |
+| <Status code={503} /> | Wait for `Retry-After`, then retry                                     |
+
+<Status code={400} /> and <Status code={422} /> rarely lead to different client behaviour: both mean
+a person must fix the input. This site keeps 400 for bodies that can't be parsed and uses 422 for
+everything that parses but fails validation, query parameters included, and puts the detail in the
+[error body](/http/errors/), where a `type` URI can be as specific as you like. Whatever you choose,
+apply it everywhere.
+
+<Compare>
+<Prefer>
+
+```http
+POST /customers  → 409 Conflict
+Content-Type: application/problem+json
+{ "type": "…/problems/email-taken", "status": 409 }
+```
+
+</Prefer>
+<Avoid>
+
+```http
+POST /customers  → 200 OK
+{ "success": false, "error": "Email already registered" }
+```
+
+</Avoid>
+</Compare>
+
+## Get 401, 403 and 404 right
+
+<Status code={401} /> means "not authenticated". RFC 9110 requires it to carry a `WWW-Authenticate`
+header naming the scheme, such as `Bearer realm="api", error="invalid_token"`, which is how OAuth
+clients know to refresh a token instead of failing.
+
+<Status code={403} /> means "authenticated, and the answer is no". Use it when the caller can know
+the resource exists, for example a read-only API key trying to write.
+
+For resources the caller shouldn't learn about at all, another tenant's order for instance, return <Status code={404} />. A 403 there confirms that `ord_42` exists, and that is information. Clients should in turn be careful with 404: a typo in the base URL also produces one, so a client shouldn't delete its local copy of a record just because a `GET` returned 404. A problem `type` such as `…/problems/order-not-found` distinguishes "no such order" from "no such route".
+
+## Answer writes with the code that tells the client what to do next
+
+- <Status code={201} /> after creating a resource, with `Location` pointing at it. Return the
+  representation in the body to save a round trip.
+- <Status code={202} /> when the work has been accepted but not done, with `Location` pointing at a
+  status resource the client can poll ([Long-running
+  operations](/reliability/long-running-operations/)).
+- <Status code={204} /> when there's nothing useful to return, typically `DELETE`.
+- <Status code={303} /> after a `POST` that resolved to an existing resource, for example a create
+  whose unique business reference already exists (see [Idempotency](/reliability/idempotency/)). The
+  client follows it with a `GET`.
+
+_Assumes:_ FastAPI, DRF and Hono with a `problem()` helper that renders `application/problem+json` (see [Errors](/http/errors/)).
+
+<Tabs syncKey="stack">
+<TabItem label="FastAPI">
+
+```python
+@app.post("/customers", status_code=201)
+def create_customer(body: CustomerIn, response: Response) -> CustomerOut:
+    if customers.email_exists(body.email):
+        raise problem(409, "email-taken", detail=f"{body.email} is already registered.")
+    customer = customers.create(body)
+    response.headers["Location"] = f"{BASE_URL}/customers/{customer.id}"
+    return customer
+```
+
+</TabItem>
+<TabItem label="Django">
+
+```python
+class Conflict(APIException):
+    status_code = 409
+    default_code = "conflict"
+
+class CustomerViewSet(viewsets.ModelViewSet):
+    def perform_create(self, serializer):
+        if Customer.objects.filter(email=serializer.validated_data["email"]).exists():
+            raise Conflict("This email is already registered.")
+        serializer.save()
+    # create() answers 201 with Location (via get_success_headers); destroy() answers 204.
+```
+
+</TabItem>
+<TabItem label="Hono">
+
+```ts
+app.post("/customers", zValidator("json", CustomerIn), async (c) => {
+  const body = c.req.valid("json");
+  if (await customers.emailExists(body.email)) {
+    return problem(c, 409, "email-taken", `${body.email} is already registered.`);
+  }
+  const customer = await customers.create(body);
+  c.header("Location", `${BASE_URL}/customers/${customer.id}`);
+  return c.json(customer, 201);
+});
+```
+
+</TabItem>
+</Tabs>
+
+## Avoid redirects in APIs
+
+Browsers handle redirects well. API clients mostly don't. Some drop the `Authorization` header on a cross-host redirect, as they should, and some change `POST` to `GET` on a 301 or 302, for historical reasons. Moving an API is better done with a deprecation period than with a redirect. If you must redirect, use 307 or 308, which preserve the method and body. The one common exception is a 303 or 307 from a download endpoint to a short-lived storage URL (see [Files](/representations/files/)).
+
+<Note kind="curiosity" title="418 I'm a teapot" year="1998" source="https://www.rfc-editor.org/rfc/rfc2324">
+
+RFC 2324, an April Fools' RFC, defined the Hyper Text Coffee Pot Control Protocol and status 418 for teapots asked to brew coffee. Libraries implemented it as a joke. When the HTTP working group's chair asked libraries to remove it in 2017, the backlash showed how much software depended on it, and that RFC 9110 now reserves 418 as unused, so it can never be assigned a real meaning. Hyrum's Law, applied to tea.
+
+</Note>
+
+<RuleGroup>
+
+<Rule guide="zalando" id="243" level="MUST" title="Use official HTTP status codes" />
+<Rule guide="zalando" id="151" level="MUST" title="Specify success and error responses" />
+<Rule guide="zalando" id="150" level="SHOULD" title="Only use most common HTTP status codes" />
+<Rule guide="zalando" id="220" level="MUST" title="Use most specific HTTP status codes" />
+<Rule guide="zalando" id="251" level="SHOULD" title="Not use redirection codes" />
+
+</RuleGroup>
+
+<WorkedProblem kind="Review" title="A checkout endpoint">
+
+A team's checkout handler answers like this:
+
+```text
+Card declined                     → 200 {"ok": false, "reason": "card_declined"}
+Basket empty                      → 500 {"error": "IndexError: list index out of range"}
+Price changed since basket loaded → 400 {"error": "price mismatch"}
+Payment provider timed out        → 400 {"error": "provider timeout"}
+```
+
+Which of these will make clients or operators behave wrongly?
+
+<Solution>
+
+All four.
+
+- **Card declined as 200.** Dashboards count it as success, and generic clients proceed. Use 422 (or 402) with a problem `type` such as `card-declined`.
+- **Empty basket as 500.** Clients retry an input error, the on-call engineer gets paged, and the body leaks a stack trace. Validate the input and return 422.
+- **Price changed as 400.** The client needs to re-read and confirm, which is a state conflict. Use 409, or 412 if the client sent the basket's `ETag` in `If-Match`.
+- **Provider timeout as 400.** The client won't retry something that would probably succeed later. Use 503 or 504 with `Retry-After`, and make the endpoint idempotent so retrying is safe.
+
+</Solution>
+</WorkedProblem>
+
+<SelfCheck>
+
+<Question
+  q="A client built in 2016 receives status 425, which it has never heard of. What should it do?"
+  answer={1}
+  options={[
+    {
+      text: "Treat it as a network error and retry.",
+      why: "The response arrived fine; this is not a transport failure.",
+    },
+    {
+      text: "Treat it as 400: a client error.",
+      why: "RFC 9110 says unknown codes are handled as the x00 of their class. That's why the class matters most.",
+    },
+    { text: "Treat it as 200, since it got a response.", why: "4xx is explicitly not success." },
+    {
+      text: "Throw an exception about an invalid protocol response.",
+      why: "Any three-digit code in 100–599 is valid HTTP; clients must cope with new ones.",
+    },
+  ]}
+/>
+
+<Question
+  q="Customer A requests <code>GET /orders/ord_42</code>, which belongs to customer B. What should the API return?"
+  answer={2}
+  options={[
+    {
+      text: "403, because A isn't allowed to see it.",
+      why: "That confirms <code>ord_42</code> exists, which leaks information about other customers.",
+    },
+    {
+      text: "401, because A is the wrong user.",
+      why: "A is authenticated; 401 would make the client refresh perfectly good credentials.",
+    },
+    {
+      text: "404, as if the order didn't exist.",
+      why: "From A's perspective it doesn't. RFC 9110 explicitly allows 404 to hide a resource's existence.",
+    },
+    {
+      text: "200 with an empty body.",
+      why: "Success with no data is the worst of both: wrong class and no explanation.",
+    },
+  ]}
+/>
+
+</SelfCheck>

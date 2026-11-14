@@ -1,0 +1,311 @@
+---
+title: Idempotency and retries
+description: Clients will retry, so make every unsafe operation safe to repeat. Use client-chosen identifiers or an Idempotency-Key, store the outcome atomically with the effect, and retry with jittered backoff.
+sources:
+  - label: Idempotency-Key draft
+    title: "The Idempotency-Key HTTP Header Field (draft-ietf-httpapi-idempotency-key-header)"
+    url: https://datatracker.ietf.org/doc/draft-ietf-httpapi-idempotency-key-header/
+    accessed: 2026-11
+  - label: Stripe
+    title: "Stripe API reference: Idempotent requests"
+    url: https://docs.stripe.com/api/idempotent_requests
+    accessed: 2026-11
+  - label: Leach, 2017
+    title: "Brandur Leach: Implementing Stripe-like Idempotency Keys in Postgres (2017)"
+    url: https://brandur.org/idempotency-keys
+    accessed: 2026-11
+  - label: AWS, 2015
+    title: "Marc Brooker: Exponential Backoff And Jitter (AWS Architecture Blog, 2015)"
+    url: https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/
+    accessed: 2026-11
+  - label: RFC 9110 §9.2.2
+    title: "RFC 9110: HTTP Semantics, §9.2.2 Idempotent Methods"
+    url: https://www.rfc-editor.org/rfc/rfc9110#section-9.2.2
+    accessed: 2026-11
+related:
+  - http/methods
+  - reliability/concurrency
+  - security/limits
+  - events/consuming-events
+---
+
+import {
+  InBrief,
+  Note,
+  Compare,
+  Prefer,
+  Avoid,
+  Rule,
+  RuleGroup,
+  SelfCheck,
+  Question,
+  WorkedProblem,
+  Solution,
+  Status,
+  Tabs,
+  TabItem,
+} from "@components/kit";
+
+<InBrief>
+
+- Make every `POST` that creates or charges something idempotent. Clients can't tell a lost response from a failed request.
+- Prefer a natural key where one exists: a client-generated ID with `PUT`, or a unique business reference.
+- Otherwise accept an `Idempotency-Key`. Store the key, a request fingerprint and the response in the same transaction as the effect.
+- Give in-progress keys a lease that expires, or a crashed worker blocks the key forever.
+- Retry only idempotent requests, with capped exponential backoff and full jitter, and honour `Retry-After`.
+
+</InBrief>
+
+A client sends `POST /payments`. The payment succeeds, and then the connection drops before the response arrives. From the client's side, it has no idea whether the customer paid. Retrying may charge twice; not retrying may leave the order unpaid. Networks will put every client in that position eventually, so the server has to make "retry" the safe answer.
+
+## Assume the client can't distinguish failure from success
+
+A timeout covers three different situations:
+
+```text
+1. The request never arrived             → retrying is safe
+2. It arrived and failed partway through → retrying is safe only if the failure rolled back
+3. It succeeded and the response was lost → retrying duplicates the effect
+```
+
+The client sees the same thing in all three. `GET`, `PUT` and `DELETE` are idempotent by definition, so retrying them is fine. `POST` and `PATCH` are not, and those are usually the requests that create orders and move money.
+
+## Prefer natural keys where the domain has one
+
+The cheapest idempotency needs no extra machinery. If the client generates the resource's ID, creation becomes a `PUT` to a known URL, which is idempotent by definition:
+
+```http
+PUT /orders/ord_01JCX3N4Q8
+{ "customer_id": "cus_7", "line_items": [ … ] }
+→ 201 Created   (first time)
+→ 200 OK        (repeat; a different body replaces the order, as PUT means)
+→ 412 Precondition Failed  (repeat sent with If-None-Match: *, which makes PUT create-only)
+```
+
+A unique business reference does the same for `POST`: a merchant's `order_reference` with a unique constraint turns a duplicate into a <Status code={409} /> or a <Status code={303} /> to the existing order. Use these when they fit, and fall back to idempotency keys when they don't.
+
+## Use an Idempotency-Key for everything else
+
+The client generates a unique key per logical operation, typically a UUID, and sends it with every attempt. The server records the key with the outcome and replays the outcome on a retry.
+
+```http
+POST /payments
+Idempotency-Key: 6d0d3a8e-7f5c-4c71-9a5b-0f3c1e2d4b9a
+{ "amount": "49.00", "currency": "EUR", "order_id": "ord_42" }
+```
+
+| Situation                                   | Response                                                                                  |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| New key                                     | Execute; store key, fingerprint and response                                              |
+| Known key, same fingerprint, completed      | Replay the stored status and body without executing                                       |
+| Known key, different request body           | <Status code={422} />: the key was reused for a different operation                       |
+| Known key, still in progress                | <Status code={409} />: try again shortly                                                  |
+| Missing key on an endpoint that requires it | <Status code={400} />, as the IETF draft specifies (an exception to this site's 422 rule) |
+
+Keep keys for at least as long as clients might retry. Stripe keeps them for 24 hours. Scope keys per account, so one customer's key can't collide with or reveal another's response.
+
+## Store the outcome in the same transaction as the effect
+
+The subtle part is atomicity. If you record "key done" in Redis and write the payment to Postgres, a crash between the two leaves them disagreeing: either the payment exists without a key, so a retry pays again, or the key exists without a payment, so a retry replays a success that never happened. Put the key row and the effect in one database transaction. When the effect is an external call, such as a card network, record progress in recovery points around it so a retry resumes rather than repeats, and pass your own idempotency key downstream.
+
+_Assumes:_ PostgreSQL; an `idempotency_keys` table with a unique `(account_id, key)`, a fingerprint, a nullable response and a `locked_until` lease column.
+
+<Tabs syncKey="stack">
+<TabItem label="FastAPI">
+
+```python
+@app.post("/payments", status_code=201)
+def create_payment(body: PaymentIn, account: CurrentAccount,
+                   idempotency_key: Annotated[str | None, Header()] = None):
+    if idempotency_key is None:
+        raise problem(400, "idempotency-key-required")
+    fp = hashlib.sha256(body.model_dump_json().encode()).hexdigest()
+    with db.begin():
+        rec = keys.claim(account.id, idempotency_key, fp, lease=timedelta(seconds=30))
+        # claim(): INSERT … ON CONFLICT DO NOTHING, then SELECT … FOR UPDATE;
+        # re-acquires the lease if locked_until has passed (a crashed worker).
+        if rec.fingerprint != fp:
+            raise problem(422, "idempotency-key-reused")
+        if rec.response is not None:
+            return JSONResponse(rec.response, status_code=rec.status)  # replay
+        if not rec.lease_acquired:
+            raise problem(409, "request-in-progress", headers={"Retry-After": "1"})
+        payment = payments.create(body, account, upstream_key=idempotency_key)
+        rec.complete(201, payment.model_dump(mode="json"))  # same transaction
+    return payment
+```
+
+</TabItem>
+<TabItem label="Django">
+
+```python
+class PaymentCreate(APIView):
+    def post(self, request):
+        key = request.headers.get("Idempotency-Key") or problem(400, "idempotency-key-required")
+        fp = fingerprint(request.data)
+        with transaction.atomic():
+            rec, _ = IdempotencyKey.objects.select_for_update().get_or_create(
+                account=request.user.account, key=key, defaults={"fingerprint": fp})
+            if rec.fingerprint != fp:
+                return problem(422, "idempotency-key-reused")
+            if rec.response is not None:
+                return Response(rec.response, status=rec.status)  # replay
+            if rec.locked_until and rec.locked_until > now():
+                return problem(409, "request-in-progress", headers={"Retry-After": "1"})
+            payment = create_payment(request.data, upstream_key=key)
+            rec.status, rec.response = 201, PaymentSerializer(payment).data
+            rec.save(update_fields=["status", "response"])  # commits with the payment
+        return Response(rec.response, status=201)
+```
+
+</TabItem>
+<TabItem label="Hono">
+
+```ts
+app.post("/payments", zValidator("json", PaymentIn), async (c) => {
+  const key = c.req.header("Idempotency-Key");
+  if (!key) return problem(c, 400, "idempotency-key-required");
+  const body = c.req.valid("json");
+  const fp = await sha256(JSON.stringify(body));
+  return db.transaction(async (tx) => {
+    const rec = await keys.claim(tx, c.get("account").id, key, fp, { leaseSeconds: 30 });
+    if (rec.fingerprint !== fp) return problem(c, 422, "idempotency-key-reused");
+    if (rec.response) return c.json(rec.response, rec.status); // replay
+    if (!rec.leaseAcquired) return problem(c, 409, "request-in-progress");
+    const payment = await payments.create(tx, body, { upstreamKey: key });
+    await keys.complete(tx, rec.id, 201, toApi(payment)); // same transaction as the payment
+    return c.json(toApi(payment), 201);
+  });
+});
+```
+
+</TabItem>
+</Tabs>
+
+<Note kind="practice" title="Stripe's recovery points" year="2017" source="https://brandur.org/idempotency-keys">
+
+Brandur Leach, then at Stripe, described an idempotency key design where each request moves through named recovery points ("started", "ride created", "charge created", "finished") stored on the key row in Postgres. A retry picks up from the last completed point instead of starting over or replaying blindly. It's the most complete public write-up of the pattern and worth reading before building your own.
+
+</Note>
+
+## Retry with capped, jittered backoff
+
+Servers make retries safe; clients still have to retry well. A thousand clients that all retry after exactly one second turn a brief outage into a synchronised second outage.
+
+- Retry only idempotent requests, or requests with an idempotency key, and only on transient failures: connection errors, <Status code={429} />, <Status code={502} />, <Status code={503} />, <Status code={504} />. Never retry 4xx validation errors.
+- Use exponential backoff with full jitter: `sleep = random(0, min(cap, base × 2^attempt))`. AWS's 2015 analysis showed full jitter cuts total work and completion time compared with plain exponential backoff.
+- Honour `Retry-After` when the server sends it, and cap attempts. Retry budgets, such as at most 10 percent extra load from retries, protect the server from your fleet.
+
+<Compare>
+<Prefer>
+
+```ts
+const delay = Math.random() * Math.min(30_000, 250 * 2 ** attempt);
+```
+
+</Prefer>
+<Avoid>
+
+```ts
+const delay = 1_000; // every client retries in lockstep
+```
+
+</Avoid>
+</Compare>
+
+<RuleGroup>
+
+<Rule
+  guide="zalando"
+  id="229"
+  level="SHOULD"
+  title="Consider to design POST and PATCH idempotent"
+/>
+<Rule guide="zalando" id="230" level="MAY" title="Consider to support Idempotency-Key header" />
+<Rule
+  guide="zalando"
+  id="231"
+  level="SHOULD"
+  title="Use secondary key for idempotent POST design"
+/>
+
+</RuleGroup>
+
+<WorkedProblem kind="Review" title="The key that never comes back">
+
+```python
+@app.post("/payments")
+def create_payment(body: PaymentIn, idempotency_key: Annotated[str, Header()]):
+    if not redis.set(f"idem:{idempotency_key}", "in_progress", nx=True, ex=86400):
+        saved = redis.get(f"idem:{idempotency_key}")
+        if saved == "in_progress":
+            raise problem(409, "request-in-progress")
+        return json.loads(saved)
+    payment = payments.charge(body)  # writes to Postgres, calls the card network
+    redis.set(f"idem:{idempotency_key}", payment.model_dump_json(), ex=86400)
+    return payment
+```
+
+A worker is killed by a deploy right after `payments.charge()` returns. What do the client's retries see, and what are the two separate bugs?
+
+<Solution>
+
+Every retry for the next 24 hours gets 409 "in progress", because the key was claimed and never completed or released. The customer was charged, but the client can never learn the outcome.
+
+1. **No lease.** An in-progress claim needs a short expiry (seconds, not a day) that is renewed while working, so a crashed worker's claim lapses and a retry can take over.
+2. **Dual write.** The key lives in Redis and the payment in Postgres, so they can't be updated atomically. Even with a lease, a retry after the crash would charge again. Store the key in the same database transaction as the payment, and pass the key to the card network so the external call is idempotent too.
+
+Also missing: no request fingerprint, so the same key with a different amount replays the first payment, and keys aren't scoped per account.
+
+</Solution>
+</WorkedProblem>
+
+<SelfCheck>
+
+<Question
+  q="A retry arrives with a known <code>Idempotency-Key</code> but a different amount than the original request. What should the server do?"
+  answer={2}
+  options={[
+    {
+      text: "Replay the stored response from the first request.",
+      why: "The client would believe the new amount was charged when it wasn't.",
+    },
+    {
+      text: "Process it as a new payment.",
+      why: "That defeats the key, and the client may think it's a harmless retry.",
+    },
+    {
+      text: "Reject it with 422, because the key was reused for a different operation.",
+      why: "A request fingerprint stored with the key makes this detectable.",
+    },
+    {
+      text: "Overwrite the stored request and execute.",
+      why: "That would double-charge if the first one succeeded.",
+    },
+  ]}
+/>
+
+<Question
+  q="Which retry policy is best for a fleet of clients hitting a briefly overloaded API?"
+  answer={1}
+  options={[
+    {
+      text: "Retry immediately, up to 10 times.",
+      why: "Multiplies load exactly when the server is struggling.",
+    },
+    {
+      text: "Exponential backoff with full jitter, a cap, and respect for <code>Retry-After</code>.",
+      why: "Spreads retries out in time and lets the server set the pace.",
+    },
+    {
+      text: "Retry every second until it works.",
+      why: "Synchronised retries create load spikes every second.",
+    },
+    {
+      text: "Retry every request, including 400 responses.",
+      why: "Validation errors will fail the same way every time.",
+    },
+  ]}
+/>
+
+</SelfCheck>

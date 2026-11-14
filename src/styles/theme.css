@@ -1,165 +1,327 @@
 /*
- * API Design Dojo theme.
- * Dark: deep ink with violet + coral accents. Light: warm paper.
+ * HTTP API Design: theme.
+ * Serif for H1/H2, Inter for text, warm neutrals, one accent used only for
+ * link hover, the current sidebar item, focus rings and the "Avoid" label.
+ * Spacing scale: 0.25 / 0.5 / 1 / 1.5 / 2 / 3.25rem.
  */
 
 :root {
-  --sl-font: "Inter Variable", system-ui, -apple-system, "Segoe UI", sans-serif;
-  --sl-font-mono: "JetBrains Mono Variable", ui-monospace, "SFMono-Regular", monospace;
-  --dojo-font-display: "Bricolage Grotesque Variable", var(--sl-font);
+  --sl-font: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --sl-font-mono: "JetBrains Mono Variable", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --fg-serif: "Source Serif 4 Variable", "Iowan Old Style", Georgia, serif;
 
-  --dojo-violet: #8b5cf6;
-  --dojo-coral: #ff7a59;
-  --dojo-green: #22c55e;
-  --dojo-red: #f43f5e;
-  --dojo-yellow: #facc15;
-  --dojo-gradient: linear-gradient(120deg, var(--dojo-violet), var(--dojo-coral));
-  --dojo-radius: 1rem;
+  --sl-text-h1: 2.5rem;
+  --sl-text-h2: 1.6rem;
+  --sl-text-h3: 1.05rem;
+  --sl-line-height: 1.7;
+  --sl-content-width: 46rem;
 
-  /* Dark mode (default) */
-  --sl-color-accent-low: #2a1f57;
-  --sl-color-accent: #8f6bff;
-  --sl-color-accent-high: #d9ceff;
-  --sl-color-white: #ffffff;
-  --sl-color-gray-1: #ecebf7;
-  --sl-color-gray-2: #c4c1de;
-  --sl-color-gray-3: #9590bd;
-  --sl-color-gray-4: #5d588a;
-  --sl-color-gray-5: #3a3660;
-  --sl-color-gray-6: #1d1a38;
-  --sl-color-black: #100e22;
+  --fg-radius: 6px;
+  --fg-t: 150ms ease;
 
-  --dojo-surface: rgba(255 255 255 / 0.035);
-  --dojo-surface-strong: rgba(255 255 255 / 0.07);
-  --dojo-border: rgba(255 255 255 / 0.1);
-  --dojo-glow: 0 0 0 1px rgba(143 107 255 / 0.25), 0 20px 50px -20px rgba(143 107 255 / 0.45);
+  /* Dark (default) */
+  --sl-color-accent-low: #3a241b;
+  --sl-color-accent: #e9906d;
+  --sl-color-accent-high: #f6cdbd;
+  --sl-color-white: #f3f1ec;
+  --sl-color-gray-1: #e4e1da;
+  --sl-color-gray-2: #c4c0b7;
+  --sl-color-gray-3: #a29d93;
+  --sl-color-gray-4: #6d6960;
+  --sl-color-gray-5: #3b3934;
+  --sl-color-gray-6: #22211e;
+  --sl-color-black: #151413;
+
+  --fg-surface: #1b1a18;
+  --fg-hairline: #2c2a27;
+  --fg-good: #8cbf94;
+  --fg-bad: #e9906d;
+  --fg-warn: #d9b25f;
+  --fg-info: #8fb4d9;
 }
 
 :root[data-theme="light"] {
-  --sl-color-accent-low: #e7e0ff;
-  --sl-color-accent: #6d3ff2;
-  --sl-color-accent-high: #34188f;
-  --sl-color-white: #17142e;
-  --sl-color-gray-1: #26223f;
-  --sl-color-gray-2: #3b3658;
-  --sl-color-gray-3: #605a80;
-  --sl-color-gray-4: #8f8aad;
-  --sl-color-gray-5: #c9c5dd;
-  --sl-color-gray-6: #f0edf8;
-  --sl-color-gray-7: #f8f6fc;
-  --sl-color-black: #fffdfa;
+  --sl-color-accent-low: #f5e6df;
+  --sl-color-accent: #a8401d;
+  --sl-color-accent-high: #6e2810;
+  --sl-color-white: #1b1a18;
+  --sl-color-gray-1: #2a2825;
+  --sl-color-gray-2: #45423d;
+  --sl-color-gray-3: #69655d;
+  --sl-color-gray-4: #9a958c;
+  --sl-color-gray-5: #d9d5cc;
+  --sl-color-gray-6: #eeebe5;
+  --sl-color-gray-7: #f5f3ef;
+  --sl-color-black: #fbfaf7;
 
-  --dojo-surface: rgba(23 20 46 / 0.03);
-  --dojo-surface-strong: rgba(23 20 46 / 0.06);
-  --dojo-border: rgba(23 20 46 / 0.12);
-  --dojo-glow: 0 0 0 1px rgba(109 63 242 / 0.18), 0 20px 50px -24px rgba(109 63 242 / 0.35);
+  --fg-surface: #f4f2ed;
+  --fg-hairline: #e3dfd7;
+  --fg-good: #2f6b3f;
+  --fg-bad: #a8401d;
+  --fg-warn: #8a6410;
+  --fg-info: #2f5f8a;
 }
 
-/* ---------- Background flourish ---------- */
 body {
-  background:
-    radial-gradient(1200px 600px at 100% -10%, rgba(143 107 255 / 0.12), transparent 60%),
-    radial-gradient(900px 500px at -10% 110%, rgba(255 122 89 / 0.08), transparent 60%),
-    var(--sl-color-black);
-  background-attachment: fixed;
+  background: var(--sl-color-black);
+  font-feature-settings: "cv11", "ss01";
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--sl-color-accent-low);
+}
+
+:focus-visible {
+  outline: 2px solid var(--sl-color-accent);
+  outline-offset: 2px;
 }
 
 /* ---------- Typography ---------- */
+.sl-markdown-content {
+  font-size: 1.0625rem;
+  line-height: 1.7;
+}
+
 h1,
-h2,
-h3,
-.site-title,
-.sl-markdown-content :is(h1, h2, h3, h4) {
-  font-family: var(--dojo-font-display);
-  letter-spacing: -0.02em;
+.sl-markdown-content h2 {
+  font-family: var(--fg-serif);
+  font-optical-sizing: auto;
+  font-weight: 600;
+  color: var(--sl-color-white);
+}
+
+h1#_top {
+  font-size: var(--sl-text-h1);
+  line-height: 1.15;
+  letter-spacing: -0.015em;
 }
 
 .sl-markdown-content h2 {
-  font-weight: 750;
+  margin-top: 3.25rem;
+  font-size: var(--sl-text-h2);
+  line-height: 1.25;
+  letter-spacing: -0.01em;
 }
 
-.site-title {
-  font-weight: 800;
-  font-size: 1.2rem;
+.sl-markdown-content h3 {
+  margin-top: 2rem;
+  font-family: var(--sl-font);
+  font-size: var(--sl-text-h3);
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--sl-color-white);
+}
+
+.sl-markdown-content :is(p, li, dd) {
+  color: var(--sl-color-gray-1);
+}
+
+.sl-markdown-content strong {
+  color: var(--sl-color-white);
+  font-weight: 600;
 }
 
 .sl-markdown-content :not(pre) > code {
-  border-radius: 0.35rem;
-  padding: 0.1em 0.35em;
-  background: var(--sl-color-accent-low);
-  color: var(--sl-color-accent-high);
-  border: none;
+  padding: 0.1em 0.3em;
+  border: 1px solid var(--fg-hairline);
+  border-radius: 4px;
+  background: var(--fg-surface);
+  color: var(--sl-color-white);
+  font-size: 0.85em;
 }
 
-/* Gradient underline for links inside content */
-.sl-markdown-content a:not(:where(.not-content *, .card, .sl-link-card, .action)) {
-  text-decoration-color: color-mix(in srgb, var(--sl-color-accent) 50%, transparent);
-  text-underline-offset: 0.2em;
-  text-decoration-thickness: 2px;
+.sl-markdown-content a:not(:where(.not-content *)) {
+  color: var(--sl-color-white);
+  text-decoration-color: var(--sl-color-gray-4);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.22em;
+  transition: text-decoration-color var(--fg-t);
 }
 
-/* ---------- Header & sidebar ---------- */
+.sl-markdown-content a:not(:where(.not-content *)):hover {
+  text-decoration-color: var(--sl-color-accent);
+}
+
+.sl-markdown-content blockquote {
+  border-inline-start: 1px solid var(--sl-color-gray-5);
+  color: var(--sl-color-gray-2);
+}
+
+.sl-markdown-content hr {
+  border-color: var(--fg-hairline);
+}
+
+/* ---------- Header ---------- */
+.site-title {
+  font-family: var(--fg-serif);
+  font-optical-sizing: auto;
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--sl-color-white);
+}
+
 header.header {
-  backdrop-filter: blur(12px);
-  background-color: color-mix(in srgb, var(--sl-color-black) 80%, transparent);
+  border-bottom: 1px solid var(--fg-hairline);
+  background: var(--sl-color-black);
+}
+
+/* ---------- Sidebar ---------- */
+.sidebar-pane {
+  border-inline-end: 1px solid var(--fg-hairline);
+}
+
+nav.sidebar .top-level > li > details > summary .group-label .large {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--sl-color-gray-3);
 }
 
 nav.sidebar .group-label .large {
-  font-family: var(--dojo-font-display);
-  font-weight: 700;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--sl-color-gray-1);
 }
 
-nav.sidebar a[aria-current="page"] {
-  background: var(--dojo-gradient);
-  color: #fff;
+nav.sidebar a {
+  font-size: 0.875rem;
+  color: var(--sl-color-gray-2);
+  border-radius: 0;
+  transition: color var(--fg-t);
 }
 
-/* Completed lessons get a check in the sidebar (set by the progress script). */
-nav.sidebar a.dojo-done::after {
-  content: "✓";
-  margin-inline-start: auto;
-  padding-inline-start: 0.5rem;
-  color: var(--dojo-green);
-  font-weight: 700;
+nav.sidebar a:hover {
+  color: var(--sl-color-white);
 }
 
-nav.sidebar a.dojo-done[aria-current="page"]::after {
-  color: #fff;
+nav.sidebar a[aria-current="page"],
+nav.sidebar a[aria-current="page"]:hover {
+  background: none;
+  color: var(--sl-color-white);
+  font-weight: 600;
+  box-shadow: inset 2px 0 0 var(--sl-color-accent);
 }
 
 /* ---------- Tables ---------- */
-.sl-markdown-content table {
-  border-radius: 0.75rem;
-  overflow: hidden;
-  border: 1px solid var(--dojo-border);
-  display: table;
-  width: 100%;
+.sl-markdown-content table,
+.not-content table {
+  font-variant-numeric: tabular-nums;
 }
 
-.sl-markdown-content th {
-  background: var(--dojo-surface-strong);
-  font-family: var(--dojo-font-display);
+.sl-markdown-content table {
+  display: table;
+  width: 100%;
+  font-size: 0.9rem;
+  border-collapse: collapse;
 }
 
 .sl-markdown-content :is(th, td) {
-  border-color: var(--dojo-border);
+  padding: 0.55rem 0.75rem;
+  border: none;
+  border-bottom: 1px solid var(--fg-hairline);
+  vertical-align: top;
+}
+
+.sl-markdown-content :is(th, td):first-child {
+  padding-inline-start: 0;
+}
+
+.sl-markdown-content th {
+  background: none;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--sl-color-gray-3);
+  border-bottom-color: var(--sl-color-gray-5);
+}
+
+.sl-markdown-content tr:nth-child(2n) {
+  background: none;
+}
+
+/* ---------- Asides (:::note etc.) ---------- */
+.starlight-aside {
+  border: none;
+  border-inline-start: 1px solid var(--sl-color-gray-5);
+  border-radius: 0;
+  background: none;
+  padding: 0.25rem 0 0.25rem 1.25rem;
+}
+
+.starlight-aside__title {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--sl-color-gray-3);
+}
+
+.starlight-aside__icon {
+  display: none;
 }
 
 /* ---------- Tabs (framework switcher) ---------- */
 starlight-tabs [role="tablist"] {
-  border-bottom-color: var(--dojo-border);
+  border-bottom: 1px solid var(--fg-hairline);
+}
+
+starlight-tabs [role="tab"] {
+  font-size: 0.85rem;
+  color: var(--sl-color-gray-3);
 }
 
 starlight-tabs [role="tab"][aria-selected="true"] {
   color: var(--sl-color-white);
-  border-color: var(--dojo-coral);
+  font-weight: 600;
+  border-color: var(--sl-color-white);
 }
 
-/* ---------- Hero (splash pages) ---------- */
-.hero h1 {
-  background: var(--dojo-gradient);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  font-weight: 800;
+starlight-tabs [role="tab"] svg {
+  display: none;
+}
+
+/* ---------- Pagination ---------- */
+.pagination-links a {
+  border-radius: var(--fg-radius);
+  border-color: var(--fg-hairline);
+  box-shadow: none;
+  transition: border-color var(--fg-t);
+}
+
+.pagination-links a:hover {
+  border-color: var(--sl-color-gray-4);
+}
+
+.pagination-links .link-title {
+  font-family: var(--fg-serif);
+  font-optical-sizing: auto;
+  font-size: 1.1rem;
+}
+
+/* ---------- Search ---------- */
+site-search button[data-open-modal] {
+  border-color: var(--fg-hairline);
+  border-radius: var(--fg-radius);
+  background: var(--fg-surface);
+}
+
+/* ---------- Table of contents ---------- */
+starlight-toc h2,
+mobile-starlight-toc .toggle {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--sl-color-gray-3);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition: none !important;
+    animation: none !important;
+  }
 }

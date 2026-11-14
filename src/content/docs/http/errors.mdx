@@ -1,0 +1,328 @@
+---
+title: Errors
+description: Return Problem Details (RFC 9457) for every error, branch on its type URI, report all validation failures at once, and never leak internals.
+sources:
+  - label: RFC 9457
+    title: "RFC 9457: Problem Details for HTTP APIs"
+    url: https://www.rfc-editor.org/rfc/rfc9457
+    accessed: 2026-11
+  - label: RFC 6901
+    title: "RFC 6901: JavaScript Object Notation (JSON) Pointer"
+    url: https://www.rfc-editor.org/rfc/rfc6901
+    accessed: 2026-11
+  - label: Stripe errors
+    title: "Stripe API reference: Errors"
+    url: https://docs.stripe.com/api/errors
+    accessed: 2026-11
+  - label: OWASP API8:2023
+    title: "OWASP API Security Top 10 (2023): API8 Security Misconfiguration"
+    url: https://owasp.org/API-Security/editions/2023/en/0xa8-security-misconfiguration/
+    accessed: 2026-11
+related:
+  - http/status-codes
+  - http/headers
+  - representations/json
+  - evolution/compatibility
+---
+
+import {
+  InBrief,
+  Note,
+  Compare,
+  Prefer,
+  Avoid,
+  Rule,
+  RuleGroup,
+  SelfCheck,
+  Question,
+  WorkedProblem,
+  Solution,
+  GuidesDiffer,
+  Status,
+  Tabs,
+  TabItem,
+} from "@components/kit";
+
+<InBrief>
+
+- Return `application/problem+json` (RFC 9457) for every 4xx and 5xx, including errors raised by the framework and the gateway.
+- Clients branch on `type`, a stable URI that resolves to documentation. `title` and `detail` are for humans and may change.
+- Report every validation failure in one response, each with a JSON Pointer to the offending field.
+- Never return stack traces, SQL or internal hostnames. Return a trace ID and log the rest.
+- Treat problem types as part of the contract: adding one is compatible; renaming one is a breaking change.
+
+</InBrief>
+
+Your API will spend a surprising part of its life saying no, and errors are where developers form their strongest opinions about it. A precise error saves an hour of debugging. A vague one becomes a support ticket, and an inconsistent one becomes a special case in every client. There's a standard format for this, and adopting it is mostly a matter of one exception handler per framework.
+
+## Use Problem Details for every error
+
+RFC 9457 (which replaced RFC 7807 in 2023) defines a small JSON object with its own media type:
+
+```http
+HTTP/1.1 422 Unprocessable Content
+Content-Type: application/problem+json
+
+{
+  "type": "https://api.example.com/problems/insufficient-stock",
+  "title": "Insufficient stock",
+  "status": 422,
+  "detail": "Only 2 units of sku-123 are available; the order requested 5.",
+  "instance": "/orders/ord_8xK2",
+  "sku": "sku-123",
+  "available": 2
+}
+```
+
+| Member     | Audience                                               | Stability                                                     |
+| ---------- | ------------------------------------------------------ | ------------------------------------------------------------- |
+| `type`     | Code: the identifier clients branch on                 | Stable, part of the contract. Should resolve to documentation |
+| `title`    | Humans: summary of the problem type                    | Same for every occurrence of the type                         |
+| `status`   | Logs and proxies that rewrite the code                 | Must match the HTTP status                                    |
+| `detail`   | Humans: what happened this time, and what to do        | Free text, may be localised                                   |
+| `instance` | Support: identifies this occurrence                    | Per occurrence                                                |
+| extensions | Code: machine-readable context (`available`, `errors`) | Part of the contract, per type                                |
+
+When there's nothing to add beyond the status code, `type` defaults to `about:blank` and `title` should be the standard reason phrase. Use that for generic <Status code={404} /> and <Status code={500} /> responses rather than inventing a type for each.
+
+The non-obvious requirement is coverage. Framework 404s for unknown routes, 405s, 413s from the body-size limit and 502s from the gateway all need the same format, or clients end up with two parsers anyway. Test the error paths you didn't write.
+
+<GuidesDiffer id="errors" />
+
+## Report all validation failures at once, with pointers
+
+A form that reveals one error per submission is a tax on every integrator. Collect all failures and point at each field with a JSON Pointer (RFC 6901) so clients can highlight it:
+
+```json
+{
+  "type": "https://api.example.com/problems/validation-error",
+  "title": "Your request is not valid",
+  "status": 422,
+  "errors": [
+    { "pointer": "#/email", "detail": "must be a valid email address" },
+    { "pointer": "#/items/0/quantity", "detail": "must be between 1 and 99, got 120" }
+  ]
+}
+```
+
+RFC 9457 itself uses an `errors` array with `pointer` and `detail` in its examples, which makes this shape about as standard as it gets.
+
+_Assumes:_ FastAPI with Pydantic v2, DRF 3.15 with a custom exception handler, Hono 4 with `@hono/zod-validator`. Every other page uses the helper defined here: `raise problem(status, slug, **extensions)` in FastAPI, `return problem(status, slug, ...)` in DRF, and `return problem(c, status, slug, ...)` in Hono.
+
+<Tabs syncKey="stack">
+<TabItem label="FastAPI">
+
+```python
+PROBLEMS = "https://api.example.com/problems"
+
+def problem_response(status: int, body: dict, headers: dict | None = None) -> JSONResponse:
+    return JSONResponse({"status": status, **body}, status_code=status,
+                        media_type="application/problem+json", headers=headers)
+
+class Problem(Exception):  # raise problem(404, "order-not-found", order_id=...) anywhere
+    def __init__(self, status: int, slug: str, headers: dict | None = None, **ext):
+        self.status, self.slug, self.headers, self.ext = status, slug, headers, ext
+
+problem = Problem
+
+@app.exception_handler(Problem)
+async def on_problem(request: Request, exc: Problem):
+    return problem_response(exc.status, {"type": f"{PROBLEMS}/{exc.slug}", **exc.ext}, exc.headers)
+
+@app.exception_handler(RequestValidationError)
+async def on_validation(request: Request, exc: RequestValidationError):
+    errors = [{"pointer": "#/" + "/".join(map(str, e["loc"][1:])), "detail": e["msg"]}
+              for e in exc.errors()]
+    return problem_response(422, {"type": f"{PROBLEMS}/validation-error",
+                                  "title": "Your request is not valid", "errors": errors})
+
+@app.exception_handler(StarletteHTTPException)  # covers unknown routes and 405s too
+async def on_http(request: Request, exc: StarletteHTTPException):
+    return problem_response(exc.status_code, {"type": "about:blank",
+                                              "title": HTTPStatus(exc.status_code).phrase},
+                            headers=getattr(exc, "headers", None))  # keeps WWW-Authenticate
+```
+
+</TabItem>
+<TabItem label="Django">
+
+```python
+# settings.py: REST_FRAMEWORK = {"EXCEPTION_HANDLER": "shop.errors.problem_handler"}
+def problem_handler(exc, context):
+    response = exception_handler(exc, context)
+    if response is None:
+        return None  # unhandled: Django returns a 500 (no traceback when DEBUG=False)
+    body = {"type": "about:blank", "title": response.status_text, "status": response.status_code}
+    if isinstance(exc, ValidationError):
+        body |= {"type": f"{PROBLEMS}/validation-error", "title": "Your request is not valid",
+                 "errors": list(pointers(exc.detail))}
+    response.data = body
+    response.content_type = "application/problem+json"
+    return response
+
+def pointers(detail, path=""):
+    if isinstance(detail, dict):
+        for key, value in detail.items():
+            yield from pointers(value, f"{path}/{key}")
+    elif isinstance(detail, list) and detail and not isinstance(detail[0], str):
+        for i, value in enumerate(detail):
+            yield from pointers(value, f"{path}/{i}")
+    else:
+        for message in detail if isinstance(detail, list) else [detail]:
+            yield {"pointer": f"#{path or '/'}", "detail": str(message)}
+```
+
+</TabItem>
+<TabItem label="Hono">
+
+```ts
+export const validate = <T extends z.ZodType>(target: "json" | "query" | "param", schema: T) =>
+  zValidator(target, schema, (result, c) => {
+    if (!result.success) {
+      const errors = result.error.issues.map((i) => ({
+        pointer: `#/${i.path.join("/")}`,
+        detail: i.message,
+      }));
+      return c.json(
+        {
+          type: `${PROBLEMS}/validation-error`,
+          title: "Your request is not valid",
+          status: 422,
+          errors,
+        },
+        422,
+        { "Content-Type": "application/problem+json" },
+      );
+    }
+  });
+
+app.notFound((c) =>
+  c.json({ type: "about:blank", title: "Not Found", status: 404 }, 404, {
+    "Content-Type": "application/problem+json",
+  }),
+);
+```
+
+</TabItem>
+</Tabs>
+
+## Never expose internals; return a trace ID instead
+
+<Compare>
+<Prefer>
+
+```json
+{
+  "type": "about:blank",
+  "title": "Internal Server Error",
+  "status": 500,
+  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736"
+}
+```
+
+The trace ID joins this response to your logs and traces.
+
+</Prefer>
+<Avoid>
+
+```json
+{
+  "error": "psycopg.errors.UndefinedColumn: column \"pwd_hash\" of relation \"users\" does not exist (db.py:214)"
+}
+```
+
+Database, table, column and file layout, in one line.
+
+</Avoid>
+</Compare>
+
+Stack traces usually escape through defaults: `DEBUG=True` in a Django settings file that reached production, or an unhandled exception in a framework whose development error page is on. Add a test that triggers an unhandled exception against a production-configured app and asserts the body contains nothing but a problem object.
+
+Be careful with `detail` for authentication failures too. "No account with this email" versus "wrong password" tells an attacker which emails are registered. Return one message for both.
+
+## Write details that say what to do next
+
+A good `detail` answers what happened, why, and what the caller can do about it.
+
+| Unhelpful         | Helpful                                                                                |
+| ----------------- | -------------------------------------------------------------------------------------- |
+| `Invalid request` | `quantity must be between 1 and 99, got 120.`                                          |
+| `Forbidden`       | `This API key is read-only. Create a key with the orders:write scope to place orders.` |
+| `Unsupported`     | `Currency BTC is not supported. Supported: EUR, USD, GBP.`                             |
+
+<Note kind="practice" title="Stripe's doc_url" source="https://docs.stripe.com/api/errors">
+
+Stripe errors carry a machine-readable `code` such as `card_declined`, a `decline_code` such as `insufficient_funds`, a `param` naming the offending field, and a `doc_url` that links to a page about that specific error. That last field is what RFC 9457's `type` URI is for: make every problem type resolve to its own documentation page.
+
+</Note>
+
+<RuleGroup>
+
+<Rule guide="zalando" id="176" level="MUST" title="Support Problem JSON" />
+<Rule guide="zalando" id="177" level="MUST" title="Not expose stack traces" />
+
+</RuleGroup>
+
+<WorkedProblem kind="Design" title="An error catalogue for checkout">
+
+Checkout can fail because a SKU is out of stock, a coupon has expired, the shipping address is outside the delivery area, or the payment provider is down. Define the problem types, status codes and extension members.
+
+<Solution>
+
+| `type` (under `/problems/`)    | Status              | Extensions                       |
+| ------------------------------ | ------------------- | -------------------------------- |
+| `insufficient-stock`           | 422                 | `sku`, `available`               |
+| `coupon-expired`               | 422                 | `coupon`, `expired_at`           |
+| `undeliverable-address`        | 422                 | `country`, `supported_countries` |
+| `payment-provider-unavailable` | 503 + `Retry-After` | none                             |
+
+Each type gets a documentation page at its URI. The first three are fixable by the user, so they're 4xx; the provider outage is transient and retryable, so it's 503.
+
+**Alternatives.** Some teams use one generic `checkout-failed` type with a `reason` extension. That works, but clients then branch on an extension instead of `type`, and generic Problem Details tooling can't see the distinction.
+
+</Solution>
+</WorkedProblem>
+
+<SelfCheck>
+
+<Question
+  q="Which Problem Details member should client code branch on?"
+  answer={2}
+  options={[
+    {
+      text: "<code>title</code>",
+      why: "Human-readable and may be reworded or translated without notice.",
+    },
+    {
+      text: "<code>detail</code>",
+      why: "Describes one occurrence in prose; parsing it is fragile.",
+    },
+    {
+      text: "<code>type</code>",
+      why: "The stable identifier of the problem kind, and part of the contract.",
+    },
+    {
+      text: "<code>instance</code>",
+      why: "Identifies one occurrence, useful for support, not for branching.",
+    },
+  ]}
+/>
+
+<Question
+  q="Your API returns problem JSON from your handlers, but unknown routes return the framework's default HTML 404 page. Why does this matter?"
+  answer={0}
+  options={[
+    {
+      text: "Clients need a second error parser, and a mistyped base URL produces a confusing HTML body instead of a clear error.",
+      why: "Format coverage has to include framework and gateway errors, or the standard format saves nothing.",
+    },
+    {
+      text: "It doesn't: 404 is the same status either way.",
+      why: "The status is the same, but the body and content type differ, which breaks clients expecting problem JSON.",
+    },
+    { text: "HTML 404 pages are slower.", why: "Performance isn't the issue." },
+    { text: "Search engines will index the API.", why: "Unrelated to the error format." },
+  ]}
+/>
+
+</SelfCheck>

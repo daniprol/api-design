@@ -1,0 +1,27 @@
+---
+/** Renders CHANGELOG.md as dated sections. The file stays the single source. */
+import changelog from "../../CHANGELOG.md?raw";
+import { marked } from "../scripts/inline-md";
+
+const entries: { date: string; items: string[] }[] = [];
+for (const line of changelog.split("\n")) {
+  const heading = /^## (\d{4}-\d{2}-\d{2})/.exec(line);
+  if (heading) entries.push({ date: heading[1], items: [] });
+  else if (entries.length && line.startsWith("- ")) entries.at(-1)!.items.push(line.slice(2));
+}
+---
+
+{
+  entries.map((e) => (
+    <>
+      <h2 id={e.date}>
+        <time datetime={e.date}>{e.date}</time>
+      </h2>
+      <ul>
+        {e.items.map((item) => (
+          <li set:html={marked(item)} />
+        ))}
+      </ul>
+    </>
+  ))
+}

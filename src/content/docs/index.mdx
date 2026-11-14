@@ -1,74 +1,28 @@
 ---
-title: API Design Dojo
-description: A fun, example-driven course on web API design, built on real company guidelines.
+title: HTTP API Design
+description: A practitioner's reference for designing HTTP APIs and event interfaces, with primary sources and comparisons of company guidelines.
 template: splash
 tableOfContents: false
 editUrl: false
 lastUpdated: false
-hero:
-  title: Design APIs people love to use
-  tagline: A hands-on course on web API design. Short lessons, real stories, do's and don'ts, and side-by-side code in FastAPI, Django and Hono. Built on the rules that companies like Zalando use in production.
-  image:
-    file: ../../assets/logo.svg
-  actions:
-    - text: Start the course
-      link: start-here/
-      icon: right-arrow
-    - text: See the course map
-      link: course/
-      icon: list-format
-      variant: minimal
 ---
 
-import CourseMap from "../../components/CourseMap.astro";
-import HomeTerminal from "../../components/HomeTerminal.astro";
+import HomeIndex from "@components/HomeIndex.astro";
+import HomeSearch from "@components/HomeSearch.astro";
 
-<HomeTerminal />
+<div class="fg-hometop">
+  <h1>HTTP API Design</h1>
+  <p class="fg-hometop__sub">A practitioner's reference</p>
+  <div class="fg-hometop__scope">
+    The decisions behind HTTP and event APIs that stay usable for years: resource modelling,
+    protocol semantics, representations, pagination, retries, concurrency, security and change.
+    Written for engineers who already ship APIs. Every page leads with its recommendations, cites
+    the RFC or original source, and shows where major company guidelines disagree. Examples are in
+    FastAPI, Django REST Framework and Hono.
+  </div>
+  <div class="not-content">
+    <HomeSearch />
+  </div>
+</div>
 
-## Why this dojo?
-
-<ul class="dojo-features not-content">
-  <li class="dojo-feature">
-    <div class="dojo-feature__icon">⚡</div>
-    <h3>Code over prose</h3>
-    <p>
-      Every concept shown in FastAPI, Django REST Framework and Hono. Pick your stack once and every
-      page remembers it.
-    </p>
-  </li>
-  <li class="dojo-feature">
-    <div class="dojo-feature__icon">📜</div>
-    <h3>Stories &amp; history</h3>
-    <p>
-      Why <code>418</code> exists, how Stripe versions its API, and the outage that taught the world
-      about idempotency keys.
-    </p>
-  </li>
-  <li class="dojo-feature">
-    <div class="dojo-feature__icon">✅</div>
-    <h3>Do's &amp; don'ts</h3>
-    <p>Side-by-side good and bad designs, so the right instinct sticks.</p>
-  </li>
-  <li class="dojo-feature">
-    <div class="dojo-feature__icon">🏢</div>
-    <h3>Real company rules</h3>
-    <p>
-      See what Zalando actually mandates (MUST, SHOULD, MAY) right next to each concept. More
-      companies coming.
-    </p>
-  </li>
-  <li class="dojo-feature">
-    <div class="dojo-feature__icon">🧠</div>
-    <h3>Quick checks</h3>
-    <p>A tiny quiz in every lesson, plus progress tracking saved in your browser.</p>
-  </li>
-  <li class="dojo-feature">
-    <div class="dojo-feature__icon">🎒</div>
-    <h3>Cheat sheets</h3>
-    <p>A one-page checklist and a status code cheat sheet for your next design review.</p>
-  </li>
-</ul>
-
-## The course map
-
-<CourseMap />
+<HomeIndex />
