@@ -10,6 +10,7 @@ import {
   Do,
   Dont,
   Rule,
+  RuleGroup,
   Quiz,
   Takeaways,
   Tabs,
@@ -191,6 +192,8 @@ is a historical accident that has confused developers for over 25 years.
 
 </Story>
 
+<RuleGroup>
+
 <Rule guide="zalando" id="243" level="MUST" title="Use official HTTP status codes" />
 
 <Rule guide="zalando" id="150" level="SHOULD" title="Only use most common HTTP status codes" />
@@ -218,6 +221,8 @@ Document every status code an operation can return in the OpenAPI spec, at least
 />
 
 <Rule guide="zalando" id="251" level="SHOULD" title="Not use redirection codes" />
+
+</RuleGroup>
 
 <Quiz
   question="A logged-in user requests <code>GET /invoices/77</code>, which belongs to another customer. Which response is most appropriate?"

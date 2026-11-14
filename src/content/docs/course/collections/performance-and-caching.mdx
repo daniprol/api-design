@@ -10,6 +10,7 @@ import {
   Do,
   Dont,
   Rule,
+  RuleGroup,
   Quiz,
   Takeaways,
   Tabs,
@@ -220,6 +221,8 @@ In 2013, researchers presented **BREACH** at Black Hat: if a compressed HTTPS re
 
 </Story>
 
+<RuleGroup>
+
 <Rule
   guide="zalando"
   id="155"
@@ -238,6 +241,8 @@ In 2013, researchers presented **BREACH** at Black Hat: if a compressed HTTPS re
 Zalando treats caching as disabled by default (`Cache-Control: no-store`) and requires that endpoints which _are_ cacheable say so explicitly, including the caching headers and their semantics.
 
 </Rule>
+
+</RuleGroup>
 
 <Quiz
   question="A client sends <code>If-None-Match: &quot;v3&quot;</code> and the resource's current ETag is <code>&quot;v3&quot;</code>. What should the server return?"

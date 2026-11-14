@@ -882,3 +882,58 @@
 .dojo-rule-index td:nth-child(2) {
   white-space: nowrap;
 }
+
+/* ---------- Rule group ---------- */
+.sl-markdown-content .dojo-rule-group {
+  margin-block: 1.75rem;
+  border-radius: var(--dojo-radius);
+  border: 1px solid var(--dojo-border);
+  background: var(--dojo-surface);
+}
+
+.dojo-rule-group summary {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.9rem 1.2rem;
+  cursor: pointer;
+  list-style: none;
+  font-family: var(--dojo-font-display);
+  font-weight: 750;
+  color: var(--sl-color-white);
+}
+
+.dojo-rule-group summary::-webkit-details-marker {
+  display: none;
+}
+
+.dojo-rule-group summary::after {
+  content: "▸";
+  margin-inline-start: auto;
+  transition: transform 0.2s;
+  color: var(--sl-color-gray-3);
+}
+
+.dojo-rule-group[open] summary::after {
+  transform: rotate(90deg);
+}
+
+.dojo-rule-group__count {
+  padding: 0.05rem 0.55rem;
+  border-radius: 999px;
+  font-family: var(--sl-font);
+  font-size: 0.75rem;
+  font-weight: 600;
+  background: var(--dojo-surface-strong);
+  color: var(--sl-color-gray-2);
+}
+
+.dojo-rule-group__body {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0 1rem 1rem;
+}
+
+.sl-markdown-content .dojo-rule-group__body > * {
+  margin: 0;
+}

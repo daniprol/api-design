@@ -20,13 +20,13 @@ pnpm build          # static site in dist/
 pnpm preview        # serve the build
 ```
 
-| Script              | What it does                                    |
-| ------------------- | ----------------------------------------------- |
-| `pnpm lint`         | ESLint (TypeScript, Astro, a11y)                |
-| `pnpm format`       | Format with oxfmt (`format:check` in CI)        |
-| `pnpm check`        | `astro check` type checking                     |
-| `pnpm check:links`  | Verify internal links in the built site         |
-| `pnpm verify`       | All of the above + build                        |
+| Script             | What it does                             |
+| ------------------ | ---------------------------------------- |
+| `pnpm lint`        | ESLint (TypeScript, Astro, a11y)         |
+| `pnpm format`      | Format with oxfmt (`format:check` in CI) |
+| `pnpm check`       | `astro check` type checking              |
+| `pnpm check:links` | Verify internal links in the built site  |
+| `pnpm verify`      | All of the above + build                 |
 
 Git hooks (lefthook): `pre-commit` formats and lints staged files, `pre-push` runs `astro check`.
 
@@ -56,7 +56,19 @@ src/
 3. Import the building blocks in one line:
 
 ```mdx
-import { Hook, Story, DoDont, Do, Dont, Rule, Quiz, Takeaways, Tabs, TabItem, Status } from "@components/lesson";
+import {
+  Hook,
+  Story,
+  DoDont,
+  Do,
+  Dont,
+  Rule,
+  Quiz,
+  Takeaways,
+  Tabs,
+  TabItem,
+  Status,
+} from "@components/lesson";
 ```
 
 Write root-relative links (`/course/...`): the base path is added automatically. Inside JSX components, leave a blank line around Markdown content so the formatter keeps it intact.

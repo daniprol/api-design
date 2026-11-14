@@ -10,6 +10,7 @@ import {
   Do,
   Dont,
   Rule,
+  RuleGroup,
   Quiz,
   Takeaways,
   Tabs,
@@ -211,6 +212,8 @@ Sensitive data in query strings ends up in places you'd never expect: server acc
 
 </Story>
 
+<RuleGroup>
+
 <Rule guide="zalando" id="137" level="MUST" title="Stick to conventional query parameters">
 
 Zalando reserves `q`, `sort`, `fields`, `embed`, `offset`, `cursor` and `limit`. Sort uses `+`/`-` prefixes and comma separation.
@@ -234,6 +237,8 @@ Zalando reserves `q`, `sort`, `fields`, `embed`, `offset`, `cursor` and `limit`.
 <Rule guide="zalando" id="237" level="SHOULD" title="Design complex query languages using JSON" />
 
 <Rule guide="zalando" id="226" level="MUST" title="Document implicit response filtering" />
+
+</RuleGroup>
 
 <Quiz
   question="What does <code>?sort=-price,name</code> mean under these conventions?"

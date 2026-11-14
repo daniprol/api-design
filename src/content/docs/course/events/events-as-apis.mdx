@@ -10,6 +10,7 @@ import {
   Do,
   Dont,
   Rule,
+  RuleGroup,
   Quiz,
   Takeaways,
   Tabs,
@@ -222,6 +223,8 @@ The term **webhook** was coined by Jeff Lindsay around 2007: "user-defined HTTP 
 
 </Story>
 
+<RuleGroup>
+
 <Rule guide="zalando" id="194" level="MUST" title="Treat events as part of the service interface" />
 
 <Rule guide="zalando" id="197" level="MUST" title="Specify and register events as event types" />
@@ -258,6 +261,8 @@ Zalando distinguishes general (business) events and data change events, each wit
 />
 
 <Rule guide="zalando" id="246" level="MUST" title="Use semantic versioning of event type schemas" />
+
+</RuleGroup>
 
 <Quiz
   question="Why partition data change events by the entity's ID?"

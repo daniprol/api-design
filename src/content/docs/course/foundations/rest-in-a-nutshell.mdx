@@ -10,6 +10,7 @@ import {
   Do,
   Dont,
   Rule,
+  RuleGroup,
   Quiz,
   Takeaways,
   Tabs,
@@ -71,12 +72,12 @@ POST /orders/42/cancel
 Use methods for their meaning, and status codes for outcomes. This is where most good APIs live.
 
 ```http
-GET /orders/42              → 200 OK
-PATCH /orders/42            → 200 OK
-{ "status": "CANCELED" }
+GET  /orders/42                → 200 OK
+POST /orders/42/cancellations  → 201 Created
+{ "reason": "CUSTOMER_REQUEST" }
 
-DELETE /orders/42           → 204 No Content
-GET /orders/999             → 404 Not Found
+GET  /orders/42                → 200 OK  (status: CANCELED)
+GET  /orders/999               → 404 Not Found
 ```
 
 ### Level 3: hypermedia controls (HATEOAS)
@@ -89,7 +90,7 @@ Responses include links that tell the client what it can do next, like a web pag
   "status": "PLACED",
   "_links": {
     "self": { "href": "https://api.example.com/orders/42" },
-    "cancel": { "href": "https://api.example.com/orders/42/cancellation" }
+    "cancel": { "href": "https://api.example.com/orders/42/cancellations" }
   }
 }
 ```
@@ -183,11 +184,15 @@ In 2008, Fielding wrote a blog post titled _"REST APIs must be hypertext-driven"
 
 </Story>
 
+<RuleGroup>
+
 <Rule guide="zalando" id="162" level="MUST" title="Use REST maturity level 2">
 
 Zalando requires resources, proper HTTP methods and status codes, and treats level 3 (hypermedia) as optional ([rule #163](https://opensource.zalando.com/restful-api-guidelines/#163), MAY).
 
 </Rule>
+
+</RuleGroup>
 
 <Quiz
   question="<code>POST /orders/42/cancel</code> with a JSON body, returning 200 for both success and failure. Which maturity level is this?"

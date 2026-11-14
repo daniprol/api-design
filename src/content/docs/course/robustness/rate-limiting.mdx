@@ -10,6 +10,7 @@ import {
   Do,
   Dont,
   Rule,
+  RuleGroup,
   Quiz,
   Takeaways,
   Tabs,
@@ -173,11 +174,15 @@ When a popular API recovers from an outage, all its clients retry at once and kn
 
 </Story>
 
+<RuleGroup>
+
 <Rule guide="zalando" id="153" level="MUST" title="Use code 429 with headers for rate limits">
 
 Zalando requires `429` plus either `Retry-After` or the `X-RateLimit-Limit`, `X-RateLimit-Remaining` and `X-RateLimit-Reset` headers (with reset expressed in seconds).
 
 </Rule>
+
+</RuleGroup>
 
 <Quiz
   question="Which response best helps a well-behaved client that has exceeded its quota?"

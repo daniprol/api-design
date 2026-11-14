@@ -55,6 +55,10 @@
       "allowedVersions": {
         "eslint-plugin-jsx-a11y>eslint": "10"
       }
+    },
+    "overrides": {
+      "minimatch@>=7.0.0 <11.0.1": "^11.0.1",
+      "esbuild@>=0.27.3 <0.28.1": "^0.28.1"
     }
   }
 }

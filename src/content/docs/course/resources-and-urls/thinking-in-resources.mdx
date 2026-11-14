@@ -10,6 +10,7 @@ import {
   Do,
   Dont,
   Rule,
+  RuleGroup,
   Quiz,
   Takeaways,
   Tabs,
@@ -169,6 +170,8 @@ How do you "star" a repository? GitHub's REST API doesn't have a `/star` action.
 
 </Story>
 
+<RuleGroup>
+
 <Rule guide="zalando" id="141" level="MUST" title="Keep URLs verb-free" />
 
 <Rule guide="zalando" id="138" level="MUST" title="Avoid actions — think about resources">
@@ -180,6 +183,8 @@ Zalando suggests modelling actions as state changes of a resource (for example a
 <Rule guide="zalando" id="142" level="MUST" title="Use domain-specific resource names" />
 
 <Rule guide="zalando" id="139" level="SHOULD" title="Model complete business processes" />
+
+</RuleGroup>
 
 <Quiz
   question="You need an endpoint to approve an expense report. Which design is the most resource-oriented?"

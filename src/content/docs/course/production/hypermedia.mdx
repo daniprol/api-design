@@ -10,6 +10,7 @@ import {
   Do,
   Dont,
   Rule,
+  RuleGroup,
   Quiz,
   Takeaways,
   Tabs,
@@ -168,6 +169,8 @@ Once shipped, `cancel` disappears and `track` appears. The client doesn't need t
 
 </Story>
 
+<RuleGroup>
+
 <Rule guide="zalando" id="163" level="MAY" title="Use REST maturity level 3 - HATEOAS">
 
 Zalando doesn't generally recommend full HATEOAS, citing a lack of proven value and tooling for their use cases, but allows it.
@@ -195,6 +198,8 @@ When you do embed links, use a common format: link objects with an `href` proper
 />
 
 <Rule guide="zalando" id="166" level="MUST" title="Not use link headers with JSON entities" />
+
+</RuleGroup>
 
 <Quiz
   question="Which is the most robust way to give a client the URL of the next page?"

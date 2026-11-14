@@ -10,6 +10,7 @@ import {
   Do,
   Dont,
   Rule,
+  RuleGroup,
   Quiz,
   Takeaways,
   Tabs,
@@ -184,11 +185,15 @@ Wikipedia is a giant optimistic locking system. When you open an article for edi
 
 </Story>
 
+<RuleGroup>
+
 <Rule guide="zalando" id="182" level="MAY" title="Consider to support ETag together with If-Match/If-None-Match header">
 
 Zalando's appendix on optimistic locking compares ETag + `If-Match`, ETags in the payload, version numbers and `Last-Modified`, and recommends ETag-based approaches.
 
 </Rule>
+
+</RuleGroup>
 
 <Quiz
   question="A client sends <code>PATCH /carts/5</code> with <code>If-Match: &quot;v3&quot;</code>, but the cart is now at <code>&quot;v4&quot;</code>. What's the right response?"

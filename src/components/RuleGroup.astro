@@ -1,0 +1,28 @@
+---
+/**
+ * Collapsible panel that groups company rule boxes at the end of a lesson,
+ * so the lesson stays a general course and the company detail is one click away.
+ */
+interface Props {
+  title?: string;
+  open?: boolean;
+}
+const { title = "What the company guides say", open = false } = Astro.props;
+---
+
+<details class="dojo-rule-group" open={open}>
+  <summary>
+    <span class="dojo-rule-group__icon" aria-hidden="true">🏢</span>
+    <span class="dojo-rule-group__title">{title}</span>
+    <span class="dojo-rule-group__count" data-rule-count></span>
+  </summary>
+  <div class="dojo-rule-group__body"><slot /></div>
+</details>
+
+<script>
+  for (const group of document.querySelectorAll<HTMLDetailsElement>(".dojo-rule-group")) {
+    const count = group.querySelectorAll(".dojo-rule").length;
+    const label = group.querySelector<HTMLElement>("[data-rule-count]");
+    if (label) label.textContent = `${count} rule${count === 1 ? "" : "s"}`;
+  }
+</script>

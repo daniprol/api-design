@@ -10,6 +10,7 @@ import {
   Do,
   Dont,
   Rule,
+  RuleGroup,
   Quiz,
   Takeaways,
   Tabs,
@@ -196,6 +197,8 @@ Crockford removed comments from JSON deliberately: he saw people using them to h
 
 </Story>
 
+<RuleGroup>
+
 <Rule
   guide="zalando"
   id="118"
@@ -235,6 +238,8 @@ Crockford removed comments from JSON deliberately: he saw people using them to h
 Contrast: Google's AIPs use `lower_snake_case` in their protobuf definitions, but the JSON representation becomes `lowerCamelCase`. Different companies, different conventions. The only universal rule is consistency.
 
 </Rule>
+
+</RuleGroup>
 
 <Quiz
   question="You return <code>GET /tags</code> as a bare JSON array. Six months later you need pagination. What's the problem?"

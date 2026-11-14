@@ -10,6 +10,7 @@ import {
   Do,
   Dont,
   Rule,
+  RuleGroup,
   Quiz,
   Takeaways,
   Tabs,
@@ -184,6 +185,8 @@ There are real people with the surname **Null**, and they've had a rough time wi
 
 </Story>
 
+<RuleGroup>
+
 <Rule guide="zalando" id="123" level="MUST" title="Use same semantics for null and absent properties">
 
 Zalando's exception is the same as ours: JSON Merge Patch, where `null` explicitly means "delete".
@@ -193,6 +196,8 @@ Zalando's exception is the same as ours: JSON Merge Patch, where `null` explicit
 <Rule guide="zalando" id="122" level="MUST" title="Not use null for boolean properties" />
 
 <Rule guide="zalando" id="124" level="SHOULD" title="Not use null for empty arrays" />
+
+</RuleGroup>
 
 <Quiz
   question="A <code>has_discount</code> field can be true, false, or &quot;not calculated yet&quot;. Best design?"

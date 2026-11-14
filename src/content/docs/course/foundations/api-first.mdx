@@ -10,6 +10,7 @@ import {
   Do,
   Dont,
   Rule,
+  RuleGroup,
   Quiz,
   Takeaways,
   Tabs,
@@ -195,7 +196,7 @@ description: Cancel order endpoint.
 
 <Story kind="history" title="From Swagger to OpenAPI">
 
-Swagger was created by Tony Tam in 2010 at the dictionary site Wordnik, to describe their own API. It became so popular that in 2015 SmartBear donated the specification to the Linux Foundation, where it was renamed the **OpenAPI Specification**. "Swagger" lives on as the name of the tooling (Swagger UI, Swagger Editor). So if someone says "the Swagger file", they mean the OpenAPI spec.
+Swagger was created by Tony Tam in 2010 at the dictionary site Wordnik, to describe their own API. It became so popular that in 2015 SmartBear donated the specification to the new OpenAPI Initiative at the Linux Foundation, and in 2016 it was renamed the **OpenAPI Specification**. "Swagger" lives on as the name of the tooling (Swagger UI, Swagger Editor). So if someone says "the Swagger file", they mean the OpenAPI spec.
 
 </Story>
 
@@ -204,6 +205,8 @@ Swagger was created by Tony Tam in 2010 at the dictionary site Wordnik, to descr
 Zalando is a German company, with engineers from over 100 nations. Their rule: APIs are written in U.S. English. That means `color`, not `colour`, and `canceled`… or is it `cancelled`? Both are accepted in U.S. English, which is exactly why a style guide that picks one is so useful.
 
 </Story>
+
+<RuleGroup>
 
 <Rule guide="zalando" id="100" level="MUST" title="Follow API first principle" />
 
@@ -216,6 +219,8 @@ Zalando requires OpenAPI (in YAML) as the single source of truth for every API, 
 <Rule guide="zalando" id="102" level="SHOULD" title="Provide API user manual" />
 
 <Rule guide="zalando" id="103" level="MUST" title="Write APIs using U.S. English" />
+
+</RuleGroup>
 
 <Quiz
   question="What's the core idea of API first?"

@@ -16,7 +16,14 @@ interface Props {
   /** Index of the correct option (0-based). */
   answer: number;
 }
-const { question, options, answer } = Astro.props;
+const { question, options, answer: authoredAnswer } = Astro.props;
+
+// Deterministically shuffle the options (seeded by the question text), so the
+// correct answer isn't always in the same position as it was authored.
+const hash = (text: string) => [...text].reduce((h, ch) => (Math.imul(h ^ ch.charCodeAt(0), 16777619) >>> 0), 2166136261);
+const order = options.map((_, i) => i).sort((a, b) => hash(`${question}#${a}`) - hash(`${question}#${b}`));
+const shuffled = order.map((i) => options[i]);
+const answer = order.indexOf(authoredAnswer);
 ---
 
 <dojo-quiz class="dojo-quiz not-content" data-answer={answer}>
@@ -24,7 +31,7 @@ const { question, options, answer } = Astro.props;
   <p class="dojo-quiz__question" set:html={question} />
   <ol class="dojo-quiz__options">
     {
-      options.map((option, i) => (
+      shuffled.map((option, i) => (
         <li>
           <button type="button" data-index={i}>
             <span class="dojo-quiz__letter">{String.fromCharCode(65 + i)}</span>

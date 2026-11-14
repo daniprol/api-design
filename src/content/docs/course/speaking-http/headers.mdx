@@ -10,6 +10,7 @@ import {
   Do,
   Dont,
   Rule,
+  RuleGroup,
   Quiz,
   Takeaways,
   Tabs,
@@ -142,7 +143,7 @@ app.get("/orders/:id", async (c) => {
 
 ## Don't invent custom headers (much)
 
-Before creating `X-My-Thing`, check whether a standard header already exists. If you really need a custom header, give it a clear name and document it. And note: the `X-` prefix was officially deprecated by RFC 6648 in 2012, because "experimental" headers like `X-Forwarded-For` became permanent standards and the `X-` stuck forever.
+Before creating `X-My-Thing`, check whether a standard header already exists. If you really need a custom header, give it a clear name and document it. And note: the `X-` prefix was officially deprecated by RFC 6648 in 2012, because "experimental" `X-` headers kept becoming de-facto standards and the prefix then stuck forever. `X-Forwarded-For` is the classic example: it's everywhere, so when the IETF finally standardized the idea in RFC 7239, it had to pick a new name, `Forwarded`, and now both live on.
 
 <DoDont>
 <Do>
@@ -170,6 +171,8 @@ X-Content-Kind: json
 The `Referer` header (which page linked you here) is misspelled. It should be "Referrer". The typo, credited to Phillip Hallam-Baker, made it into the HTTP spec in the 1990s and could never be fixed, because every browser and server already used it. Newer specs (like `Referrer-Policy`) spell it correctly, so now we have both. Headers are forever.
 
 </Story>
+
+<RuleGroup>
 
 <Rule
   guide="zalando"
@@ -199,6 +202,8 @@ The `Referer` header (which page linked you here) is misspelled. It should be "R
 Zalando's own correlation header. Services must read `X-Flow-ID`, generate one if it's missing, and propagate it to every downstream call and event, so a whole business flow can be traced. ([rule #184](https://opensource.zalando.com/restful-api-guidelines/#184): MUST propagate proprietary headers.)
 
 </Rule>
+
+</RuleGroup>
 
 <Quiz
   question="After <code>POST /invoices</code> creates invoice <code>inv_9</code>, which header tells the client where to find it?"

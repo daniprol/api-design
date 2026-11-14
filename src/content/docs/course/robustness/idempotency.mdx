@@ -10,6 +10,7 @@ import {
   Do,
   Dont,
   Rule,
+  RuleGroup,
   Quiz,
   Takeaways,
   Tabs,
@@ -223,6 +224,8 @@ Computer science has a classic proof that two parties communicating over an unre
 
 </Story>
 
+<RuleGroup>
+
 <Rule
   guide="zalando"
   id="229"
@@ -242,6 +245,8 @@ Computer science has a classic proof that two parties communicating over an unre
 Zalando describes the key as client-generated, unique per request intent, and suggests keeping it for at least 24 hours.
 
 </Rule>
+
+</RuleGroup>
 
 <Quiz
   question="A client retries <code>POST /payments</code> after a timeout, using the same Idempotency-Key. The first attempt actually succeeded. What should the server do?"

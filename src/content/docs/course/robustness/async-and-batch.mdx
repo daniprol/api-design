@@ -10,6 +10,7 @@ import {
   Do,
   Dont,
   Rule,
+  RuleGroup,
   Quiz,
   Takeaways,
   Tabs,
@@ -190,6 +191,8 @@ Google Cloud APIs standardize async work as **long-running operations** (AIP-151
 
 </Story>
 
+<RuleGroup>
+
 <Rule guide="zalando" id="253" level="MAY" title="Support asynchronous request processing">
 
 Zalando's recommended pattern: return <Status code={202} /> with a `Location` to a job (or the eventual resource), and model the job as a resource clients can `GET`.
@@ -197,6 +200,8 @@ Zalando's recommended pattern: return <Status code={202} /> with a `Location` to
 </Rule>
 
 <Rule guide="zalando" id="152" level="MUST" title="Use code 207 for batch or bulk requests" />
+
+</RuleGroup>
 
 <Quiz
   question="A batch import of 50 items: 48 succeed, 2 fail validation. Best response?"

@@ -10,6 +10,7 @@ import {
   Do,
   Dont,
   Rule,
+  RuleGroup,
   Quiz,
   Takeaways,
   Tabs,
@@ -30,16 +31,17 @@ So what counts as breaking?
 
 ## Safe vs. breaking changes
 
-| ✅ Usually safe (compatible)                     | 💥 Breaking                                                       |
-| ------------------------------------------------ | ----------------------------------------------------------------- |
-| Add a new endpoint / resource                    | Remove or rename an endpoint                                      |
-| Add an **optional** request field or parameter   | Add a **required** request field or parameter                     |
-| Add a response field                             | Remove or rename a response field                                 |
-| Make a required request field optional           | Make an optional request field required                           |
-| Accept more input values (relax validation)      | Reject input that used to be accepted (tighten validation)        |
-| Add a new error type with a standard status code | Change the type of a field (`"42"` → `42`)                        |
-|                                                  | Change the meaning of a field or a default value                  |
-|                                                  | Return a new enum value… _if clients aren't prepared_ (see below) |
+| ✅ Usually safe (compatible)                               | 💥 Breaking                                                                   |
+| ---------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| Add a new endpoint / resource                              | Remove or rename an endpoint                                                  |
+| Add an **optional** request field or parameter             | Add a **required** request field or parameter                                 |
+| Add a response field                                       | Remove or rename a response field                                             |
+| Make a required request field optional                     | Make an optional request field required                                       |
+| Accept more input values (relax validation)                | Reject input that used to be accepted (tighten validation)                    |
+| Add a new error type (if clients handle the status family) | Change the type of a field (`"42"` → `42`)                                    |
+|                                                            | Make a response field optional or nullable (clients relied on it being there) |
+|                                                            | Change the meaning of a field or a default value                              |
+|                                                            | Return a new enum value… _if clients aren't prepared_ (see below)             |
 
 ## Robustness principle (and its limits)
 
@@ -167,6 +169,8 @@ Jon Postel wrote the robustness principle in the TCP specification (RFC 761, 198
 
 </Story>
 
+<RuleGroup>
+
 <Rule guide="zalando" id="106" level="MUST" title="Not break backward compatibility" />
 
 <Rule guide="zalando" id="107" level="SHOULD" title="Prefer compatible extensions" />
@@ -185,6 +189,8 @@ Clients must ignore unknown fields and be prepared for new enum values (tolerant
   level="SHOULD"
   title="Use open-ended list of values (via examples) for enumeration types"
 />
+
+</RuleGroup>
 
 <Quiz
   question="Which change is backward compatible for existing clients?"

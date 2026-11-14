@@ -10,6 +10,7 @@ import {
   Do,
   Dont,
   Rule,
+  RuleGroup,
   Quiz,
   Takeaways,
   Tabs,
@@ -183,6 +184,8 @@ Spotify built **Backstage** internally to answer "who owns this service and wher
 
 </Story>
 
+<RuleGroup>
+
 <Rule guide="zalando" id="218" level="MUST" title="Contain API meta information">
 
 Required: `info.title`, `info.version`, `info.description`, and `info.contact` with name, URL and email.
@@ -202,6 +205,8 @@ Required: `info.title`, `info.version`, `info.description`, and `info.contact` w
 <Rule guide="zalando" id="192" level="MUST" title="Publish OpenAPI specification for APIs" />
 
 <Rule guide="zalando" id="193" level="SHOULD" title="Monitor API usage" />
+
+</RuleGroup>
 
 <Quiz
   question="You add a new optional response field to an API whose spec is at version <code>2.3.1</code>. What's the new spec version under SemVer?"

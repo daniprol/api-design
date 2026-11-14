@@ -10,6 +10,7 @@ import {
   Do,
   Dont,
   Rule,
+  RuleGroup,
   Quiz,
   Takeaways,
   Tabs,
@@ -78,6 +79,7 @@ Modern frameworks make it _very_ easy to expose a model directly. That's great f
 ```python
 from pydantic import BaseModel
 from datetime import datetime
+from decimal import Decimal
 
 class Money(BaseModel):
     amount: str        # decimal as string, no float surprises
@@ -95,7 +97,7 @@ def get_order(order_id: str) -> Order:
     return Order(
         id=row.public_id,
         status=STATUS_NAMES[row.stat_cd],
-        total=Money(amount=str(row.tot_amt_cents / 100), currency=row.currency),
+        total=Money(amount=f"{Decimal(row.tot_amt_cents) / 100:.2f}", currency=row.currency),
         created_at=row.crt_ts,
     )
 ```
@@ -179,11 +181,15 @@ Stripe famously won developers over in the early 2010s by making the _first API 
 
 </Story>
 
+<RuleGroup>
+
 <Rule guide="zalando" title="API as a product">
 
 Zalando's guidelines treat APIs as products with real customers, and ask teams to put themselves in the shoes of their consumers, aim for an excellent developer experience, and actively improve and maintain API consistency over the long term.
 
 </Rule>
+
+</RuleGroup>
 
 <Quiz
   question="Your mobile team asks for a new field. The fastest fix is to switch your serializer to <code>fields = &quot;__all__&quot;</code>. What's the problem?"

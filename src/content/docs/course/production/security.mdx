@@ -10,6 +10,7 @@ import {
   Do,
   Dont,
   Rule,
+  RuleGroup,
   Quiz,
   Takeaways,
   Tabs,
@@ -194,6 +195,8 @@ In September 2022, Australian telco Optus suffered a breach affecting about 10 m
 
 </Story>
 
+<RuleGroup>
+
 <Rule guide="zalando" id="104" level="MUST" title="Secure endpoints">
 
 Every Zalando API endpoint must be protected with authentication (OAuth 2.0 bearer tokens in practice), declared in the OpenAPI `securitySchemes`.
@@ -207,6 +210,8 @@ Every Zalando API endpoint must be protected with authentication (OAuth 2.0 bear
 Zalando names scopes after the application plus an access mode, for example `order-management.read` or `order-management.write`, optionally with a resource in between.
 
 </Rule>
+
+</RuleGroup>
 
 <Quiz
   question="A valid token with scope <code>orders.read</code> requests <code>GET /orders/77</code>, which belongs to a different customer. What's missing if the API returns the order?"

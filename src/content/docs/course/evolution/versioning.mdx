@@ -10,6 +10,7 @@ import {
   Do,
   Dont,
   Rule,
+  RuleGroup,
   Quiz,
   Takeaways,
   Tabs,
@@ -148,6 +149,8 @@ GitHub's REST API used media types for years (`application/vnd.github.v3+json`),
 
 </Story>
 
+<RuleGroup>
+
 <Rule guide="zalando" id="113" level="SHOULD" title="Avoid versioning" />
 
 <Rule guide="zalando" id="114" level="MUST" title="Use media type versioning">
@@ -167,6 +170,8 @@ A strong opinion. Zalando argues URL versions couple all resources to one versio
 Contrast: Google AIP-185 uses a **major version in the URL path** (`/v1/`, `/v2/`), with stability channels like `v1beta1`. Two respected guides, opposite choices. Both agree: breaking changes should be rare.
 
 </Rule>
+
+</RuleGroup>
 
 <Quiz
   question="What's the main downside of putting <code>/v2/</code> in the URL compared to media type versioning?"

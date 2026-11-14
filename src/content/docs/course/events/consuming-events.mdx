@@ -10,6 +10,7 @@ import {
   Do,
   Dont,
   Rule,
+  RuleGroup,
   Quiz,
   Takeaways,
   Tabs,
@@ -174,6 +175,8 @@ Stripe's webhook documentation says it plainly: endpoints might occasionally rec
 
 </Story>
 
+<RuleGroup>
+
 <Rule
   guide="zalando"
   id="214"
@@ -198,6 +201,8 @@ Stripe's webhook documentation says it plainly: endpoints might occasionally rec
 />
 
 <Rule guide="zalando" id="209" level="MUST" title="Maintain backwards compatibility for events" />
+
+</RuleGroup>
 
 <Quiz
   question="Your consumer receives a <code>product-changed</code> event with version 7, but you've already stored version 9 of that product. What should it do?"

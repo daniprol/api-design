@@ -10,6 +10,7 @@ import {
   Do,
   Dont,
   Rule,
+  RuleGroup,
   Quiz,
   Takeaways,
   Tabs,
@@ -221,6 +222,8 @@ Database expert Markus Winand runs a site called _Use The Index, Luke_ and even 
 
 </Story>
 
+<RuleGroup>
+
 <Rule guide="zalando" id="159" level="MUST" title="Support pagination" />
 
 <Rule
@@ -239,6 +242,8 @@ The page object has the fields `self`, `first`, `prev`, `next`, `last` (as links
 <Rule guide="zalando" id="161" level="SHOULD" title="Use pagination links" />
 
 <Rule guide="zalando" id="254" level="SHOULD" title="Avoid a total result count" />
+
+</RuleGroup>
 
 <Quiz
   question="A client syncs all orders using <code>?offset=N&amp;limit=100</code> while new orders keep arriving at the top. What can go wrong?"

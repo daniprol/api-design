@@ -19,6 +19,7 @@ export { default as Dont } from "./Dont.astro";
 export { default as Hook } from "./Hook.astro";
 export { default as Quiz } from "./Quiz.astro";
 export { default as Rule } from "./Rule.astro";
+export { default as RuleGroup } from "./RuleGroup.astro";
 export { default as Status } from "./Status.astro";
 export { default as Story } from "./Story.astro";
 export { default as Takeaways } from "./Takeaways.astro";

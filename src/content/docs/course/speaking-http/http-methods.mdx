@@ -10,6 +10,7 @@ import {
   Do,
   Dont,
   Rule,
+  RuleGroup,
   Quiz,
   Takeaways,
   Tabs,
@@ -70,7 +71,7 @@ Content-Type: application/merge-patch+json
 { "email": "ada@example.com" }
 ```
 
-In practice, most APIs use `PATCH` for updates because clients rarely have (or want to send) the full resource. For `PATCH`, prefer **JSON Merge Patch** (`application/merge-patch+json`): it's just "a JSON object with the fields to change, `null` to remove". Its big sibling **JSON Patch** (RFC 6902) is a list of operations (`add`, `remove`, `replace`, `move`…) for when you need fine control over arrays.
+In practice, most APIs use `PATCH` for updates because clients rarely have (or want to send) the full resource. For `PATCH`, prefer **JSON Merge Patch** (`application/merge-patch+json`): it's just "a JSON object with the fields to change, `null` to remove". Bonus: applying the same merge patch twice gives the same result, so in practice it's idempotent even though `PATCH` in general isn't. Its big sibling **JSON Patch** (RFC 6902) is a list of operations (`add`, `remove`, `replace`, `move`…) for when you need fine control over arrays.
 
 <Tabs syncKey="stack">
 <TabItem label="FastAPI" icon="seti:python">
@@ -180,6 +181,8 @@ The original HTTP/1.1 spec didn't include `PATCH`. It was added in 2010 by RFC 5
 
 </Story>
 
+<RuleGroup>
+
 <Rule guide="zalando" id="148" level="MUST" title="Use HTTP methods correctly">
 
 Zalando spells out the semantics per method: `GET` reads (and should not have a body), `PUT` replaces whole resources, `PATCH` updates partially (preferring JSON Merge Patch), `POST` creates or performs non-idempotent processing, and `DELETE` removes.
@@ -191,6 +194,8 @@ Zalando spells out the semantics per method: `GET` reads (and should not have a 
 Implementations must respect safety, idempotency and cacheability as defined by the HTTP standard.
 
 </Rule>
+
+</RuleGroup>
 
 <Quiz
   question="A client sends <code>PUT /profiles/7</code> containing only <code>{&quot;nickname&quot;: &quot;ada&quot;}</code>. Under strict PUT semantics, what happens to the profile's <code>bio</code>?"

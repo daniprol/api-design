@@ -10,6 +10,7 @@ import {
   Do,
   Dont,
   Rule,
+  RuleGroup,
   Quiz,
   Takeaways,
   Tabs,
@@ -245,6 +246,8 @@ The Elm programming language became famous for compiler errors that read like a 
 
 </Story>
 
+<RuleGroup>
+
 <Rule guide="zalando" id="176" level="MUST" title="Support Problem JSON">
 
 Zalando requires `application/problem+json` for error responses (4xx and 5xx), so that clients can handle all errors the same way across hundreds of APIs.
@@ -252,6 +255,8 @@ Zalando requires `application/problem+json` for error responses (4xx and 5xx), s
 </Rule>
 
 <Rule guide="zalando" id="177" level="MUST" title="Not expose stack traces" />
+
+</RuleGroup>
 
 <Quiz
   question="Which Problem Details field should a client use to decide <em>programmatically</em> how to handle an error?"

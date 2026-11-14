@@ -10,6 +10,7 @@ import {
   Do,
   Dont,
   Rule,
+  RuleGroup,
   Quiz,
   Takeaways,
   Tabs,
@@ -122,7 +123,7 @@ Make IDs **strings** in the API, even if they're integers in your database: it l
 
 ## Binary data
 
-Rarely, binary data has to go inside JSON (a small thumbnail, a signature). Encode it with **base64url** (`format: byte`). For files, use a proper media type or a separate download URL instead.
+Rarely, binary data has to go inside JSON (a small thumbnail, a signature). Encode it with base64. OpenAPI's `format: byte` means standard base64; Zalando asks for the URL-safe variant, **base64url**, which avoids `+` and `/`. For files, use a proper media type or a separate download URL instead.
 
 ## In code
 
@@ -221,6 +222,8 @@ Many systems store time as seconds since 1 January 1970 in a signed 32-bit integ
 
 </Story>
 
+<RuleGroup>
+
 <Rule guide="zalando" id="169" level="MUST" title="Use standard formats for date and time properties">
 
 Zalando requires RFC 3339 `date-time` (with uppercase `T` and `Z`) and recommends UTC, without local offsets, unless needed.
@@ -256,6 +259,8 @@ Zalando's money object is `{"amount": <decimal number>, "currency": "<ISO 4217>"
   level="SHOULD"
   title="Use standard formats for time duration and interval properties"
 />
+
+</RuleGroup>
 
 <Quiz
   question="Which is the best representation of a product price?"
