@@ -52,15 +52,19 @@ import {
 
 </InBrief>
 
-The web works because pages link to pages: nobody builds the URL of the next article by hand. APIs can borrow that without adopting a full hypermedia architecture. A few well-placed links remove URL templates from every client and leave you free to move resources later.
+Fernhill moves customers to a new hostname. The web shop updates in an afternoon; the mobile app has `/customers/{id}` compiled in, and the fix takes weeks to reach every phone. Larkspur Logistics never upgrades at all.
 
-## Prefer links over IDs plus URL templates
+The web avoided this long ago: pages link to pages, and nobody builds the next article's URL by hand. APIs can borrow that without full hypermedia. A few well-placed links remove URL templates from every client and leave you free to move resources.
+
+## Hand clients links, not URL templates
+
+Start with what most APIs send:
 
 ```json
 { "id": "ord_42", "customer_id": "cus_7" }
 ```
 
-To fetch the customer, the client must know that customers live at `/customers/{id}` on a particular host. That rule is now compiled into every client. With a link, the client follows and doesn't construct:
+To fetch the customer, the client must know that customers live at `/customers/{id}` on a particular host. That rule is now compiled into every client, which is how that migration got stuck. With a link, the client follows instead of constructing:
 
 ```json
 {
@@ -75,9 +79,11 @@ To fetch the customer, the client must know that customers live at `/customers/{
 
 Keep the ID as well: clients need it as a key in their own storage. The link is for navigation.
 
-Use the [IANA link relation registry](https://www.iana.org/assignments/link-relations/link-relations.xhtml) for common relations (`self`, `next`, `prev`, `first`, `last`, `related`, `collection`) and plain domain names (`customer`, `line_items`) for the rest. Choose one structure for links and use it everywhere. A `links` object, `_links` in HAL, or individual `{"href"}` properties all work, as long as there's only one. This site uses a `links` object of `{"href"}` objects for relations, and keeps pagination's `next` and `self` as top-level strings on collection pages, because every client reads those.
+For names, use the [IANA link relation registry](https://www.iana.org/assignments/link-relations/link-relations.xhtml) for common relations (`self`, `next`, `prev`, `first`, `last`, `related`, `collection`) and plain domain names (`customer`, `line_items`) for the rest. Then pick one structure and use it everywhere. A `links` object, `_links` in HAL, or individual `{"href"}` properties all work; two of them in one API means two parsers in every client. This site uses a `links` object of `{"href"}` objects for relations, and keeps pagination's `next` and `self` as top-level strings on collection pages, because every client reads those.
 
 ## Make every link absolute
+
+A relative link only makes sense beside the request that produced it, and responses get logged, queued and forwarded far from it.
 
 <Compare>
 <Prefer>
@@ -100,9 +106,11 @@ Relative to what? Behind a gateway, the client may have called a different host.
 </Avoid>
 </Compare>
 
-The non-obvious part is building them correctly. Your app usually sits behind a load balancer that terminates TLS and forwards to `http://10.0.3.7:8000`. A naive `url_for` then produces `http://10.0.3.7:8000/orders/ord_42`. The framework needs to trust the proxy's `X-Forwarded-Proto` and `X-Forwarded-Host` headers (or the standard `Forwarded` header, RFC 7239), and only from the proxy, otherwise clients can spoof them. Configure a canonical public base URL if your topology makes trust awkward.
+Building them correctly is the non-obvious part. Your app sits behind a load balancer that terminates TLS and forwards to `http://10.0.3.7:8000`, so a naive `url_for` hands every partner `http://10.0.3.7:8000/orders/ord_42`. The framework needs to trust the proxy's `X-Forwarded-Proto` and `X-Forwarded-Host` headers (or the standard `Forwarded` header, RFC 7239), and only from the proxy, otherwise clients can spoof them. Configure a canonical public base URL if your topology makes trust awkward.
 
 _Assumes:_ the app runs behind a reverse proxy that sets `X-Forwarded-*` headers.
+
+Here's the order endpoint in each stack. The line to notice is the proxy setting, or the fixed public base URL, not the handler.
 
 <Tabs syncKey="stack">
 <TabItem label="FastAPI">
@@ -166,7 +174,9 @@ app.get("/orders/:id", async (c) => {
 
 ## Put links in the body for JSON APIs
 
-HTTP has a `Link` header (RFC 8288), and some well-known APIs use it for pagination. For JSON APIs, links in the body are easier: every JSON parser sees them, they survive being stored or forwarded without headers, and they can sit next to the item they describe in a list. Reserve the `Link` header for responses without a JSON body, such as a file download that points to its metadata.
+HTTP has a `Link` header (RFC 8288), and some well-known APIs use it for pagination. For JSON APIs, the body is better: headers are lost when a response is stored or forwarded, and can't sit next to the item they describe in a list. Every JSON parser already reads body links. Reserve the `Link` header for responses without a JSON body, such as a file download that points to its metadata.
+
+GitHub went the other way, and its documentation shows the cost.
 
 <Note kind="practice" title="GitHub's Link header" source="https://docs.github.com/en/rest/using-the-rest-api/using-pagination-in-the-rest-api">
 
@@ -174,9 +184,9 @@ GitHub's REST API paginates through the `Link` header: `<https://api.github.com/
 
 </Note>
 
-## Use links for actions that depend on state
+## Let links say what the client can do next
 
-The most useful step towards hypermedia is advertising what can be done next, depending on the resource's state:
+Fernhill's app shows a Cancel button on cancellable orders, a rule that lives in the server and has already changed twice. Copy it into the app and the two drift. Instead, advertise what can be done next, depending on state:
 
 ```json
 {
@@ -190,7 +200,7 @@ The most useful step towards hypermedia is advertising what can be done next, de
 }
 ```
 
-Once the order ships, `cancellation` disappears and `returns` appears. A UI can decide whether to show a Cancel button by checking for the link, instead of duplicating the server's business rules about which states are cancellable. When those rules change, the UI follows without a release.
+Once the order ships, `cancellation` disappears and `returns` appears. The app shows Cancel when the link is there and hides it when it isn't, without knowing which states are cancellable. When the rule changes a third time, the app follows without a release.
 
 Full HATEOAS goes further: clients discover the whole workflow at runtime, with nothing about it compiled in. That remains rare. Client developers read docs and write code against known flows, generic hypermedia clients never caught on, and the formats (HAL, JSON:API, Siren, JSON-LD with Hydra) never converged. Take the cheap, high-value parts and skip the rest.
 
@@ -213,6 +223,10 @@ Full HATEOAS goes further: clients discover the whole workflow at runtime, with 
 <Rule guide="zalando" id="166" level="MUST" title="Not use link headers with JSON entities" />
 
 </RuleGroup>
+
+## What to take away
+
+A link moves a rule out of every client and back into the server: where a resource lives, and what can be done to it now. Make links absolute and keep them in the body. Photos, invoices and multi-gigabyte exports need different handling. That's [files and large payloads](/representations/files/).
 
 <SelfCheck>
 

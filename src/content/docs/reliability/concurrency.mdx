@@ -53,7 +53,7 @@ import {
 
 </InBrief>
 
-Two people open the same product in the admin tool. One fixes the price; the other fixes a typo in the description and saves, sending the whole product with the old price. The price fix disappears. Nobody sees an error, and the bug report a week later says "prices randomly revert". This is the lost update, and it needs nothing more exotic than two browser tabs.
+Monday morning at Fernhill. Alice and Bob open the same boot in the admin tool. Alice fixes the price; Bob fixes a typo in the description and saves, sending the whole product with the old price. Alice's fix vanishes. Nobody sees an error, and the bug report a week later says "prices randomly revert". This is the lost update, and it needs nothing more exotic than two browser tabs.
 
 <Figure n={2} caption="A lost update. Both writes succeed, and the first is silently overwritten.">
 
@@ -66,11 +66,11 @@ Bob    PUT /products/sku-1   ← { price: 10, description: "Shoes" }   → 200, 
 
 </Figure>
 
-## Choose optimistic concurrency for HTTP
+## Let everyone edit, and refuse stale writes
 
-Pessimistic locking ("I'm editing this, nobody else may") needs lock ownership, timeouts and a way to break locks held by someone who went to lunch. Over HTTP, where clients disappear without saying goodbye, that's rarely worth it. Optimistic concurrency lets everyone edit and makes a write succeed only if the resource is still at the version the client read. Conflicts are rare in most domains, so the occasional retry is cheaper than lock management.
+The instinctive fix is a lock: "I'm editing this, nobody else may." Pessimistic locking needs lock ownership, timeouts and a way to break locks held by someone who went to lunch. Over HTTP, where the mobile app vanishes into a tunnel without saying goodbye, that's rarely worth it. Optimistic concurrency lets everyone edit and makes a write succeed only if the resource is still at the version the client read. Conflicts are rare in most domains, so the occasional retry is cheaper than managing locks.
 
-HTTP has this built in. The server sends a validator, the `ETag`, on reads. The client sends it back in `If-Match` on writes. If the resource has moved on, the server refuses with <Status code={412} />.
+HTTP has this built in. The server sends a validator, the `ETag`, on reads. The client sends it back in `If-Match` on writes. If the resource has moved on, the server refuses with <Status code={412} />. Here's Bob's save, arriving one version too late:
 
 ```http
 PUT /products/sku-1
@@ -85,9 +85,9 @@ Content-Type: application/problem+json
 
 Bob's client can now reload, show him what changed, and let him reapply his edit.
 
-## Make the comparison part of the write
+## Compare and write in one statement
 
-Reading the version, comparing it in application code and then writing has a race window: two requests can both pass the check before either writes. The comparison has to be atomic with the write:
+The natural first implementation reads the version, compares it in application code, then writes. It has a race window: two requests can both pass the check before either writes The comparison has to be atomic with the write. Notice the `WHERE` clause doing the real work:
 
 ```sql
 UPDATE products
@@ -99,6 +99,8 @@ RETURNING version;   -- no row returned: someone else won
 `SELECT … FOR UPDATE` in a transaction, or a conditional write in DynamoDB or another store, are equivalent.
 
 _Assumes:_ an integer `version` column; ETags are `"v<version>"`; `parse_if_match` implements the rules in the next section.
+
+Here's the full handler. The early `parse_if_match` check gives a fast, friendly 412; the conditional update after it is what actually guarantees correctness.
 
 <Tabs syncKey="stack">
 <TabItem label="FastAPI">
@@ -164,27 +166,31 @@ app.put("/products/:sku", zValidator("json", ProductIn), async (c) => {
 </TabItem>
 </Tabs>
 
-## Parse If-Match the way the spec defines it
+## Parse If-Match as the spec wrote it
 
-`If-Match` is not a single quoted string. RFC 9110 §13.1.1 allows:
+`If-Match` looks like a single quoted string, and most hand-written parsers treat it as one. RFC 9110 §13.1.1 allows three other shapes:
 
 - **A list:** `If-Match: "v7", "v8"` matches if any entry matches.
 - **`*`:** matches if the resource exists at all, which makes `PUT` "update only, never create".
 - **Weak tags:** `W/"v7"` never matches, because `If-Match` uses strong comparison. A request with only weak tags must fail with <Status code={412} />, not be treated as missing or be stripped of `W/` and compared.
 
-Hand-rolled parsers that do `if_match.strip('"') == str(version)` get all three wrong, sometimes in the dangerous direction of letting writes through.
+A parser that does `if_match.strip('"') == str(version)` gets all three wrong, sometimes in the dangerous direction of letting writes through.
 
 Its counterpart, `If-None-Match: *`, makes `PUT` "create only, never overwrite", which is useful with client-generated IDs.
 
-## Require the precondition where it matters
+## Make If-Match mandatory where people collide
 
-If `If-Match` is optional, clients that forget it are back to last-write-wins. For resources edited by several people or processes, require it and return <Status code={428} /> with a problem type that explains how to get an ETag. For `PATCH` with JSON Merge Patch, the risk is smaller because only the sent fields change, but two patches to the same field still race.
+An optional `If-Match` protects only the clients that remember it, and the ones that forget are back to last-write-wins. Larkspur Logistics' integration will certainly forget. For resources edited by several people or processes, require it and return <Status code={428} /> with a problem type that explains how to get an ETag. `PATCH` with JSON Merge Patch is less exposed because only the sent fields change, but two patches to the same field still race.
+
+There are three ways to carry the version, and the HTTP-native one wins on most counts:
 
 | Mechanism                               | Pros                                                      | Cons                                                                    |
 | --------------------------------------- | --------------------------------------------------------- | ----------------------------------------------------------------------- |
 | `ETag` + `If-Match`                     | HTTP-native; shared with caching; tooling understands 412 | Clients must read and send a header                                     |
 | `version` field in the body             | Visible, easy for form-based clients                      | Not understood by HTTP tooling; easy to forget on `PATCH`               |
 | `Last-Modified` + `If-Unmodified-Since` | Already present on many resources                         | One-second resolution: two writes in the same second collide undetected |
+
+Whichever you pick, the check lives in the write:
 
 <Compare>
 <Prefer label="Atomic">
@@ -210,7 +216,7 @@ if product.version == expected:      # another request can pass here too
 
 <Note kind="history" title="The lost update problem, by name" year="1999" source="https://www.w3.org/1999/04/Editing/">
 
-When the W3C worked on editing documents over HTTP, it wrote up the "lost update problem" and proposed exactly this unreserved checkout: fetch with an entity tag, write back with `If-Match`, get 412 on conflict. The mechanism has been in HTTP/1.1 since 1997. Most lost-update bugs in APIs today come from not using it, not from it being missing.
+None of this is new. In 1999, while working on editing documents over HTTP, the W3C wrote up the "lost update problem" by name and proposed exactly this unreserved checkout: fetch with an entity tag, write back with `If-Match`, get 412 on conflict. The mechanism had been in HTTP/1.1 since 1997. Most lost-update bugs in APIs today come from not using it, not from it being missing.
 
 </Note>
 
@@ -224,6 +230,8 @@ When the W3C worked on editing documents over HTTP, it wrote up the "lost update
 />
 
 </RuleGroup>
+
+Priya found this helper guarding every write in a service she inherited.
 
 <WorkedProblem kind="Review" title="An If-Match parser">
 
@@ -249,6 +257,10 @@ Find the bugs.
 
 </Solution>
 </WorkedProblem>
+
+## What to take away
+
+A write should succeed only against the version the client actually saw, and the database, not your application code, should make that comparison. Concurrency protects writes that finish in milliseconds. Some work takes minutes, and the request can't wait for it; that's [long-running operations](/reliability/long-running-operations/).
 
 <SelfCheck>
 

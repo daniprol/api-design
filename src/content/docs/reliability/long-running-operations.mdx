@@ -54,9 +54,11 @@ import {
 
 </InBrief>
 
-Not everything finishes in 200 milliseconds. Exporting a year of orders, importing a million products or provisioning a database takes seconds to hours. Holding an HTTP connection open that long fails in predictable ways: load balancers cut idle connections at 60 seconds, mobile apps go to the background, and a 504 at minute four doesn't say whether the export finished. Model the work as a resource instead.
+Fernhill's finance team clicks Export for a year of orders. Load balancers cut idle connections at 60 seconds, so at minute four someone gets a 504. Did the export finish? Nobody knows, so they click again, and now two exports are grinding through the database. Exports, imports of a million products or provisioning a database take seconds to hours, and a single HTTP request is the wrong container for that. Model the work as a resource instead.
 
-## Accept slow work with 202 and an operation resource
+## Answer 202 and hand back a ticket
+
+Accept the work, give the client something durable to ask about, and hang up. <Status code={202} /> says "accepted, not done", and `Location` points at the operation resource. Notice `Retry-After`: the server sets the polling pace.
 
 ```http
 POST /exports
@@ -69,7 +71,7 @@ Retry-After: 5
 { "id": "op_91", "status": "pending", "created_at": "2026-11-14T09:00:00Z" }
 ```
 
-The client polls the operation with plain `GET`:
+The client polls the operation with plain `GET` until it reaches a result link:
 
 ```http
 GET /operations/op_91
@@ -80,7 +82,7 @@ GET /operations/op_91
         "result": { "href": "https://api.example.com/exports/exp_33" } }
 ```
 
-Some APIs answer a finished operation with <Status code={303} /> pointing at the result. That saves a step, but many HTTP clients follow redirects automatically and the caller never sees the operation's final state. A result link in the body is more explicit.
+Some APIs answer a finished operation with <Status code={303} /> pointing at the result. That saves a step, but many HTTP clients follow redirects automatically, and the caller never sees the operation's final state. A result link in the body is more explicit. From the finance team's chair:
 
 <Compare>
 <Prefer>
@@ -102,7 +104,9 @@ POST /exports
 </Avoid>
 </Compare>
 
-## Keep the state machine small and terminal states complete
+## Keep the states few and the endings complete
+
+Every polling client writes a loop, and its exit condition is your state machine. Keep it small:
 
 ```text
 pending ──► running ──► succeeded   (result link)
@@ -110,15 +114,17 @@ pending ──► running ──► succeeded   (result link)
                   └───► cancelled   (if you support DELETE or :cancel)
 ```
 
-Clients write `while status not in ("succeeded", "failed", "cancelled")`, so the set of terminal states is part of the contract. A `failed` operation carries a full [problem object](/http/errors/), not a bare `"error": "failed"`. Keep operations readable for a documented period after completion, such as seven days, so a client that was offline can still collect the outcome.
+Clients write `while status not in ("succeeded", "failed", "cancelled")`, so the set of terminal states is part of the contract. Add a new one later and Larkspur's loop spins forever. A `failed` operation carries a full [problem object](/http/errors/), not a bare `"error": "failed"`. Keep operations readable for a documented period after completion, such as seven days, so a mobile app that was offline can still collect the outcome.
 
-Whether the operation lives under a generic `/operations/{id}` or a domain collection like `/exports/{id}` with a `status` field is a style choice. Google (AIP-151) and Azure both use a generic operation resource. Domain resources read better when the job produces something that lives on afterwards.
+A generic `/operations/{id}` or a domain `/exports/{id}` with a `status` field is a style choice. Google (AIP-151) and Azure both use a generic operation resource. Domain resources read better when the job produces something that lives on afterwards.
 
-## Make the initiating request idempotent
+## Make the request that starts the work idempotent
 
-The `POST` that starts the work is the request most likely to time out, because it often does real work before answering. Without an [idempotency key](/reliability/idempotency/), a retry starts a second export or provisions a second database. Store the key with the operation ID, so a retry returns the same `202` and the same `Location`.
+The `POST` that starts slow work is, awkwardly, the request most likely to time out, because it often does real work before answering. Without an [idempotency key](/reliability/idempotency/), a retry starts a second export or provisions a second database. Store the key with the operation ID, so a retry returns the same `202` and the same `Location`.
 
 _Assumes:_ a durable queue (Celery, BullMQ, SQS or similar); `operations` is a table, not process memory.
+
+Here's the handler. Notice that the operation row and the queued job commit together, so a crash can't strand an operation nobody will run.
 
 <Tabs syncKey="stack">
 <TabItem label="FastAPI">
@@ -183,15 +189,15 @@ app.post("/exports", zValidator("json", ExportIn), async (c) => {
 </TabItem>
 </Tabs>
 
-## Pace polling, and offer a push channel
+## Set the polling pace, and offer a push channel
 
-`Retry-After` on both the `202` and each `running` response tells clients when to check again; vary it with the expected remaining time. For clients that need to know immediately, add a [webhook](/events/webhooks/) such as `operation.completed`, and keep the operation resource as the source of truth for clients that missed the event. Server-sent events on `GET /operations/{id}` work too, for browser clients.
+Left alone, clients poll in a tight loop, which is a load test you didn't schedule. `Retry-After` on both the `202` and each `running` response tells them when to check again; vary it with the expected remaining time. For clients that need to know at once, add a [webhook](/events/webhooks/) such as `operation.completed`, and keep the operation resource as the source of truth for clients that missed the event. Browser clients can use server-sent events on `GET /operations/{id}`.
 
-`Prefer: respond-async, wait=10` (RFC 7240) lets one endpoint serve both cases: the server answers synchronously if the work finishes within ten seconds, and with `202` otherwise.
+For work that is usually fast, `Prefer: respond-async, wait=10` (RFC 7240) lets one endpoint serve both cases: the server answers synchronously if the work finishes within ten seconds, and with `202` otherwise.
 
 ## Report batch outcomes per item with 207
 
-Batch endpoints save round trips, but "97 of 100 succeeded" is neither <Status code={201} /> nor <Status code={400} />. Answer <Status code={207} /> with a result per item, in request order:
+Batch endpoints save round trips, but "97 of 100 succeeded" is neither <Status code={201} /> nor <Status code={400} />. Answer <Status code={207} /> with a result per item, in request order, so the client can match each outcome to what it sent:
 
 ```http
 POST /products/batch
@@ -207,10 +213,14 @@ HTTP/1.1 207 Multi-Status
 }
 ```
 
-- <Status code={207} /> means "look inside", so clients must check each item. Monitoring that counts
-  2xx as success needs to know that too.
-- If the batch as a whole is invalid, such as malformed JSON, too many items or missing authorisation, return a normal 4xx.
-- Document whether the batch is atomic (all or nothing, then a single status is enough) or best effort (per-item results). Cap the batch size and say what the cap is.
+<Status code={207} /> means "look inside", so clients must check each item, and so must any
+monitoring that counts 2xx as success, or Priya's dashboard reports a perfect day while three
+products failed. If the batch as a whole is invalid, such as malformed JSON, too many items or
+missing authorisation, return a normal 4xx instead.
+
+Document whether the batch is atomic (all or nothing, so a single status is enough) or best effort (per-item results). Cap the batch size and say what the cap is.
+
+The status code is borrowed, which is why the body is your problem.
 
 <Note kind="history" title="207 came from WebDAV" year="1999" source="https://www.rfc-editor.org/rfc/rfc4918#section-13">
 
@@ -224,6 +234,10 @@ Multi-Status was defined for WebDAV, where one `PROPFIND` or `DELETE` on a folde
 <Rule guide="zalando" id="152" level="MUST" title="Use code 207 for batch or bulk requests" />
 
 </RuleGroup>
+
+## What to take away
+
+When work outlives a request, turn it into a resource: a `202`, an operation the client can poll, and an idempotent start so a retry never doubles the work. Every one of those endpoints answers to someone, and deciding who is [authentication and authorisation](/security/auth/).
 
 <SelfCheck>
 

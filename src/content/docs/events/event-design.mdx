@@ -55,14 +55,18 @@ import {
 
 </InBrief>
 
-Request and response is a conversation: the client asks, and you answer. Events turn it around. Checkout announces "order placed", and Shipping, Billing, Analytics and the email service each react, without Checkout knowing any of them exist. That decoupling is the point, and also the catch. The event's shape is now relied on by people you can't see, can't ask, and can't make upgrade, which is the definition of a public API with the safety rails removed.
+A Fernhill developer tidies up the checkout service and renames `total` to `order_total` in the `order-placed` event. No test fails, because Checkout has no idea who listens. By lunchtime the email service is confirming orders for "EUR 0.00", and Priya is discovering consumers she'd never heard of.
+
+Request and response is a conversation: the client asks, and you answer. Events turn it around. Checkout announces "order placed", and Shipping, Billing, Analytics and the email service each react, without Checkout knowing any of them exist. That decoupling is also the catch: the event's shape is relied on by people you can't see, ask or make upgrade. It's a public API without the safety rails.
 
 ```text
 Request/response   Checkout ──"create shipment"──► Shipping           Checkout knows Shipping
 Events             Checkout ──"order-placed"──► bus ──► Shipping, Billing, Analytics, Email
 ```
 
-## Give every event an envelope
+## Wrap every event in the same envelope
+
+Handed a bare payload, a consumer has to guess: is this a duplicate, which schema version, when did it really happen? Answer once, in metadata every event carries. Here the `metadata` block is the envelope; everything below it is the payload.
 
 ```json
 {
@@ -89,11 +93,11 @@ Events             Checkout ──"order-placed"──► bus ──► Shipping
 
 The payload follows the same rules as your HTTP API: snake_case, RFC 3339 timestamps, money as objects, IDs as strings. If your organisation spans several producers, the CNCF CloudEvents envelope (`id`, `source`, `type`, `time`) gives them a common shape, and most brokers and SDKs understand it.
 
-## Pick a category: business event or data change
+## Decide whether it records a step or a change
 
-**Business events** record a step in a process: order placed, payment authorised, parcel delivered. Consumers react to something that happened, and the payload carries what they need to react.
+Events come in two kinds, and mixing them gives payloads that fit neither job. **Business events** record a step in a process: order placed, payment authorised, parcel delivered. Consumers react to something that happened, so the payload carries what they need to react.
 
-**Data change events** record a mutation of a resource, usually with a snapshot, and exist so other services can keep a local copy:
+**Data change events** record a mutation of a resource, usually with a snapshot, and exist so other services can keep a local copy. Notice `data_op`, which says what happened, and `revision`, which matters shortly.
 
 ```json
 {
@@ -114,7 +118,7 @@ The payload follows the same rules as your HTTP API: snake_case, RFC 3339 timest
 }
 ```
 
-The data in a change event should match the resource your API already exposes, not your table layout. Otherwise every column rename becomes a breaking change for every consumer.
+The tempting shortcut is streaming your table changes straight to the bus. Resist it: the data should match the resource your API already exposes, not your table layout, or every column rename breaks every consumer.
 
 <Compare>
 <Prefer>
@@ -141,18 +145,21 @@ The data in a change event should match the resource your API already exposes, n
 </Avoid>
 </Compare>
 
-## Preserve order per entity
+## Keep order per entity, and carry the proof
 
-"Price changed to 79" followed by "price changed to 89" must not be applied backwards. Brokers like Kafka guarantee order only within a partition, so:
+Fernhill raises the trail runner to 79, then to 89. Applied backwards, the shop sells at yesterday's price until Finance notices. Brokers like Kafka guarantee order only within a partition, so partition by entity key (`order_id`, `sku`): every event for one entity then lands in one partition, in order.
 
-- **Partition by entity key** (`order_id`, `sku`). All events for one entity land in one partition, in order.
-- **Carry an explicit ordering field**, a per-entity `revision` or sequence number. Retries, replays and repartitioning break broker order eventually, and a number lets consumers detect stale events instead of trusting delivery order.
+That holds until it doesn't. Retries, replays and repartitioning break broker order eventually, so also carry a per-entity `revision` or sequence number. Then consumers can detect stale events instead of trusting delivery order.
 
 Order across different entities is rarely needed and expensive to provide. Don't promise it.
 
-## Publish atomically with the change
+## Publish the event with the change, or not at all
 
-The obvious implementation saves the order and then publishes the event. If the process dies between the two, the order exists and no one hears about it. Publish first and the opposite happens: an event for an order that was rolled back. This is the dual-write problem, and the standard fix is a transactional outbox: write the event as a row in the same database transaction as the change, and let a relay publish outbox rows to the broker. The relay may publish a row twice, which is fine, because consumers deduplicate on `eid` (see [Consuming events](/events/consuming-events/)).
+The obvious implementation saves the order and then publishes the event. If the process dies between the two, the order exists and nobody hears about it. So publish first? Then a rolled-back order gets announced anyway. This is the dual-write problem, and no ordering of two separate writes fixes it.
+
+The standard fix is a transactional outbox: write the event as a row in the same database transaction as the change, and let a relay publish outbox rows to the broker. The relay may publish a row twice, which is fine, because consumers deduplicate on `eid` (see [Consuming events](/events/consuming-events/)).
+
+Here's checkout with an outbox. Notice what's missing: any broker call.
 
 _Assumes:_ a relational database shared by the service and its outbox table; a relay (a poller or change data capture) that publishes unsent rows keyed by `partition_key`.
 
@@ -255,13 +262,17 @@ app.post("/orders", async (c) => {
 </TabItem>
 </Tabs>
 
-## Register, own and version event types
+## Treat event types as contracts with an owner
 
-Put each event type and its schema in a registry or catalogue with an owner, and review changes the way you review an OpenAPI diff. The [compatibility](/evolution/compatibility/) rules apply with less forgiveness: consumers replay events from months ago, archives keep them for years, and a breaking change can't be fixed by a new endpoint version when the old events are already on disk. Only add optional fields; never remove, rename or retype.
+The renamed `total` shipped because nobody owned the event's shape. Put each event type and its schema in a registry or catalogue with an owner, and review changes the way you review an OpenAPI diff.
+
+[Compatibility](/evolution/compatibility/) rules apply with less forgiveness. Consumers replay events from months ago, archives keep them for years, and a breaking change can't be fixed by a new endpoint version when the old events are already on disk. Only add optional fields; never remove, rename or retype.
+
+Zalando made a platform enforce this.
 
 <Note kind="practice" title="Nakadi" source="https://github.com/zalando/nakadi">
 
-Zalando built Nakadi, an open-source event bus with a RESTful API in front of Kafka. Producers register an event type with a JSON Schema, an owner, a category and a compatibility mode, and Nakadi rejects events that don't validate and schema changes that would break consumers. Most of the event rules in Zalando's guidelines read like a description of what Nakadi enforces, which is the point: rules a platform checks get followed.
+Zalando built Nakadi, an open-source event bus with a RESTful API in front of Kafka. A producer first registers an event type with a JSON Schema, an owner, a category and a compatibility mode. From then on, Nakadi rejects events that don't validate and schema changes that would break consumers. Most of Zalando's event guidelines read like a description of what Nakadi enforces, which is the lesson: rules a platform checks get followed.
 
 </Note>
 
@@ -306,6 +317,8 @@ Zalando built Nakadi, an open-source event bus with a RESTful API in front of Ka
 
 </RuleGroup>
 
+Priya found this in a payment service's pull request. It looks finished. It has four problems.
+
 <WorkedProblem kind="Review" title="Publishing after the commit">
 
 A payment service handles `POST /payments` like this. What can go wrong, and how would you fix it?
@@ -327,6 +340,10 @@ The fix: write an outbox row with the full envelope inside the same `transaction
 
 </Solution>
 </WorkedProblem>
+
+## What to take away
+
+An event is a public API with invisible consumers: give it an envelope, an owner and a registered schema, keep order per entity, and publish it with the change. The outbox delivers at least once, which hands the other half of the problem to the receiver: [consuming events](/events/consuming-events/).
 
 <SelfCheck>
 

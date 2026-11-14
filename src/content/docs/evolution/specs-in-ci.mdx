@@ -57,9 +57,11 @@ import {
 
 </InBrief>
 
-With five APIs, everyone knows who owns what and what changed last week. With five hundred, nobody does, and the style guide becomes a document people agree with and don't follow. The fix is to treat the spec as a build artefact: generated or validated with every change, linted, diffed and published, the way code is compiled and tested.
+Thursday afternoon. A Fernhill pull request makes `warehouse_id` required on `POST /shipments`. Two reviewers approve it: the code is tidy and the tests pass. On Friday every Larkspur Logistics shipment comes back <code>422</code>, and Priya spends the weekend reading a diff nobody compared. With five APIs, people catch this; with five hundred, the style guide becomes a document everyone agrees with and nobody follows. So hand the checking to the build: validate, lint, diff and publish the spec on every change, the way code is compiled and tested.
 
-## Give every spec metadata that answers who, what and for whom
+## Make every spec say who owns it and who it's for
+
+During an incident, Priya's first question is whose API this is and who depends on it. The `info` block should answer that. Notice the two `x-` fields: an identity that survives renames, and an audience that sets the stakes.
 
 ```yaml
 openapi: 3.1.0
@@ -74,13 +76,15 @@ servers:
   - url: https://order-management.api.example.com
 ```
 
-- **Version the contract with SemVer**, even if the API itself is never versioned on the wire. Major means breaking (rare), minor means additive, and patch means documentation only.
-- **Declare the audience**: component-internal, business-unit-internal, company-internal, external-partner or external-public. It tells reviewers how careful a change must be. Your own frontend's API can move fast; one with three thousand external integrators can't.
-- **Name by function**, not by team or technology: `order-management.api.example.com`, not `team-falcon-svc-2`. Teams reorganise; functions stay.
+Version the contract with SemVer, even if the API is never versioned on the wire. Major means breaking (rare), minor means additive, and patch means documentation only.
 
-## Lint against the style guide
+Declare the audience, which tells reviewers how careful to be: component-internal, business-unit-internal, company-internal, external-partner or external-public. Your own frontend's API can move fast; one with three thousand external integrators can't.
 
-A linter turns guideline rules into failing builds, so human review can spend its time on the domain model instead of casing. Spectral is the generic engine, with rulesets for OpenAPI and for several public style guides. Zally is Zalando's linter for its own guidelines.
+And name by function, not by team or technology: `order-management.api.example.com`, not `team-falcon-svc-2`. Teams reorganise; functions stay.
+
+## Let a linter argue about casing
+
+Human reviewers are expensive; spend them on the domain model, not on whether a path is kebab-case. A linter turns guideline rules into failing builds. Spectral is the generic engine, with rulesets for OpenAPI and several public style guides; Zally is Zalando's linter for its own guidelines. Here are two house rules in Spectral. Each is a JSONPath (`given`) and a check (`then`):
 
 ```yaml title=".spectral.yaml"
 extends: ["spectral:oas"]
@@ -97,11 +101,11 @@ rules:
     severity: error
 ```
 
-Start with a small set at `error` severity, plus the rest as warnings, and promote rules as the existing APIs comply. A linter that fails every build on day one gets disabled on day two.
+Start with a small set at `error` severity, keep the rest as warnings, and promote rules as the existing APIs comply. A linter that fails every build on day one gets disabled on day two.
 
-## Fail the build on breaking changes
+## Fail the build when a change breaks clients
 
-Compare the spec on the branch with the one on `main`, and fail if anything breaks existing clients: a removed path, a new required parameter, a narrowed enum, a changed type. oasdiff checks a long catalogue of such changes.
+This check would have saved Priya's weekend. Compare the spec on the branch with the one on `main`, and fail if anything breaks existing clients: a removed path, a new required parameter, a narrowed enum, a changed type. oasdiff checks a long catalogue of such changes. In the workflow, watch the last step: it diffs against `main`'s spec.
 
 ```yaml title=".github/workflows/api.yml (excerpt)"
 - name: Export spec
@@ -114,14 +118,17 @@ Compare the spec on the branch with the one on `main`, and fail if anything brea
     docker run --rm -v "$PWD:/w" tufin/oasdiff breaking /w/base.json /w/openapi.json --fail-on ERR
 ```
 
-When a break is intended, the override should be explicit and reviewed, such as a label on the pull request and a matching major version bump, not a flag someone can quietly set. Remember the limit: diffs see shape, not meaning. A field that changes from gross to net price passes every tool (see [Compatibility](/evolution/compatibility/)).
+When a break is intended, the override should be explicit and reviewed, such as a pull-request label plus a major version bump, not a flag someone quietly sets at 6 p.m. Diffs see shape, not meaning. A field that changes from gross to net price passes every tool (see [Compatibility](/evolution/compatibility/)).
 
-## Test the implementation against the spec
+## Check that the code keeps the spec's promises
 
-A valid spec can still describe an API that doesn't exist. Two complementary techniques close the gap:
+A linted, diffed spec can still describe an API that doesn't exist. Two complementary techniques close the gap.
 
-- **Property-based testing from the spec.** Schemathesis generates requests from the schema, including edge cases you didn't think of, and checks that responses conform: undocumented status codes, wrong content types, 500s on unusual input, response bodies that don't match the schema. It's the cheapest way to find the stack trace you promised never to leak.
-- **Consumer-driven contracts.** With Pact, each consumer records the interactions it relies on, and the provider's CI replays them. You learn which consumers a change breaks before you deploy, not after. It needs known consumers willing to participate, so it fits internal ecosystems better than public APIs.
+Property-based testing works from the spec. Schemathesis generates requests from the schema, including edge cases you didn't think of, and checks the responses: undocumented status codes, wrong content types, 500s on unusual input, bodies that don't match. It's the cheapest way to find the stack trace you promised never to leak.
+
+Consumer-driven contracts start from the consumer. With Pact, each consumer records the interactions it relies on and the provider's CI replays them, so you learn which consumers a change breaks before you deploy. It needs known consumers willing to take part, so it suits internal ecosystems better than public APIs; Larkspur will not be writing Pact files.
+
+All of this needs CI to get the spec out of the app cheaply. Here's the export step; notice the metadata is stamped on at export time.
 
 _Assumes:_ the app can export its spec without starting a server.
 
@@ -178,11 +185,11 @@ console.log(JSON.stringify(spec, null, 2));
 </TabItem>
 </Tabs>
 
-## Publish the spec and watch real usage
+## Publish the spec, then watch who actually calls
 
-A spec that lives only in a repository isn't discoverable. Publish it to an API catalogue or developer portal, so teams find an API before they build a duplicate, and render reference documentation from the same file so docs can't drift.
+A spec that lives only in a repository is a secret. Publish it to an API catalogue or developer portal, so teams find an API before building a duplicate, and render reference docs from the same file so they can't drift.
 
-Then measure how the API is actually used. Per endpoint and per client, track rate, errors split into 4xx and 5xx, and latency percentiles (the RED method), plus calls to deprecated endpoints. Usage data by client is what makes [deprecation](/evolution/deprecation/) possible: you can't contact the consumers you can't see.
+Then measure how the API is actually used. Per endpoint and per client, track rate, errors split into 4xx and 5xx, and latency percentiles (the RED method), plus calls to deprecated endpoints. Usage data by client is what makes [deprecation](/evolution/deprecation/) possible: you can't contact the consumers you can't see. Ownership and audience start in `info`:
 
 <Compare>
 <Prefer>
@@ -208,9 +215,11 @@ info:
 </Avoid>
 </Compare>
 
+Zalando reached this conclusion at a scale that left no choice.
+
 <Note kind="practice" title="Zally at Zalando" source="https://github.com/zalando/zally">
 
-With hundreds of teams publishing APIs, Zalando couldn't review every spec by hand against its guidelines, so it built Zally, an open-source linter whose rules map to guideline numbers. Violations are reported by severity in each team's pipeline, and the API review meeting focuses on what a linter can't judge: the domain model, naming and lifecycle.
+With hundreds of teams publishing APIs, Zalando couldn't review every spec by hand against its guidelines. So it built Zally, an open-source linter whose rules map to guideline numbers, reporting violations by severity in each team's pipeline. The API review meeting now spends its time on what a linter can't judge: the domain model, naming and lifecycle.
 
 </Note>
 
@@ -226,6 +235,10 @@ With hundreds of teams publishing APIs, Zalando couldn't review every spec by ha
 <Rule guide="zalando" id="193" level="SHOULD" title="Monitor API usage" />
 
 </RuleGroup>
+
+## What to take away
+
+A rule nobody enforces is a suggestion, so put the spec in the build: lint it, diff it, test the code against it, publish it with an owner. Events have contracts too, often with consumers you can't name at all: [event design](/events/event-design/).
 
 <SelfCheck>
 

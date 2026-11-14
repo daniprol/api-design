@@ -53,14 +53,16 @@ import {
 
 </InBrief>
 
-Every collection starts small. Then one day `GET /orders` returns two million rows, the database spends a minute serialising them and the mobile app times out. Pagination is cheap to add before the first release and a breaking change afterwards, and the kind you choose determines whether page 5,000 costs the same as page 1.
+Every collection starts small. Then one Black Friday `GET /orders` returns two million rows, the database spends a minute serialising them, and the mobile app gives up at thirty seconds. Pagination is cheap to add before the first release and a breaking change afterwards. The kind you choose decides whether page 5,000 costs the same as page 1.
 
 ## Prefer keyset pagination over offsets
 
-Offset pagination ("skip 40, take 20") is easy to explain and lets clients jump to page 37. It has two problems that grow with the data:
+Offset pagination ("skip 40, take 20") is everyone's first instinct: easy to explain, and clients can jump to page 37. It has two problems that grow with the data:
 
 1. **Cost grows with depth.** `OFFSET 1000000` makes the database read and discard a million rows before returning twenty.
-2. **Pages drift under writes.** An insert at the top shifts every row down one place, so the next page repeats an item. A delete shifts rows up, so an item is skipped. A sync job built on offsets silently misses records.
+2. **Pages drift under writes.** An insert at the top shifts every row down one place, so the next page repeats an item. A delete shifts rows up, so an item is skipped. A sync job built on offsets silently misses records, and Larkspur Logistics finds out at quarter-end reconciliation.
+
+Here is the drift in slow motion:
 
 <Figure n={1} caption="Offset pagination while a new order (Z) arrives between two requests. Order C appears twice.">
 
@@ -72,7 +74,7 @@ Request 2   ?offset=3&limit=3      Z  A  B  [ C  D  E ]   ← C again
 
 </Figure>
 
-Keyset pagination, which APIs usually call cursor pagination, anchors on the last row seen instead of a position:
+Both problems come from describing a page by its position. Keyset pagination, which APIs usually call cursor pagination, describes it by content instead: "the rows after this one". Watch the `WHERE` clause; it replaces `OFFSET` entirely:
 
 ```sql
 -- cursor decodes to (created_at, id) of the last row on the previous page
@@ -82,18 +84,20 @@ ORDER BY created_at DESC, id DESC
 LIMIT 21;  -- one extra row tells you whether there's a next page
 ```
 
-With an index on `(created_at, id)`, every page is an index seek, and inserts or deletes elsewhere can't cause duplicates or gaps. The cost is that clients can't jump to an arbitrary page. Feeds, syncs, exports and infinite scroll never need to; a back-office table with page numbers might, and offset is acceptable there if depth is capped.
+With an index on `(created_at, id)`, every page is an index seek, and inserts or deletes elsewhere can't cause duplicates or gaps. Page 5,000 costs what page 1 costs. The price is that clients can't jump to an arbitrary page. Feeds, syncs, exports and infinite scroll never need to; a back-office table with page numbers might, and offset is acceptable there if depth is capped.
 
-## Get the cursor details right
+## Cursors fail in the details
 
-The SQL is simple. The bugs are in the details:
+The SQL is short. The bugs live around it, and each passes every test until production data arrives:
 
-- **Order by a unique tiebreaker.** Sorting by `created_at` alone breaks when two orders share a timestamp: the page boundary falls between them and one is skipped. Append the primary key.
+- **Order by a unique tiebreaker.** Sorting by `created_at` alone breaks when two orders share a timestamp, and on Black Friday hundreds do: the page boundary falls between them and one is skipped. Append the primary key.
 - **Mixed sort directions need care.** Row-value comparison `(a, b) < (x, y)` only works when both columns sort in the same direction. For `ORDER BY total DESC, id ASC`, expand it: `total < x OR (total = x AND id > y)`.
-- **Make cursors opaque.** Encode them (base64url of JSON, or encrypted if they reveal anything) and document them as strings with no structure. Clients that can't parse cursors can't depend on their format.
+- **Make cursors opaque.** Encode them (base64url of JSON, or encrypted if they reveal anything) and document them as strings with no structure. A client that can read your cursor will eventually build one, and then you can never change the format.
 - **Bind the cursor to its query.** A cursor from `?status=shipped` reused with `?status=paid` produces nonsense. Embed a hash of the filter and sort parameters and reject a mismatch with `422`, or put the full query in the cursor so `next` needs nothing else.
 
-## Return links and a page object
+## Return a page object with a next link
+
+Once the server owns the cursor, it should own the URL too. A client that builds page URLs must know your parameter names and carry the filters forward. Hand it the next URL instead:
 
 ```json
 {
@@ -103,7 +107,7 @@ The SQL is simple. The bugs are in the details:
 }
 ```
 
-No `next` means the end. The client loop has no URL building and no off-by-one errors:
+No `next` means the end. Notice how little the client loop has to know: no URL building, no page arithmetic, no off-by-one errors:
 
 ```ts
 for (let url: string | undefined = START; url;) {
@@ -113,11 +117,13 @@ for (let url: string | undefined = START; url;) {
 }
 ```
 
-An empty page with a `next` link is legal, for example when a filter rejected every row in a scanned batch. Clients must keep following `next` rather than stopping at the first empty page. Say so in the docs, because people get it wrong.
+One case surprises people. An empty page with a `next` link is legal, for example when a filter rejected every row in a scanned batch. Clients must keep following `next` rather than stopping at the first empty page. Say so in the docs, because someone will write `if (!items.length) break`.
 
 <GuidesDiffer id="pagination" />
 
 _Assumes:_ FastAPI with SQLAlchemy 2, DRF's built-in `CursorPagination`, Hono with a repository returning rows ordered by `(created_at, id)`.
+
+Here's the whole thing in each stack. Notice the `limit + 1` fetch that answers "is there more?" without a count, and the query hash inside the cursor.
 
 <Tabs syncKey="stack">
 <TabItem label="FastAPI">
@@ -202,7 +208,9 @@ app.get("/orders", zValidator("query", ListQuery), async (c) => {
 
 ## Make total counts opt-in
 
-"1–20 of 1,284,302" looks helpful. On a large, filtered table, the exact `COUNT(*)` can cost more than fetching the page, because PostgreSQL has to visit every matching row to count it. Ask what the client does with the number. Usually it needs to know whether there's more, which the `next` link already says. If a count is needed, offer it as an opt-in (`?include=total_count`), cap it ("10,000+"), or return the planner's estimate and label it as one.
+Then someone asks for "1–20 of 1,284,302". It looks helpful. On a large, filtered table, the exact `COUNT(*)` can cost more than fetching the page, because PostgreSQL has to visit every matching row to count it. So ask what the client does with the number. Usually it needs to know whether there's more, which the `next` link already says. If a count is needed, offer it as an opt-in (`?include=total_count`), cap it ("10,000+"), or return the planner's estimate and label it as one.
+
+Side by side, the two designs look like this:
 
 <Compare>
 <Prefer>
@@ -223,9 +231,11 @@ GET /orders?status=shipped&page=5000&per_page=20
 </Avoid>
 </Compare>
 
+You won't be the first to migrate from offsets after launch. Slack did it in public, and wrote it up.
+
 <Note kind="practice" title="Slack's move to cursors" year="2017" source="https://slack.engineering/evolving-api-pagination-at-slack/">
 
-Slack's Web API had grown several pagination styles, including page numbers and offsets. As workspaces reached hundreds of thousands of channels and users, those became slow and unreliable. Slack moved to one cursor scheme across methods, with `next_cursor` in `response_metadata` and an empty string meaning the end. Their write-up is a clear account of migrating a public API's pagination without breaking clients.
+Slack's Web API had grown several pagination styles, including page numbers and offsets. Then workspaces reached hundreds of thousands of channels and users, and those styles became slow and unreliable. Slack moved to one cursor scheme across methods, with `next_cursor` in `response_metadata` and an empty string meaning the end. Their write-up is a clear account of migrating a public API's pagination without breaking clients.
 
 </Note>
 
@@ -268,6 +278,10 @@ Find the bugs.
 
 </Solution>
 </WorkedProblem>
+
+## What to take away
+
+Describe a page by the last row the client saw, not its position, and hand the client a `next` link. Paginate from the first release; adding it later breaks everyone. A cursor is only valid for the query that made it, which is why filters and sorting need the same care. That's [filtering and sorting](/collections/filtering/).
 
 <SelfCheck>
 

@@ -60,9 +60,13 @@ import {
 
 </InBrief>
 
-A JSON API sends kilobytes. Files are megabytes or gigabytes, over mobile networks that drop connections. They break assumptions everywhere in the stack: request timeouts, body-size limits in proxies, worker memory, and the cost of retrying from zero. The design question is mostly how to keep those bytes off your application servers.
+A customer uploads a 40 MB video of a torn tent seam from a campsite with one bar of signal. The request holds an API worker for four minutes, then dies at 92 percent, and the app starts again from zero. Meanwhile Priya watches checkout latency climb.
+
+A JSON API sends kilobytes. Files are megabytes or gigabytes, and they break assumptions everywhere in the stack: request timeouts, proxy body-size limits, worker memory, the cost of retrying from zero. The design question is mostly how to keep those bytes off your application servers.
 
 ## Choose the upload path by size
+
+A receipt photo and a 2 GB product video fail differently, so pick the path by size:
 
 | Size                                   | Path                                                       | Why                                                         |
 | -------------------------------------- | ---------------------------------------------------------- | ----------------------------------------------------------- |
@@ -70,11 +74,11 @@ A JSON API sends kilobytes. Files are megabytes or gigabytes, over mobile networ
 | Tens of MB and up                      | Presigned URL to object storage                            | Bytes skip your servers; storage scales and retries for you |
 | Hundreds of MB, or unreliable networks | Resumable upload (tus, or object storage multipart upload) | A dropped connection costs a chunk, not the whole file      |
 
-Base64 inside JSON is the option missing from the table. It inflates the payload by a third, forces the whole file into memory to parse, and defeats streaming. Keep it for small values such as signatures, as discussed in [Data formats](/representations/data-formats/).
+Base64 inside JSON is missing on purpose. It inflates the payload by a third, forces the whole file into memory to parse, and defeats streaming. It's the file equivalent of posting a sofa through the letterbox one cushion at a time. Keep it for small values such as signatures, as discussed in [Data formats](/representations/data-formats/).
 
-## Upload large files directly to storage with presigned URLs
+## Send large files straight to storage
 
-The API issues an upload slot, the client sends the bytes straight to object storage, and the API confirms. Your servers handle a few hundred bytes of JSON; the storage service handles the gigabytes.
+Keep your servers out of the byte-moving business. The API issues an upload slot, the client sends the bytes straight to object storage, and the API confirms. Your servers handle a few hundred bytes of JSON; the storage service handles the gigabytes. Here's the exchange. Notice that the response is a resource in `pending_upload`, not a success:
 
 ```http
 POST /orders/ord_42/attachments
@@ -96,9 +100,11 @@ Location: https://api.example.com/orders/ord_42/attachments/att_9
 
 The client then `PUT`s the bytes to `upload.url`. Completion is detected either by a storage event notification or by the client calling `POST /orders/ord_42/attachments/att_9/completion`. Then the attachment moves from `pending_upload` to `processing` (virus scan, thumbnailing) to `ready`.
 
-Constrain the slot tightly. Sign the content type and the exact length (or use a presigned `POST` policy with `content-length-range` when you need a maximum; a presigned `PUT` can't express one), keep the expiry to minutes, and use a key you generate rather than the client's filename. The URL is a bearer credential: anyone who has it can upload until it expires.
+That URL is a bearer credential: anyone who has it can upload until it expires. So constrain the slot tightly. Sign the content type and the exact length (or use a presigned `POST` policy with `content-length-range` when you need a maximum; a presigned `PUT` can't express one), keep the expiry to minutes, and use a key you generate rather than the client's filename.
 
 _Assumes:_ boto3 for S3 in Python, `@aws-sdk/s3-request-presigner` in TypeScript.
+
+Here's the endpoint. Notice that validation runs before anything is signed, and that size and type end up inside the signature.
 
 <Tabs syncKey="stack">
 <TabItem label="FastAPI">
@@ -172,22 +178,24 @@ app.post("/orders/:id/attachments", zValidator("json", AttachmentIn), async (c) 
 
 ## Make big uploads resumable
 
-A 2 GB upload over a train's Wi-Fi will be interrupted. Without resumption, the client starts again from byte zero and may never finish. Two options:
+Presigned URLs don't make the network kinder. A 2 GB upload over a train's Wi-Fi will be interrupted, and without resumption the client starts again from byte zero and may never finish. Two options:
 
 - **tus**, an open protocol since 2013 with servers and clients for most platforms. The client creates an upload, sends chunks with `PATCH` and an `Upload-Offset` header, and after a disconnect asks the server with `HEAD` how far it got.
 - **The IETF resumable upload protocol** (draft-ietf-httpbis-resumable-upload), which builds on tus's experience and aims to let any HTTP client resume uploads natively. Track it, and design so you can adopt it later.
 
 Object stores have their own variants (S3 multipart upload, GCS resumable uploads) that pair well with presigned URLs: one presigned URL per part.
 
+tus has a better origin story than most protocols.
+
 <Note kind="history" title="tus" year="2013" source="https://tus.io/protocols/resumable-upload">
 
-tus started at Transloadit, a file-processing company whose customers kept losing uploads on mobile networks. They published the protocol openly instead of building another proprietary resume scheme, and it later became the starting point for the IETF HTTP working group's resumable upload draft. A small company's fix for a support problem is turning into part of HTTP.
+Transloadit, a file-processing company, had a support problem: its customers kept losing uploads on mobile networks. Instead of another proprietary resume scheme, it published an open protocol, tus. It later became the starting point for the IETF HTTP working group's resumable upload draft. A small company's fix for a support queue is turning into part of HTTP.
 
 </Note>
 
 ## Serve downloads with ranges and validators
 
-Large downloads should be resumable and seekable, which HTTP range requests provide (RFC 9110 §14). Advertise `Accept-Ranges: bytes`, answer a `Range: bytes=1048576-` request with <Status code={206} /> and `Content-Range`, and send an `ETag`, so a client resuming with `If-Range` gets the remainder only if the file hasn't changed, and the whole new file if it has.
+Downloads drop too. HTTP range requests (RFC 9110 §14) make large downloads resumable and seekable. Advertise `Accept-Ranges: bytes`, answer a `Range: bytes=1048576-` request with <Status code={206} /> and `Content-Range`, and send an `ETag`, so a client resuming with `If-Range` gets the remainder only if the file hasn't changed, and the whole new file if it has. The `If-Range` line is what stops a resume from splicing two versions together:
 
 ```http
 GET /orders/ord_42/attachments/att_9/content
@@ -203,10 +211,14 @@ In practice you rarely implement this yourself. Redirect with <Status code={303}
 
 ## Set limits, verify content, and checksum
 
+Every upload endpoint invites something large, wrong or hostile. Four checks cover most of it:
+
 - **Size.** Enforce a maximum before reading the body and return <Status code={413} /> with the limit in a problem body. Document it, because the gateway's default (often 1 MB or 10 MB) is otherwise your real limit, and nobody knows it.
 - **Type.** Treat the declared `Content-Type` and the filename as hints. Sniff the magic bytes, allow-list the result and return <Status code={415} /> otherwise. Never serve user uploads from your API's origin with a type the browser will execute.
 - **Integrity.** Ask clients to send a digest, `Content-Digest` or `Repr-Digest` (RFC 9530), or the storage service's checksum header, and verify it. Silent corruption on long uploads is rare but real.
 - **Processing.** Scan, transcode and extract asynchronously, and expose the status on the resource ([Long-running operations](/reliability/long-running-operations/)).
+
+An attachment is a resource with a status and a link to its bytes, never the bytes themselves:
 
 <Compare>
 <Prefer>
@@ -253,6 +265,12 @@ What's wrong, ordered by severity?
 
 </Solution>
 </WorkedProblem>
+
+## What to take away
+
+Your API should talk about files, not carry them: it issues slots, tracks status and hands out links, while storage and CDNs move the bytes. Collections have the same problem at a different scale, when `GET /orders` would return a million rows. That's [pagination](/collections/pagination/).
+
+Priya found this endpoint in an old branch. It works in the demo, and it's a security incident waiting for a filename.
 
 <SelfCheck>
 

@@ -26,7 +26,7 @@ const { kind = "aside", title, year, source } = Astro.props;
 if (!source) throw new Error(`Note "${title ?? kind}" needs a source`);
 ---
 
-<aside class="fg-note" aria-label={labels[kind]}>
+<aside class="fg-note" data-kind={kind} aria-label={labels[kind]}>
   <p class="fg-note__head">
     <span class="fg-label">{labels[kind]}{year && <> · {year}</>}</span>
     {title && <span class="fg-note__title">{title}</span>}

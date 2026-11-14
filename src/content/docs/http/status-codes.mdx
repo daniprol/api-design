@@ -51,11 +51,11 @@ import {
 
 </InBrief>
 
-A status code is the first thing a client reads and often the only thing generic tooling reads. Retry middleware, circuit breakers, CDN error pages, SLO dashboards and alerting rules all make decisions from three digits. Return <Status code={200} /> with `{"success": false}` and every one of them is blind.
+Checkout is failing for one customer in five, and Fernhill's dashboard is a calm sea of green. Priya finds out from Twitter. The endpoint returns <Status code={200} /> with `{"success": false}`, and everything that watches it reads only the number. A status code is the first thing a client reads and often the only thing generic tooling reads: retry middleware, circuit breakers, CDN error pages, SLO dashboards and alerting rules all decide from three digits. Put the failure in the body alone and every one of them is blind.
 
 ## The class is the contract
 
-A client that doesn't recognise a code must treat it as the `x00` of its class (RFC 9110 §15). An unknown <Status code={422} /> is still understood as "client error, don't retry unchanged"; an unknown <Status code={503} /> as "server problem, may be transient". So the first digit carries most of the meaning, and getting it right everywhere matters more than choosing between two 4xx codes.
+Larkspur's 2019 client has never heard of half the codes you might send. It copes anyway, because RFC 9110 §15 says a client that doesn't recognise a code must treat it as the `x00` of its class. An unknown <Status code={422} /> is still understood as "client error, don't retry unchanged"; an unknown <Status code={503} /> as "server problem, may be transient". So the first digit carries most of the meaning, and getting it right everywhere matters more than choosing between two 4xx codes.
 
 | Class | Promise to the client       | Typical client behaviour                               |
 | ----- | --------------------------- | ------------------------------------------------------ |
@@ -64,11 +64,11 @@ A client that doesn't recognise a code must treat it as the `x00` of its class (
 | `4xx` | Your request is the problem | Don't retry unchanged; fix input, credentials or state |
 | `5xx` | Our side failed             | Retry idempotent requests with backoff                 |
 
-That last row is why misclassifying is expensive. A validation failure returned as <Status code={500} /> gets retried by every well-behaved client, and an outage returned as <Status code={400} /> is never retried and never pages anyone.
+The last two rows are why misclassifying is expensive. A validation failure returned as <Status code={500} /> gets retried by every well-behaved client and wakes Priya for a typo. An outage returned as <Status code={400} /> is never retried and never pages anyone, which is worse.
 
 ## Use a specific code only where clients act differently
 
-Specific codes are useful when they map to a different recovery path. These do:
+Once the class is right, how specific should you get? The test is whether a client would do something different. A specific code earns its place when it maps to a different recovery path, and these do:
 
 | Code                  | Client's next step                                                     |
 | --------------------- | ---------------------------------------------------------------------- |
@@ -81,11 +81,13 @@ Specific codes are useful when they map to a different recovery path. These do:
 | <Status code={429} /> | Wait for `Retry-After`, then retry                                     |
 | <Status code={503} /> | Wait for `Retry-After`, then retry                                     |
 
-<Status code={400} /> and <Status code={422} /> rarely lead to different client behaviour: both mean
+By that test, <Status code={400} /> and <Status code={422} /> rarely deserve the long arguments they cause: both mean
 a person must fix the input. This site keeps 400 for bodies that can't be parsed and uses 422 for
 everything that parses but fails validation, query parameters included, and puts the detail in the
 [error body](/http/errors/), where a `type` URI can be as specific as you like. Whatever you choose,
 apply it everywhere.
+
+Only one of these can be counted and alerted on by software that has never read your docs:
 
 <Compare>
 <Prefer>
@@ -109,6 +111,8 @@ POST /customers  → 200 OK
 
 ## Get 401, 403 and 404 right
 
+These three get confused more than any others, and each confusion has a cost.
+
 <Status code={401} /> means "not authenticated". RFC 9110 requires it to carry a `WWW-Authenticate`
 header naming the scheme, such as `Bearer realm="api", error="invalid_token"`, which is how OAuth
 clients know to refresh a token instead of failing.
@@ -116,9 +120,11 @@ clients know to refresh a token instead of failing.
 <Status code={403} /> means "authenticated, and the answer is no". Use it when the caller can know
 the resource exists, for example a read-only API key trying to write.
 
-For resources the caller shouldn't learn about at all, another tenant's order for instance, return <Status code={404} />. A 403 there confirms that `ord_42` exists, and that is information. Clients should in turn be careful with 404: a typo in the base URL also produces one, so a client shouldn't delete its local copy of a record just because a `GET` returned 404. A problem `type` such as `…/problems/order-not-found` distinguishes "no such order" from "no such route".
+For resources the caller shouldn't learn about at all, another tenant's order for instance, return <Status code={404} />. A 403 there confirms that `ord_42` exists, and that is information. Clients should in turn be careful with 404: a typo in the base URL also produces one, so the mobile app shouldn't delete its local copy of an order because one `GET` returned 404. A problem `type` such as `…/problems/order-not-found` distinguishes "no such order" from "no such route".
 
 ## Answer writes with the code that tells the client what to do next
+
+A successful write still tells the client what comes next:
 
 - <Status code={201} /> after creating a resource, with `Location` pointing at it. Return the
   representation in the body to save a round trip.
@@ -131,6 +137,8 @@ For resources the caller shouldn't learn about at all, another tenant's order fo
   client follows it with a `GET`.
 
 _Assumes:_ FastAPI, DRF and Hono with a `problem()` helper that renders `application/problem+json` (see [Errors](/http/errors/)).
+
+Here is a create endpoint in each stack. Notice that the 409 and the 201 with `Location` come from the same handler, so every outcome has its own number:
 
 <Tabs syncKey="stack">
 <TabItem label="FastAPI">
@@ -183,9 +191,11 @@ app.post("/customers", zValidator("json", CustomerIn), async (c) => {
 
 Browsers handle redirects well. API clients mostly don't. Some drop the `Authorization` header on a cross-host redirect, as they should, and some change `POST` to `GET` on a 301 or 302, for historical reasons. Moving an API is better done with a deprecation period than with a redirect. If you must redirect, use 307 or 308, which preserve the method and body. The one common exception is a 303 or 307 from a download endpoint to a short-lived storage URL (see [Files](/representations/files/)).
 
+Status codes are harder to remove than to add, as one famous joke proves.
+
 <Note kind="curiosity" title="418 I'm a teapot" year="1998" source="https://www.rfc-editor.org/rfc/rfc2324">
 
-RFC 2324, an April Fools' RFC, defined the Hyper Text Coffee Pot Control Protocol and status 418 for teapots asked to brew coffee. Libraries implemented it as a joke. When the HTTP working group's chair asked libraries to remove it in 2017, the backlash showed how much software depended on it, and that RFC 9110 now reserves 418 as unused, so it can never be assigned a real meaning. Hyrum's Law, applied to tea.
+On 1 April 1998, RFC 2324 defined the Hyper Text Coffee Pot Control Protocol, including status 418 for teapots asked to brew coffee. Libraries implemented it as a joke. In 2017 the HTTP working group's chair asked them to remove it, and the backlash showed how much software had come to depend on it. RFC 9110 now reserves 418 as unused, so it can never be assigned a real meaning. Hyrum's Law, applied to tea.
 
 </Note>
 
@@ -198,6 +208,8 @@ RFC 2324, an April Fools' RFC, defined the Hyper Text Coffee Pot Control Protoco
 <Rule guide="zalando" id="251" level="SHOULD" title="Not use redirection codes" />
 
 </RuleGroup>
+
+Here is the checkout from the start of the page, in full. It is a good test of everything above.
 
 <WorkedProblem kind="Review" title="A checkout endpoint">
 
@@ -223,6 +235,10 @@ All four.
 
 </Solution>
 </WorkedProblem>
+
+## What to take away
+
+The number is the part every piece of software reads, so get the class right everywhere and use a specific code only where the client's next step differs. The number says what kind of failure; the body has to say which one and what to do about it. That's [errors](/http/errors/).
 
 <SelfCheck>
 

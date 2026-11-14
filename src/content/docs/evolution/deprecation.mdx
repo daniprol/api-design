@@ -48,9 +48,11 @@ import {
 
 </InBrief>
 
-Every endpoint eventually dies. The question is whether it dies gracefully, announced, measured and migrated, or suddenly at 9 a.m. on a Monday, breaking a partner's checkout. Deprecation is a process with a clock, and the API's job is to make that process visible to people and to software.
+Monday, 9 a.m. Fernhill removed an old shipping endpoint over the weekend, after six months of warnings in the changelog. By 9.05 Larkspur Logistics' integration is failing on every order, and Priya learns that nobody at Larkspur reads changelogs. Every endpoint dies eventually; what you control is how.
 
-## Follow a lifecycle with dates
+## Give the endpoint a lifecycle with dates
+
+Removal feels like one decision. It's six steps, each with a date:
 
 ```text
 active ──► deprecated ──────────────────────────► sunset ──► gone (410)
@@ -65,7 +67,9 @@ active ──► deprecated ─────────────────�
 5. **Brown out.** Disable it briefly on announced dates.
 6. **Sunset.** Remove it when usage is at zero, and return <code>410</code> with a pointer to the replacement.
 
-## Mark it in the spec and on the wire
+## Announce it where both people and software will see it
+
+A changelog reaches people who read changelogs, which excludes Larkspur. So say it in the spec, for developers, and in every response, for software. In the spec, notice the description carries both dates and the replacement:
 
 ```yaml
 paths:
@@ -77,7 +81,7 @@ paths:
         Will be removed on 2027-06-30. Migration guide: https://api.example.com/docs/migrations/shipping-info
 ```
 
-The spec reaches developers who read docs. Response headers reach the software in between: SDKs that log warnings, gateways that report on deprecated traffic, and test suites that fail on them.
+Headers reach code nobody is reading: SDKs that log warnings, gateways that report on deprecated traffic, test suites that fail on them:
 
 ```http
 HTTP/1.1 200 OK
@@ -89,6 +93,8 @@ Link: <https://api.example.com/docs/migrations/shipping-info>; rel="deprecation"
 - `Deprecation` (RFC 9745, 2025) carries the date the resource was or will be deprecated, as a Structured Field date: `@` plus a Unix timestamp. Early drafts used `true`, and you'll still see that in the wild.
 - `Sunset` (RFC 8594) is the HTTP date after which the resource is expected to stop responding.
 - `Link` with `rel="deprecation"` points at human-readable migration information.
+
+Wrap the headers in something reusable. Watch the log line: it records who called, which the next section needs.
 
 _Assumes:_ structured logging with the caller's client ID available from authentication.
 
@@ -152,23 +158,23 @@ app.get("/orders/:id/shipping-info", deprecated(SINCE, SUNSET, GUIDE), shippingI
 </TabItem>
 </Tabs>
 
-## Measure by caller, not by traffic
+## Count callers by name, not requests
 
-"Traffic is down 98 percent" sounds like permission to remove. It isn't, if the remaining 2 percent is your largest customer's nightly reconciliation job. Log deprecated calls with the client identity and keep a list of remaining callers with owners and contact details. The removal decision is made against that list. Watch for deprecated endpoints in your own code too. A service that starts depending on a deprecated API extends its life.
+"Traffic is down 98 percent" sounds like permission to remove. It isn't, if the remaining 2 percent is your largest customer's nightly reconciliation job. Aggregates hide exactly the client you'll break, so log deprecated calls with the client identity and keep a list of remaining callers with owners and contact details. You decide removal against that list, one name at a time. Check your own house too: a Fernhill service that starts depending on a deprecated API extends its life.
 
-## Brown out before you sunset
+## Rehearse the removal with brownouts
 
-A brownout disables the deprecated endpoint for a short, announced window, returning the same <code>410</code> it will return after sunset. Clients that ignored emails and headers find out during a planned hour, with time left to migrate, instead of on removal day. Schedule a few, increasing in length, and announce each one.
+Some clients ignore emails and headers alike; they only notice errors. So give them one early, on your terms. A brownout disables the endpoint for a short, announced window, returning the same <code>410</code> it will return after sunset. Clients find out during a planned hour, with time left to migrate. Schedule a few, increasing in length, and announce each. Twitter did exactly this:
 
 <Note kind="practice" title="Twitter's v1 blackout tests" year="2013" source="https://blog.x.com/developer/en_us/a/2013/api-v1-retirement-final-dates">
 
-Before retiring API v1, Twitter scheduled a blackout test for 16 April 2013, during which v1 calls failed, so developers could see what would break, and warned that more might follow. It later moved the final retirement from 7 May to 11 June 2013. Brownouts are cheap to run, and they turn surprise outages into calendar entries.
+Before retiring API v1, Twitter scheduled a blackout test for 16 April 2013. v1 calls failed for its duration, so developers could see what would break, and Twitter warned more might follow. Then it moved the final retirement from 7 May to 11 June 2013. Brownouts are cheap to run, and they turn surprise outages into calendar entries.
 
 </Note>
 
 ## Remove at zero, then answer 410
 
-When the deprecated endpoint is finally removed, don't let it fall through to a generic <code>404</code>. Return <code>410 Gone</code> with a problem body naming the replacement and the migration guide for a few months. Clients that missed everything at least get an actionable error.
+Even at zero, someone turns up: a forgotten cron job, a phone that never updated the mobile app. A generic <code>404</code> sends them hunting for a typo. Return <code>410 Gone</code> for a few months, with a problem body naming the replacement and migration guide, so they get an error they can act on:
 
 <Compare>
 <Prefer>
@@ -224,6 +230,10 @@ Content-Type: text/html
 <Rule guide="zalando" id="191" level="MUST" title="Not start using deprecated APIs" />
 
 </RuleGroup>
+
+## What to take away
+
+Deprecation is a project with named callers and dates, not a deletion: announce, measure, rehearse, and remove only at zero. All of it relies on the spec telling the truth, which is a job for a machine: [specs in CI](/evolution/specs-in-ci/).
 
 <SelfCheck>
 

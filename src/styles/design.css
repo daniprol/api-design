@@ -1,0 +1,391 @@
+/* ==========================================================================
+   Design layer: cards, tints and colour on top of the structural styles in
+   components.css. Loaded last, so it wins on equal specificity.
+   ========================================================================== */
+
+/* ---------- Page background and header ---------- */
+body {
+  background-color: var(--sl-color-black);
+  background-image: var(--fg-glow);
+  background-repeat: no-repeat;
+}
+
+header.header {
+  background: color-mix(in srgb, var(--sl-color-black) 82%, transparent);
+  backdrop-filter: saturate(160%) blur(10px);
+}
+
+.site-title {
+  font-family: var(--sl-font);
+  font-size: 1.05rem;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+
+.site-title::before {
+  content: "";
+  display: inline-block;
+  width: 0.7rem;
+  height: 0.7rem;
+  margin-inline-end: 0.55rem;
+  border-radius: 3px;
+  background: linear-gradient(135deg, var(--sl-color-accent), var(--fg-violet));
+}
+
+/* ---------- Typography ---------- */
+.sl-markdown-content {
+  font-size: 1.0625rem;
+}
+
+.sl-markdown-content h3 {
+  font-weight: 620;
+  letter-spacing: -0.015em;
+}
+
+.sl-markdown-content a:not(:where(.not-content *)) {
+  color: var(--sl-color-accent);
+  text-decoration-color: color-mix(in srgb, var(--sl-color-accent) 35%, transparent);
+}
+
+.sl-markdown-content a:not(:where(.not-content *)):hover {
+  text-decoration-color: var(--sl-color-accent);
+}
+
+.sl-markdown-content :not(pre) > code {
+  border: none;
+  background: var(--fg-surface-2);
+  border-radius: 5px;
+  font-size: 0.86em;
+}
+
+/* Small uppercase labels become quieter, wider pills */
+.fg-label,
+.fg-eyebrow,
+.fg-fold__title {
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+}
+
+/* ---------- Page title ---------- */
+.fg-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  background: var(--sl-color-accent-low);
+  color: var(--sl-color-accent);
+}
+
+.fg-summary {
+  font-size: 1.15rem;
+  line-height: 1.6;
+}
+
+/* ---------- Sidebar ---------- */
+nav.sidebar a {
+  border-radius: 6px;
+  padding-inline: 0.5rem;
+}
+
+nav.sidebar a:hover {
+  background: var(--fg-surface);
+}
+
+nav.sidebar a[aria-current="page"],
+nav.sidebar a[aria-current="page"]:hover {
+  background: var(--sl-color-accent-low);
+  color: var(--sl-color-accent);
+  box-shadow: none;
+}
+
+/* ---------- In brief: a tinted card ---------- */
+.sl-markdown-content .fg-brief {
+  padding: 1.1rem 1.35rem 1.2rem;
+  border: 1px solid color-mix(in srgb, var(--sl-color-accent) 22%, var(--fg-hairline));
+  border-radius: var(--fg-radius);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--sl-color-accent) calc(var(--fg-tint) * 100%), transparent),
+    transparent 85%
+  );
+}
+
+.sl-markdown-content .fg-brief .fg-label {
+  color: var(--sl-color-accent);
+}
+
+.sl-markdown-content .fg-brief li::marker {
+  color: var(--sl-color-accent);
+}
+
+/* ---------- Notes: coloured story cards ---------- */
+.fg-note {
+  --fg-kind: var(--sl-color-gray-3);
+  position: relative;
+  padding: 1rem 1.25rem 1.05rem;
+  border: 1px solid color-mix(in srgb, var(--fg-kind) 25%, var(--fg-hairline));
+  border-inline-start: 3px solid var(--fg-kind);
+  border-radius: var(--fg-radius);
+  background: color-mix(in srgb, var(--fg-kind) calc(var(--fg-tint) * 100%), transparent);
+}
+
+.fg-note[data-kind="history"] {
+  --fg-kind: var(--fg-warn);
+}
+
+.fg-note[data-kind="incident"] {
+  --fg-kind: var(--fg-bad);
+}
+
+.fg-note[data-kind="practice"] {
+  --fg-kind: var(--fg-good);
+}
+
+.fg-note[data-kind="curiosity"] {
+  --fg-kind: var(--fg-violet);
+}
+
+.fg-note[data-kind="aside"] {
+  --fg-kind: var(--fg-info);
+}
+
+.fg-note .fg-label {
+  color: var(--fg-kind);
+}
+
+.fg-note__title {
+  font-size: 1rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.sl-markdown-content .fg-note__body :is(p, li) {
+  font-size: 0.95rem;
+  color: var(--sl-color-gray-1);
+}
+
+.sl-markdown-content .fg-note__source a {
+  color: var(--sl-color-gray-3);
+  text-decoration: none;
+}
+
+.sl-markdown-content .fg-note__source a:hover {
+  color: var(--fg-kind);
+}
+
+/* ---------- Prefer / Avoid: two cards ---------- */
+@media (min-width: 50rem) {
+  .fg-compare__cols {
+    gap: 1rem;
+  }
+
+  .fg-compare__col + .fg-compare__col {
+    padding-inline-start: 0;
+    border-inline-start: none;
+  }
+
+  .fg-compare__col:first-child {
+    padding-inline-end: 0;
+  }
+}
+
+.sl-markdown-content .fg-compare__col {
+  padding: 0.85rem 1rem 1rem;
+  border: 1px solid var(--fg-hairline);
+  border-top: 3px solid var(--fg-good);
+  border-radius: var(--fg-radius);
+  background: var(--fg-surface);
+}
+
+.sl-markdown-content .fg-compare__col--bad {
+  border-top-color: var(--fg-bad);
+}
+
+.fg-compare__col--good .fg-label::before {
+  content: "✓ ";
+}
+
+.fg-compare__col--bad .fg-label::before {
+  content: "✕ ";
+}
+
+.sl-markdown-content .fg-compare__col .expressive-code .frame {
+  --ec-brdCol: transparent;
+}
+
+/* ---------- Folded blocks as cards ---------- */
+.fg-fold {
+  border: 1px solid var(--fg-hairline);
+  border-radius: var(--fg-radius);
+  background: var(--fg-surface);
+  padding-inline: 1.1rem;
+}
+
+.fg-fold + .fg-fold {
+  margin-top: 0.75rem !important;
+  border-top: 1px solid var(--fg-hairline);
+}
+
+.fg-fold > summary::before,
+.fg-fold[open] > summary::before {
+  content: "";
+  width: 1.1rem;
+  height: 1.1rem;
+  align-self: center;
+  background-color: var(--sl-color-accent);
+  transition: transform var(--fg-t);
+}
+
+.fg-fold[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.fg-fold__title {
+  color: var(--sl-color-white);
+}
+
+.sl-markdown-content .fg-fold__body {
+  padding: 0 0 1.25rem;
+}
+
+/* ---------- Self-check ---------- */
+.fg-question__options button {
+  border-radius: 8px !important;
+}
+
+.fg-question__options button:hover {
+  border-color: var(--sl-color-accent) !important;
+}
+
+/* ---------- Tables ---------- */
+.sl-markdown-content th {
+  color: var(--sl-color-gray-2);
+}
+
+/* ---------- Tabs ---------- */
+starlight-tabs [role="tab"][aria-selected="true"] {
+  color: var(--sl-color-accent);
+  border-color: var(--sl-color-accent);
+}
+
+/* ---------- Footer pagination ---------- */
+.pagination-links a {
+  background: var(--fg-surface);
+}
+
+.pagination-links a:hover {
+  border-color: var(--sl-color-accent);
+}
+
+.pagination-links .link-title {
+  font-family: var(--sl-font);
+  font-weight: 620;
+  letter-spacing: -0.015em;
+}
+
+/* ---------- Home ---------- */
+.fg-hometop {
+  padding-block: 2.5rem 1.5rem;
+}
+
+.fg-hometop h1 {
+  font-size: clamp(2.5rem, 6vw, 3.75rem);
+  font-weight: 700;
+  letter-spacing: -0.045em;
+  background: linear-gradient(
+    100deg,
+    var(--sl-color-white) 30%,
+    var(--sl-color-accent) 75%,
+    var(--fg-violet)
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.fg-hometop__sub {
+  display: inline-block;
+  margin-top: 0.75rem;
+  padding: 0.25rem 0.7rem;
+  border-radius: 999px;
+  background: var(--sl-color-accent-low);
+  color: var(--sl-color-accent);
+  font-family: var(--sl-font);
+  font-size: 0.85rem;
+  font-style: normal;
+  font-weight: 550;
+}
+
+.sl-markdown-content .fg-hometop__scope {
+  font-size: 1.15rem;
+  line-height: 1.65;
+}
+
+.fg-home__sections {
+  gap: 1rem;
+}
+
+.fg-home__section {
+  padding: 1.1rem 1.2rem 1.2rem;
+  border: 1px solid var(--fg-hairline);
+  border-radius: var(--fg-radius);
+  background: var(--fg-surface);
+  transition:
+    border-color var(--fg-t),
+    transform var(--fg-t);
+}
+
+.fg-home__section:hover {
+  border-color: color-mix(in srgb, var(--sl-color-accent) 45%, var(--fg-hairline));
+  transform: translateY(-1px);
+}
+
+.sl-markdown-content .fg-home__section h3 {
+  font-family: var(--sl-font);
+  font-size: 1.05rem;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+}
+
+.fg-home__n {
+  display: inline-grid;
+  place-items: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  margin-inline-end: 0.55rem;
+  border-radius: 6px;
+  background: var(--sl-color-accent-low);
+  color: var(--sl-color-accent);
+  font-size: 0.8rem;
+  font-weight: 650;
+}
+
+.fg-searchbox {
+  border-radius: var(--fg-radius) !important;
+}
+
+.fg-searchbox:hover {
+  border-color: var(--sl-color-accent) !important;
+}
+
+/* ---------- Guide contents ---------- */
+.sl-markdown-content .fg-contents h2 {
+  font-family: var(--sl-font);
+}
+
+@media print {
+  body {
+    background-image: none;
+  }
+
+  .fg-hometop h1 {
+    color: #000;
+    background: none;
+  }
+}
+
+/* Fixes: equal compare cards, readable fold markers */
+.sl-markdown-content .fg-compare__col {
+  margin: 0 !important;
+}

@@ -1,70 +1,83 @@
 /*
  * HTTP API Design: theme.
- * Serif for H1/H2, Inter for text, warm neutrals, one accent used only for
- * link hover, the current sidebar item, focus rings and the "Avoid" label.
+ * Geist for text and headings, Geist Mono for code. Cool neutrals with an
+ * indigo accent; coloured tints mark notes, comparisons and status codes.
  * Spacing scale: 0.25 / 0.5 / 1 / 1.5 / 2 / 3.25rem.
  */
 
 :root {
-  --sl-font: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  --sl-font-mono: "JetBrains Mono Variable", ui-monospace, "SFMono-Regular", Menlo, monospace;
-  --fg-serif: "Source Serif 4 Variable", "Iowan Old Style", Georgia, serif;
+  --sl-font: "Geist Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --sl-font-mono: "Geist Mono Variable", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  /* Display face for headings. Same family, tighter tracking. */
+  --fg-serif: var(--sl-font);
 
-  --sl-text-h1: 2.5rem;
-  --sl-text-h2: 1.6rem;
-  --sl-text-h3: 1.05rem;
+  --sl-text-h1: 2.6rem;
+  --sl-text-h2: 1.65rem;
+  --sl-text-h3: 1.15rem;
   --sl-line-height: 1.7;
   --sl-content-width: 46rem;
 
-  --fg-radius: 6px;
+  --fg-radius: 10px;
   --fg-t: 150ms ease;
 
-  /* Dark (default) */
-  --sl-color-accent-low: #3a241b;
-  --sl-color-accent: #e9906d;
-  --sl-color-accent-high: #f6cdbd;
-  --sl-color-white: #f3f1ec;
-  --sl-color-gray-1: #e4e1da;
-  --sl-color-gray-2: #c4c0b7;
-  --sl-color-gray-3: #a29d93;
-  --sl-color-gray-4: #6d6960;
-  --sl-color-gray-5: #3b3934;
-  --sl-color-gray-6: #22211e;
-  --sl-color-black: #151413;
+  /* Dark */
+  --sl-color-accent-low: #23234d;
+  --sl-color-accent: #8f91ff;
+  --sl-color-accent-high: #c9caff;
+  --sl-color-white: #f2f3f5;
+  --sl-color-gray-1: #d9dbe1;
+  --sl-color-gray-2: #b2b6c0;
+  --sl-color-gray-3: #888d99;
+  --sl-color-gray-4: #5d626d;
+  --sl-color-gray-5: #34373f;
+  --sl-color-gray-6: #1b1d23;
+  --sl-color-black: #0d0e12;
 
-  --fg-surface: #1b1a18;
-  --fg-hairline: #2c2a27;
-  --fg-good: #8cbf94;
-  --fg-bad: #e9906d;
-  --fg-warn: #d9b25f;
-  --fg-info: #8fb4d9;
+  --fg-surface: #15171c;
+  --fg-surface-2: #1b1e25;
+  --fg-hairline: #262932;
+  --fg-good: #4ade80;
+  --fg-bad: #fb7185;
+  --fg-warn: #fbbf24;
+  --fg-info: #60a5fa;
+  --fg-violet: #c084fc;
+  --fg-tint: 0.12;
+  --fg-glow:
+    radial-gradient(60rem 24rem at 15% -10%, rgb(143 145 255 / 0.18), transparent 60%),
+    radial-gradient(40rem 20rem at 95% 0%, rgb(192 132 252 / 0.12), transparent 60%);
 }
 
 :root[data-theme="light"] {
-  --sl-color-accent-low: #f5e6df;
-  --sl-color-accent: #a8401d;
-  --sl-color-accent-high: #6e2810;
-  --sl-color-white: #1b1a18;
-  --sl-color-gray-1: #2a2825;
-  --sl-color-gray-2: #45423d;
-  --sl-color-gray-3: #69655d;
-  --sl-color-gray-4: #9a958c;
-  --sl-color-gray-5: #d9d5cc;
-  --sl-color-gray-6: #eeebe5;
-  --sl-color-gray-7: #f5f3ef;
-  --sl-color-black: #fbfaf7;
+  --sl-color-accent-low: #eceeff;
+  --sl-color-accent: #4f46e5;
+  --sl-color-accent-high: #312e81;
+  --sl-color-white: #0f1115;
+  --sl-color-gray-1: #2b2f38;
+  --sl-color-gray-2: #4a4f5c;
+  --sl-color-gray-3: #6b7180;
+  --sl-color-gray-4: #9ba1ad;
+  --sl-color-gray-5: #d8dbe2;
+  --sl-color-gray-6: #eef0f4;
+  --sl-color-gray-7: #f6f7f9;
+  --sl-color-black: #ffffff;
 
-  --fg-surface: #f4f2ed;
-  --fg-hairline: #e3dfd7;
-  --fg-good: #2f6b3f;
-  --fg-bad: #a8401d;
-  --fg-warn: #8a6410;
-  --fg-info: #2f5f8a;
+  --fg-surface: #f7f8fa;
+  --fg-surface-2: #f1f3f7;
+  --fg-hairline: #e6e8ee;
+  --fg-good: #15803d;
+  --fg-bad: #be123c;
+  --fg-warn: #b45309;
+  --fg-info: #1d4ed8;
+  --fg-violet: #7e22ce;
+  --fg-tint: 0.07;
+  --fg-glow:
+    radial-gradient(60rem 24rem at 15% -10%, rgb(79 70 229 / 0.1), transparent 60%),
+    radial-gradient(40rem 20rem at 95% 0%, rgb(192 132 252 / 0.1), transparent 60%);
 }
 
 body {
   background: var(--sl-color-black);
-  font-feature-settings: "cv11", "ss01";
+  font-feature-settings: "ss01", "ss02";
   -webkit-font-smoothing: antialiased;
 }
 
@@ -86,22 +99,21 @@ body {
 h1,
 .sl-markdown-content h2 {
   font-family: var(--fg-serif);
-  font-optical-sizing: auto;
-  font-weight: 600;
+  font-weight: 650;
   color: var(--sl-color-white);
 }
 
 h1#_top {
   font-size: var(--sl-text-h1);
-  line-height: 1.15;
-  letter-spacing: -0.015em;
+  line-height: 1.1;
+  letter-spacing: -0.035em;
 }
 
 .sl-markdown-content h2 {
   margin-top: 3.25rem;
   font-size: var(--sl-text-h2);
   line-height: 1.25;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.025em;
 }
 
 .sl-markdown-content h3 {

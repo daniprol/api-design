@@ -18,9 +18,9 @@ import { InBrief, Note } from "@components/kit";
 
 </InBrief>
 
-The draft below was written in an afternoon by a capable team under deadline, and it would work. Most first drafts would. The point of a design review is the next five years: which of these choices will be expensive once three partners have integrated, and which are cheap to fix today. Nothing here requires new technology. Every fix is a convention described elsewhere in the Guide.
+It's Thursday. Fernhill's checkout team wrote the draft below in an afternoon, because Larkspur Logistics starts its integration on Monday and someone promised them a spec. The team is capable, and the draft would work; most first drafts would. But Larkspur never upgrades, so whatever ships on Monday is what Fernhill lives with for years. The review's question isn't whether it works. It's which choices will be expensive once three partners have integrated, and which are cheap to fix today. Nothing below needs new technology; every fix is a convention described elsewhere in the Guide.
 
-## The draft
+## The draft, as it reached review
 
 ```yaml title="orders-api.yaml (draft)"
 openapi: 3.1.0
@@ -86,37 +86,41 @@ components:
 
 ## Findings that break clients if fixed later
 
-1. **`version: latest` and no owner.** The contract has no version a consumer can pin, no owner to ask, and no audience to judge risk by. Use SemVer, `contact`, `x-api-id` and `x-audience`. [Specs in CI](/evolution/specs-in-ci/)
+Each of these is cheap on Thursday and a breaking change from Monday, once Larkspur has written code against it.
 
-2. **Verbs in paths: `getOrders`, `orders/create`, `{id}/cancel`.** The method already says get and create. Use `GET /orders` and `POST /orders`. Model cancellation as a resource, `POST /orders/{order_id}/cancellation`, which can require a reason, answer `409` once the order has shipped, and be read back later. Keep `status` read-only. [Resources and actions](/modelling/resources/)
+1. **`version: latest` and no owner.** Who does Larkspur ask in six months? The contract has no version a consumer can pin, no owner, and no audience to judge risk by. Add SemVer, `contact`, `x-api-id` and `x-audience`. [Specs in CI](/evolution/specs-in-ci/)
 
-3. **`GET` that cancels.** A crawler, a link prefetcher or a retrying proxy will cancel orders. `GET` must be safe. [Methods](/http/methods/)
+2. **Verbs in paths: `getOrders`, `orders/create`, `{id}/cancel`.** The method already says get and create: use `GET /orders` and `POST /orders`. Model cancellation as a resource, `POST /orders/{order_id}/cancellation`, which can require a reason, answer `409` once the order has shipped, and be read back later. Keep `status` read-only. [Resources and actions](/modelling/resources/)
 
-4. **A bare array at the top level.** It can't gain a `next` link or any metadata without a breaking change. Return `{ "items": [...], "next": "..." }`. [JSON conventions](/representations/json/)
+3. **`GET` that cancels.** A crawler, a link prefetcher or a retrying proxy will cancel real orders, and nobody will know why. `GET` must be safe. [Methods](/http/methods/)
 
-5. **Page-number pagination with no limit.** `page` without `limit` returns whatever the server feels like; offset pages also skip and repeat items as orders arrive. Use an opaque cursor, a documented default and maximum `limit`, and a `next` link. [Pagination](/collections/pagination/)
+4. **A bare array at the top level.** It can't gain a `next` link or any metadata without a breaking change. Return `{ "items": [...], "next": "..." }` [JSON conventions](/representations/json/)
+
+5. **Page-number pagination with no limit.** `page` without `limit` returns whatever the server feels like, and offset pages skip and repeat items as orders arrive. Use an opaque cursor, a documented default and maximum `limit`, and a `next` link. [Pagination](/collections/pagination/)
 
 6. **Integer IDs.** `id: integer` leaks volume (order 1842 tells competitors your sales), invites enumeration, and breaks JavaScript clients past 2<sup>53</sup>. Use opaque string IDs such as `ord_42`. [Data formats](/representations/data-formats/)
 
 7. **`total: number`.** Floats can't represent 0.10 exactly, and a total without a currency is a guess. Use `{ "amount": "59.90", "currency": "EUR" }`. [Data formats](/representations/data-formats/)
 
-8. **A homemade date format.** `14/03/2026 10:26` is ambiguous across locales and has no time zone. Use RFC 3339 with an offset, named `created_at`. [Data formats](/representations/data-formats/)
+8. **A homemade date format.** `14/03/2026 10:26` is ambiguous across locales and has no offset. Use RFC 3339 with an offset, named `created_at`. [Data formats](/representations/data-formats/)
 
 9. **Closed, uppercase enum.** `[NEW, PAID, SHIPPED]` will gain `cancelled` and `partially_shipped`, and clients that switch on a closed set will crash. Use lowercase snake_case values and document the enum as open-ended. [Compatibility](/evolution/compatibility/)
 
-10. **Mixed casing: `Status`, `customerEmail`, `isGift`, `_internalNotes`.** Pick one case for every property and stick to it; this site uses snake_case. Renaming after release is a breaking change. [JSON conventions](/representations/json/)
+10. **Mixed casing: `Status`, `customerEmail`, `isGift`, `_internalNotes`.** Four properties, four conventions. Pick one case for every property and stick to it; this site uses snake_case. Renaming after release is a breaking change. [JSON conventions](/representations/json/)
 
 11. **The same schema for input and output.** `POST` accepts `Order`, so clients can send `id`, `Status` and `_internalNotes`. That's a mass-assignment bug waiting to happen. Define `OrderCreate` with only the writable fields, and reject unknown ones. [Authentication and authorization](/security/auth/)
 
 ## Findings that hurt clients today
 
-12. **`200` for creation, with no body.** Return `201 Created`, a `Location` header and the created order, so clients learn the ID without a second request. [Status codes](/http/status-codes/)
+These can be fixed after launch, but someone pays for them every day until then.
 
-13. **No error responses at all.** Clients will receive whatever the framework emits, probably an HTML page. Declare `application/problem+json` for 4xx and 5xx, and `422` with per-field errors for validation. [Errors](/http/errors/)
+12. **`200` for creation, with no body.** The client created an order and has no idea what it's called. Return `201 Created`, a `Location` header and the created order, so clients learn the ID without a second request. [Status codes](/http/status-codes/)
 
-14. **`success: false` inside a `200`.** Every generic client, proxy and monitoring tool will count failures as successes. Use status codes. [Status codes](/http/status-codes/)
+13. **No error responses at all.** Clients will receive whatever the framework emits, probably an HTML page, and Larkspur's parser will not enjoy it. Declare `application/problem+json` for 4xx and 5xx, and `422` with per-field errors for validation. [Errors](/http/errors/)
 
-15. **Retrying `POST /orders` creates two orders.** A timeout on a checkout is the most common time to retry. Accept an `Idempotency-Key`. [Idempotency and retries](/reliability/idempotency/)
+14. **`success: false` inside a `200`.** Every generic client, proxy and monitoring tool will count failures as successes, Priya's dashboards included. Use status codes. [Status codes](/http/status-codes/)
+
+15. **Retrying `POST /orders` creates two orders.** A timeout on a checkout is the most common time to retry, and the mobile app retries on every train. Accept an `Idempotency-Key`. [Idempotency and retries](/reliability/idempotency/)
 
 16. **`PUT` with a partial body.** `OrderUpdate` has two fields, so `PUT` either wipes the rest or behaves as a merge, and clients can't tell which. Use `PATCH` with JSON Merge Patch for partial updates of the fields clients may change (a gift message, a delivery note), drop `status` from it (finding 2), and protect it with `If-Match`, because two support agents will edit the same order. [Methods](/http/methods/), [Concurrency control](/reliability/concurrency/)
 
@@ -124,13 +128,17 @@ components:
 
 ## Findings about privacy and security
 
+The last three would each make a good incident report title.
+
 18. **Email in the query string.** `?customerEmail=` ends up in access logs, browser history and analytics. Filter by `customer_id`, or move sensitive searches into a `POST` search resource. [Filtering and sorting](/collections/filtering/)
 
-19. **`_internalNotes` in a public response.** If a field is internal, it doesn't belong in the public representation, prefixed or not. [Principles](/foundations/principles/)
+19. **`_internalNotes` in a public response.** An underscore is not access control. If a field is internal, it doesn't belong in the public representation, prefixed or not. [Principles](/foundations/principles/)
 
 20. **No security scheme.** The spec doesn't say who may call what. Declare OAuth 2.0 scopes per operation, and check that the caller may see this specific order, not just orders in general. [Authentication and authorization](/security/auth/)
 
-## The reviewed version
+## The reviewed version, ready for Monday
+
+The team turned the comments round by Friday. Here's an excerpt of what Larkspur received; compare it with the draft, and nearly every change is a finding above.
 
 ```yaml title="orders-api.yaml (after review, excerpt)"
 openapi: 3.1.0
@@ -199,8 +207,10 @@ components:
         is_gift: { type: boolean, default: false }
 ```
 
+Much of that reviewer time went on things a machine could have caught.
+
 <Note kind="aside" title="Reviews scale through linters" source="https://github.com/zalando/zally">
 
-About half of these findings (casing, verbs in paths, missing error responses, integer IDs, top-level arrays, missing metadata) are mechanical, and a Spectral or Zally ruleset catches them before a human looks. That leaves the review meeting for findings 2, 11, 15, 16 and 17, which need someone who understands orders. That division of labour is what linters like Zally are for.
+About half of these findings (casing, verbs in paths, missing error responses, integer IDs, top-level arrays, missing metadata) are mechanical, and a Spectral or Zally ruleset catches them before a human looks. That leaves the review meeting for findings 2, 11, 15, 16 and 17, the ones that need someone who understands orders. Linters like Zally exist for exactly that division of labour.
 
 </Note>

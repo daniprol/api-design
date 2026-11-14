@@ -56,11 +56,11 @@ import {
 
 </InBrief>
 
-Polling is the API equivalent of a child in the back seat asking "are we there yet?" every thirty seconds. Most answers are no, each one costs a request, and the real answer still arrives up to thirty seconds late. A webhook inverts the conversation: the client registers a URL, and you `POST` to it when something happens. It's the cheapest way to push events across organisational boundaries, which is why every payment, source-control and messaging platform offers one. It's also an HTTP request from your servers to a URL a stranger typed into a form, and that sentence contains most of this page's advice.
+Larkspur Logistics asks Fernhill for newly paid orders every thirty seconds, day and night. It's a child in the back seat asking "are we there yet?": most answers are no, each one costs a request, and the real answer still arrives up to thirty seconds late. A webhook inverts the conversation. The client registers a URL, and you `POST` to it when something happens. It's the cheapest way to push events across organisational boundaries, which is why every payment, source-control and messaging platform offers one. It's also an HTTP request from your servers to a URL a stranger typed into a form, and that sentence contains most of this page's advice.
 
-## Use a conventional envelope and headers
+## Adopt the standard envelope instead of inventing one
 
-Standard Webhooks, a specification written by a group of webhook-sending companies, settles the details that every provider used to invent differently. Adopt it unless you have a reason not to; receivers then verify your deliveries with an existing library.
+Every provider used to invent its own headers and signature format, and every receiver wrote a bespoke verifier for each. Standard Webhooks, a specification written by a group of webhook-sending companies, settles those details. Adopt it unless you have a reason not to; receivers then verify your deliveries with an existing library. In this delivery, the three `webhook-` headers carry everything the receiver needs to trust it:
 
 ```http
 POST /hooks/shop HTTP/1.1
@@ -82,13 +82,13 @@ webhook-signature: v1,K5oZfzN95Z9UVu1EsfQmfVNQhnkZ2pj9o9NDN/H/pI4=
 
 Public webhook types follow the `resource.past_tense` style that Stripe and GitHub use (`order.shipped`), which reads well in a subscription UI. Internal event types on a bus stay namespaced kebab-case (`shop.order-placed`, see [Event design](/events/event-design/)). Pick one style per audience and document it.
 
-Keep payloads small. A "thin" event that carries the type and the resource ID, and lets the receiver fetch the current state through the API, avoids stale snapshots, avoids leaking data to a URL that changed hands, and sidesteps ordering problems. Stripe now recommends this shape for new integrations.
+And keep payloads small. A "thin" event carries the type and the resource ID and lets the receiver fetch the current state through the API. That avoids stale snapshots, avoids leaking data to a URL that changed hands, and sidesteps ordering problems. Stripe now recommends this shape for new integrations.
 
-## Sign the ID, the timestamp and the body
+## Sign the ID, the timestamp and the body together
 
-A webhook endpoint is a public URL that triggers business actions. Without a signature, anyone who learns it can mark orders as paid. The signature is an HMAC-SHA256 over `{webhook-id}.{webhook-timestamp}.{raw body}` with a per-endpoint secret. Including the timestamp stops replays of an old, captured delivery; including the ID stops an attacker from swapping IDs to defeat deduplication.
+A webhook endpoint is a public URL that triggers business actions. Without a signature, anyone who learns it can mark orders as paid. So sign: an HMAC-SHA256 over `{webhook-id}.{webhook-timestamp}.{raw body}` with a per-endpoint secret. Why all three parts? The timestamp stops replays of an old, captured delivery, and the ID stops an attacker from swapping IDs to defeat deduplication. Leave either out and you've signed a cheque with the amount blank.
 
-The receiver must verify against the raw bytes before any JSON parsing, because re-serialising changes whitespace and key order and the signature no longer matches. Compare in constant time, accept any matching `v1` entry so secrets can rotate, and reject timestamps more than a few minutes old.
+The receiver must verify against the raw bytes before any JSON parsing, because re-serialising changes whitespace and key order and the signature no longer matches. Compare in constant time, accept any matching `v1` entry so secrets can rotate, and reject timestamps more than a few minutes old. In each receiver below, notice the raw body is verified before anything touches the JSON.
 
 _Assumes:_ the per-endpoint secret is stored base64-encoded after the `whsec_` prefix, as Standard Webhooks specifies; `TOLERANCE` is 300 seconds.
 
@@ -168,7 +168,7 @@ app.post("/hooks/shop", async (c) => {
 
 ## Retry for days, then stop and tell someone
 
-Receivers go down, deploy, and misconfigure TLS. Treat only 2xx as delivered. Redirects count as failures: the receiver should update the URL rather than have you follow it. Retry with exponential backoff and jitter on a schedule that spans days, because a weekend outage shouldn't lose Friday's events. Standard Webhooks gives an example schedule from immediately to 24-hour gaps over roughly three days, and Stripe retries live events for up to three days.
+Larkspur's server will be down at some point: a deploy, an expired TLS certificate, a migration that runs into the weekend. Give up after a minute and those events are gone. So treat only 2xx as delivered, and retry with exponential backoff and jitter on a schedule that spans days. Redirects count as failures too: the receiver should update the URL rather than have you follow it. Standard Webhooks gives an example schedule from immediately to 24-hour gaps over roughly three days, and Stripe retries live events for up to three days. The response decides what happens next:
 
 | Response                                                                                   | Sender does                                 |
 | ------------------------------------------------------------------------------------------ | ------------------------------------------- |
@@ -177,24 +177,26 @@ Receivers go down, deploy, and misconfigure TLS. Treat only 2xx as delivered. Re
 | <Status code={429} />, <Status code={502} />, <Status code={503} />, <Status code={504} /> | Slow down; honour `Retry-After` if present. |
 | 3xx, other 4xx and 5xx, timeout                                                            | Retry on the schedule.                      |
 
-Give each attempt a timeout of 15 to 30 seconds. When the schedule runs out, disable the endpoint and email its owner. Let them see delivery attempts and resend events from a dashboard or an API, so recovery doesn't need a support ticket.
+Give each attempt a timeout of 15 to 30 seconds. When the schedule runs out, disable the endpoint and email its owner. Then let them see delivery attempts and resend events from a dashboard or an API, so recovery needs neither a support ticket nor Priya.
 
-## Don't let receiver URLs reach your network
+## Keep receiver URLs away from your network
 
-A webhook URL is input. Register `http://169.254.169.254/latest/meta-data/` or `http://localhost:6379/` as an endpoint, and a naive sender will helpfully fetch cloud credentials or poke an internal Redis. This is server-side request forgery, API7 in the OWASP API Security Top 10, and webhook senders are the textbook target.
+A webhook URL is input from a stranger. Register `http://169.254.169.254/latest/meta-data/` or `http://localhost:6379/` as an endpoint, and a naive sender will helpfully fetch cloud credentials or poke an internal Redis. This is server-side request forgery, API7 in the OWASP API Security Top 10, and webhook senders are the textbook target. Three defences, all needed:
 
 - Send from workers in a network segment that can't reach internal services, or through an egress proxy that blocks private, loopback and link-local ranges.
 - Check the resolved IP at connection time, not only at registration, because DNS answers change.
 - Require HTTPS, don't follow redirects, and don't echo response bodies back to the endpoint owner.
 
-## Tell receivers what you expect of them
+## Tell receivers exactly what you expect
 
-Documentation for a webhook is half a contract with the sender and half instructions to the receiver. Say plainly:
+Whoever writes a partner's handler will do what your docs say and nothing more. So the docs are half a contract with the sender and half instructions to the receiver. Say plainly:
 
 - **Verify first.** Reject unsigned or stale deliveries with <Status code={401} />.
 - **Answer fast.** Enqueue and return 2xx within a few seconds; do the work afterwards. Slow handlers time out and turn into retries.
 - **Expect duplicates and disorder.** Deduplicate on `webhook-id`, and fetch the current state when order matters (see [Consuming events](/events/consuming-events/)).
 - **Ignore unknown event types and fields.** New ones will appear.
+
+One handler answers in milliseconds and works later; the other works inline and gets retried for its trouble:
 
 <Compare>
 <Prefer>
@@ -221,7 +223,7 @@ POST /hooks/shop
 
 <Note kind="history" title="Web hooks" year="2007" source="https://progrium.github.io/blog/2007/05/03/web-hooks-to-revolutionize-the-web">
 
-Jeff Lindsay named the idea in a May 2007 blog post, describing web hooks as "user defined callbacks made with HTTP POST". The pitch was composition: any service could notify any other without either knowing the other's API. The mechanism hasn't changed since. What took the industry until the 2020s to write down in a shared specification was everything around it: IDs, retries, and how to sign the request.
+In May 2007, Jeff Lindsay named the idea in a blog post, describing web hooks as "user defined callbacks made with HTTP POST". His pitch was composition: any service could notify any other without either knowing the other's API. The mechanism hasn't changed since. What took the industry until the 2020s to write down in a shared specification was everything around it: IDs, retries, and how to sign the request.
 
 </Note>
 
@@ -236,6 +238,8 @@ Jeff Lindsay named the idea in a May 2007 blog post, describing web hooks as "us
 />
 
 </RuleGroup>
+
+Here are webhook docs as many teams first write them. Read them as a partner would, then as an attacker would.
 
 <WorkedProblem kind="Review" title="An unsigned webhook">
 
@@ -252,6 +256,10 @@ A shop sends `order.paid` webhooks to merchants. The docs say: "We POST JSON to 
 
 </Solution>
 </WorkedProblem>
+
+## What to take away
+
+A webhook is an HTTP request to a stranger's URL, so sign it over ID, timestamp and body, retry for days, keep it off your internal network, and ask receivers to acknowledge fast and deduplicate. That's the last topic. To see the whole guide applied to one draft, read [Appendix A: an annotated design review](/guide/design-review/).
 
 <SelfCheck>
 

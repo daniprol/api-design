@@ -54,11 +54,11 @@ import {
 
 </InBrief>
 
-Sooner or later, a client calls you in a tight loop: a bug, a misconfigured cron job, a scraper, or a very successful partner. Without limits, one client can degrade the API for everyone, or quietly run up your cloud bill. Limits keep the service up. Good limit responses let well-behaved clients cooperate instead of guessing.
+At 3 a.m., Larkspur Logistics' cron job hits an error it has never seen and does what it was written in 2019 to do: retry immediately, forever. By the time Priya wakes, checkout is slow for every customer. Bugs, scrapers and successful partners end up here. Limits keep the service up for everyone else; good limit responses let well-behaved clients cooperate instead of guessing.
 
-## Bound everything a request can consume
+## Cap how much one request can cost
 
-Rate limits cap how often. Resource limits cap how much per request, and OWASP lists their absence as API4, unrestricted resource consumption. Each of these needs an explicit, documented maximum:
+Rate limits cap how often; resource limits cap how much per request, and OWASP lists their absence as API4, unrestricted resource consumption. A `limit=1000000` does its damage in one call, well under any rate limit. Each of these needs an explicit, documented maximum:
 
 | Dimension        | Limit                                           | Response when exceeded                         |
 | ---------------- | ----------------------------------------------- | ---------------------------------------------- |
@@ -70,9 +70,11 @@ Rate limits cap how often. Resource limits cap how much per request, and OWASP l
 | Execution time   | server-side timeout below the gateway's         | <Status code={503} /> or <Status code={504} /> |
 | Upstream fan-out | e.g. outbound webhooks, emails, SMS per account | <Status code={429} />                          |
 
-The last row is the expensive one. An endpoint that sends an SMS costs real money on every call. Without a per-account cap, an attacker can make you pay for theirs.
+The last row is the expensive one. An endpoint that sends an SMS costs real money on every call, and without a per-account cap, an attacker can run their messaging campaign on your bill.
 
-## Respond with 429, Retry-After and a problem body
+## Say no with 429, a time and a reason
+
+A bare 429 leaves the client guessing, and clients guess badly. Give it a time to come back and a reason a human can read; the `RateLimit` headers are explained below.
 
 ```http
 HTTP/1.1 429 Too Many Requests
@@ -89,22 +91,26 @@ RateLimit: "default";r=0;t=30
 }
 ```
 
-`Retry-After` is what clients act on; [retry logic](/reliability/idempotency/) should honour it in preference to its own backoff. Use <Status code={503} /> with `Retry-After` instead when the whole service is overloaded rather than one client being over quota, so clients don't conclude it's their fault.
+`Retry-After` is what clients act on; [retry logic](/reliability/idempotency/) should honour it in preference to its own backoff. When the whole service is overloaded rather than one client being over quota, use <Status code={503} /> with `Retry-After` instead. A 429 during your database incident tells every client it misbehaved.
 
-## Publish the quota on every response
+## Show the quota before clients hit it
 
-Clients behave better when they can see the wall coming. For years, every API invented its own `X-RateLimit-*` headers with incompatible semantics: GitHub's `X-RateLimit-Reset` is a Unix timestamp, others use seconds remaining. The IETF HTTPAPI working group's `RateLimit-Policy` (the quota) and `RateLimit` (current state) headers standardise this as Structured Fields. Several gateways already emit them. Use them for new APIs, and keep any legacy headers you've already published.
+A 429 is a wall the client finds by walking into it. Clients behave better when every response, not only the rejected ones, shows the wall coming. For years, every API invented its own `X-RateLimit-*` headers with incompatible semantics: GitHub's `X-RateLimit-Reset` is a Unix timestamp, others use seconds remaining. The IETF HTTPAPI working group's `RateLimit-Policy` (the quota) and `RateLimit` (current state) headers standardise this as Structured Fields. Several gateways already emit them. Use them for new APIs, and keep any legacy headers you've already published.
 
-## Choose the algorithm by what you're protecting
+## Pick the algorithm for what you're protecting
+
+The algorithms differ mainly in how they treat bursts. The mobile app opening a screen fires six requests at once, then nothing for a minute, and the limiter must not mistake that for an attack.
 
 - **Token bucket** refills at N tokens per second up to a burst size, and each request takes one. It allows short bursts and enforces an average, which suits most APIs. Stripe described running exactly this, in Redis, as their primary limiter.
 - **Fixed window** counts per calendar minute. It's simple, but it allows twice the rate across a window edge.
 - **Sliding window** weighs the previous window. It's smoother than fixed and cheap enough.
 - **Concurrency limit** caps in-flight requests per client. It's the right tool for slow, expensive endpoints, where rate alone doesn't capture cost.
 
-Key limits by the authenticated client (API key, OAuth client, account). IP-based limits punish everyone behind a corporate NAT or a mobile carrier and are trivial to evade with a botnet. Use them only for anonymous endpoints such as login.
+Key limits by the authenticated client (API key, OAuth client, account). IP-based limits get it wrong in both directions: they punish everyone behind a corporate NAT or a mobile carrier, and a botnet evades them trivially. Use them only for anonymous endpoints such as login.
 
 _Assumes:_ Redis-backed limits shared across instances; `request.state.client_id` set by authentication middleware.
+
+Here's the setup. Notice that the key falls back to the IP address only when there's no authenticated client.
 
 <Tabs syncKey="stack">
 <TabItem label="FastAPI">
@@ -163,13 +169,15 @@ app.use(
 </TabItem>
 </Tabs>
 
-## Protect sensitive business flows, not just endpoints
+## Limit the business flow, not only the endpoint
 
-Some abuse stays within every per-endpoint limit: a bot that buys the whole stock of a limited sneaker release, creates thousands of accounts for sign-up bonuses, or tries every coupon code. OWASP lists this separately as API6. Defences live at the level of the flow:
+Some abuse stays politely within every per-endpoint limit. Fernhill releases 200 pairs of a limited-edition walking boot, and a bot with ten API keys buys all of them in four seconds. Others create thousands of accounts for sign-up bonuses, or try every coupon code. OWASP lists this separately as API6, and the defences live at the level of the flow:
 
-- Limits per account, per payment instrument or per shipping address, not just per API key.
+- Limits per account, per payment instrument or per shipping address, not only per API key.
 - Friction where it's cheap for humans and expensive for bots: email or phone verification, proof-of-work, CAPTCHA on anonymous flows.
 - Device and behavioural signals, and holding suspicious orders for review instead of rejecting them outright.
+
+Do the arithmetic on the second coupon limit:
 
 <Compare>
 <Prefer>
@@ -201,6 +209,10 @@ Before RFC 6585 registered 429 in 2012, Twitter's original API answered rate-lim
 <Rule guide="zalando" id="153" level="MUST" title="Use code 429 with headers for rate limits" />
 
 </RuleGroup>
+
+## What to take away
+
+Cap what one request can cost, cap how often each client may call, and tell clients both numbers before they find out the hard way. Limits are a promise about behaviour, like everything in a response; keeping promises while the API changes is [compatibility](/evolution/compatibility/).
 
 <SelfCheck>
 
