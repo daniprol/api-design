@@ -1,0 +1,21 @@
+---
+/**
+ * Inline HTTP status code chip: <Status code={404} />
+ */
+interface Props {
+  code: number;
+  text?: string;
+}
+const reasons: Record<number, string> = {
+  200: "OK", 201: "Created", 202: "Accepted", 204: "No Content", 207: "Multi-Status",
+  301: "Moved Permanently", 302: "Found", 303: "See Other", 304: "Not Modified", 307: "Temporary Redirect", 308: "Permanent Redirect",
+  400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found", 405: "Method Not Allowed",
+  406: "Not Acceptable", 409: "Conflict", 410: "Gone", 412: "Precondition Failed", 415: "Unsupported Media Type",
+  418: "I'm a teapot", 422: "Unprocessable Content", 428: "Precondition Required", 429: "Too Many Requests",
+  500: "Internal Server Error", 501: "Not Implemented", 502: "Bad Gateway", 503: "Service Unavailable", 504: "Gateway Timeout",
+};
+const { code, text = reasons[code] ?? "" } = Astro.props;
+const family = `${String(code)[0]}xx`;
+---
+
+<span class={`dojo-status dojo-status--${family}`}><b>{code}</b>{text && <span>{text}</span>}</span>

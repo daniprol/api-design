@@ -1,0 +1,82 @@
+---
+title: Glossary
+description: The vocabulary of API design, in plain words.
+---
+
+**API first**
+: Designing and reviewing the API contract before implementing it.
+
+**At-least-once delivery**
+: A messaging guarantee where every message arrives, possibly more than once. Pair it with idempotent consumers.
+
+**BOLA**
+: Broken Object Level Authorization. Accessing someone else's object by changing an ID. #1 on the OWASP API Security Top 10.
+
+**Collection**
+: A resource that contains other resources, e.g. `/orders`.
+
+**Content negotiation**
+: Choosing a representation (JSON, CSV…) based on the client's `Accept` header.
+
+**Cursor pagination**
+: Pagination using an opaque pointer to "where you left off", rather than a numeric offset. Also called keyset pagination.
+
+**Deprecation**
+: Marking part of an API as "still working, but scheduled to go away". See also _Sunset_.
+
+**ETag**
+: An opaque version identifier for a resource representation. Used for caching (`If-None-Match`) and optimistic locking (`If-Match`).
+
+**HATEOAS**
+: Hypermedia As The Engine Of Application State. Responses contain links telling the client what it can do next.
+
+**Hyrum's Law**
+: With enough users, every observable behavior of your API will be depended on by somebody.
+
+**Idempotent**
+: Doing it once or many times has the same effect on the server. `PUT` and `DELETE` are; `POST` isn't (by default).
+
+**Idempotency key**
+: A client-generated unique key that lets the server recognize retries of the same operation.
+
+**JSON Merge Patch**
+: RFC 7396. A `PATCH` format where you send only the fields to change, and `null` to remove one.
+
+**Media type**
+: The format identifier of a payload, like `application/json` or `application/problem+json`.
+
+**OpenAPI**
+: The standard format for describing HTTP APIs (formerly Swagger).
+
+**Optimistic locking**
+: Allowing concurrent edits, but rejecting a write if the resource changed since it was read.
+
+**Problem Details**
+: RFC 9457. A standard JSON format for API errors (`type`, `title`, `status`, `detail`, `instance`).
+
+**Representation**
+: A concrete form of a resource sent over the wire, e.g. a JSON document.
+
+**Resource**
+: Anything important enough to be named and addressed by a URL.
+
+**Richardson Maturity Model**
+: A four-level scale of REST adoption: one endpoint → resources → HTTP verbs → hypermedia.
+
+**Safe method**
+: A method that doesn't change server state (`GET`, `HEAD`, `OPTIONS`).
+
+**Scope**
+: A named permission attached to an access token, like `orders.read`.
+
+**Semantic versioning (SemVer)**
+: `MAJOR.MINOR.PATCH`: breaking, compatible addition, fix.
+
+**Sub-resource**
+: A resource that only exists within a parent, e.g. `/orders/42/items`.
+
+**Sunset**
+: The date after which a deprecated API stops working (`Sunset` header, RFC 8594).
+
+**Tolerant reader**
+: A client that ignores unknown fields and handles unknown enum values, so it survives API evolution.

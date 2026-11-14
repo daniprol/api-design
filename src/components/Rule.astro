@@ -1,0 +1,39 @@
+---
+/**
+ * A note about what a specific company's guideline says.
+ *
+ *   <Rule guide="zalando" id="134" level="MUST" title="pluralize resource names">
+ *     Optional extra commentary.
+ *   </Rule>
+ */
+import { guides, type RuleLevel } from "../data/guides";
+
+interface Props {
+  guide: keyof typeof guides;
+  id?: string | number;
+  level?: RuleLevel;
+  title: string;
+}
+
+const { guide: guideId, id, level, title } = Astro.props;
+const guide = guides[guideId];
+if (!guide) throw new Error(`Unknown guide "${guideId}"`);
+const href = id ? guide.ruleUrl(String(id)) : guide.homepage;
+const levelClass = level?.startsWith("MUST") ? "must" : level?.startsWith("SHOULD") ? "should" : "may";
+---
+
+<aside class="dojo-rule" style={`--guide-color: ${guide.color}`} aria-label={`${guide.short} guideline`}>
+  <div class="dojo-rule__head">
+    <span class="dojo-rule__guide">{guide.short} says</span>
+    {level && <span class={`dojo-rule__level dojo-rule__level--${levelClass}`}>{level}</span>}
+    {
+      id && (
+        <a class="dojo-rule__id" href={href} target="_blank" rel="noopener">
+          Rule #{id} ↗
+        </a>
+      )
+    }
+  </div>
+  <p class="dojo-rule__title">{title}</p>
+  {Astro.slots.has("default") && <div class="dojo-rule__body"><slot /></div>}
+</aside>

@@ -1,0 +1,240 @@
+---
+title: The URL style guide
+description: Plurals, kebab-case, snake_case, no trailing slashes. Small conventions that make an API feel designed by one person.
+---
+
+import {
+  Hook,
+  Story,
+  DoDont,
+  Do,
+  Dont,
+  Rule,
+  Quiz,
+  Takeaways,
+  Tabs,
+  TabItem,
+} from "@components/lesson";
+
+<Hook>
+
+None of these rules is deep. But an API that mixes `/userProfiles`, `/order_items` and `/Shipment/` feels like a haunted house: every door works differently. **Consistency is a feature.** Pick conventions once, and your consumers can guess URLs without reading docs.
+
+</Hook>
+
+## Anatomy of a URL
+
+```text
+https://order-management.api.example.com/orders/ord_42/line-items?sort=-created_at&limit=20
+└─┬─┘   └──────────────┬───────────────┘└──┬──┘└─┬──┘└────┬───┘ └───────────┬──────────┘
+scheme              host                 collection id  sub-collection   query parameters
+```
+
+## The rules, one by one
+
+### 1. Plural collection names
+
+A collection is a set of things, so it's plural. The URL then reads naturally: `/orders` is all orders, `/orders/42` is _one of_ the orders.
+
+<DoDont>
+<Do>
+
+```http
+GET /orders
+GET /orders/42
+```
+
+</Do>
+<Dont>
+
+```http
+GET /order
+GET /order/42
+GET /orderList
+```
+
+</Dont>
+</DoDont>
+
+### 2. kebab-case for path segments
+
+Lowercase words separated by hyphens. URLs are case-sensitive (except the host), so mixed case is a typo magnet.
+
+<DoDont>
+<Do>
+
+```http
+/shipping-addresses
+/sales-orders/42/line-items
+```
+
+</Do>
+<Dont>
+
+```http
+/shippingAddresses
+/Sales_Orders/42/LineItems
+```
+
+</Dont>
+</DoDont>
+
+### 3. snake_case for query parameters
+
+Query parameters usually mirror JSON field names, which (as we'll see in [JSON style](/course/payloads/json-style/)) are snake_case.
+
+```http
+GET /orders?customer_id=123&created_after=2026-01-01T00:00:00Z
+```
+
+### 4. No trailing slashes, no empty segments
+
+`/orders/` and `/orders` should not be two different things. Normalize: no trailing slash, no `//`.
+
+### 5. Don't start with `/api`
+
+Everything is an API: the `/api` prefix adds nothing. Put the API on its own host (`api.example.com` or `order-management.example.com`) instead of a path prefix that leaks your deployment layout.
+
+### 6. URL-friendly identifiers
+
+IDs should only contain characters that don't need escaping, roughly `[a-zA-Z0-9:._\-/]`. An email address or a product name with spaces makes a terrible path segment.
+
+<DoDont>
+<Do>
+
+```http
+/customers/cus_7Hq2
+/products/sku-ab-123
+```
+
+</Do>
+<Dont>
+
+```http
+/customers/jane%40example.com
+/products/Blue%20T-Shirt%20(L)
+```
+
+</Dont>
+</DoDont>
+
+## Enforcing it in code
+
+<Tabs syncKey="stack">
+<TabItem label="FastAPI" icon="seti:python">
+
+```python
+from fastapi import APIRouter
+
+# FastAPI routes are matched exactly; "/orders" and "/orders/" differ.
+# By default FastAPI redirects one to the other (307). Disable the magic:
+app = FastAPI(redirect_slashes=False)
+
+router = APIRouter(prefix="/shipping-addresses", tags=["addresses"])
+
+@router.get("")  # → /shipping-addresses
+def list_addresses(customer_id: str | None = None, page_size: int = 20): ...
+```
+
+</TabItem>
+<TabItem label="Django" icon="seti:python">
+
+```python
+# Django loves trailing slashes (APPEND_SLASH = True). For an API, opt out:
+# settings.py
+APPEND_SLASH = False
+
+# urls.py
+router = routers.SimpleRouter(trailing_slash=False)
+router.register("shipping-addresses", ShippingAddressViewSet, basename="shipping-address")
+# → /shipping-addresses and /shipping-addresses/{pk}
+```
+
+</TabItem>
+<TabItem label="Hono" icon="seti:typescript">
+
+```ts
+import { Hono } from "hono";
+import { trimTrailingSlash } from "hono/trailing-slash";
+
+// strict mode (default) treats /orders and /orders/ as different routes
+const app = new Hono();
+app.use(trimTrailingSlash()); // redirect /orders/ → /orders
+
+app.get("/shipping-addresses", (c) => {
+  const customerId = c.req.query("customer_id");
+  return c.json({ items: listAddresses(customerId) });
+});
+```
+
+</TabItem>
+</Tabs>
+
+## Cheat table
+
+| Part            | Convention             | Example                         |
+| --------------- | ---------------------- | ------------------------------- |
+| Host            | functional, kebab-case | `order-management.example.com`  |
+| Path segment    | plural, kebab-case     | `/sales-orders/42/line-items`   |
+| Query parameter | snake_case             | `?created_after=…&page_size=20` |
+| JSON property   | snake_case             | `"created_at"`                  |
+| HTTP header     | Hyphenated-Pascal-Case | `Idempotency-Key`               |
+| Enum value      | UPPER_SNAKE_CASE       | `"PARTIALLY_SHIPPED"`           |
+
+<Story kind="fun-fact" title="Why is it called kebab-case?">
+
+Because the words look skewered on a stick: `shipping-address-line`. Its cousins are **snake_case** (words slithering along the ground), **camelCase** (humps in the middle), **PascalCase** (named after the Pascal language), and the rare **SCREAMING_SNAKE_CASE** for constants. Some people call kebab-case "lisp-case" because Lisp has used it since the 1950s.
+
+</Story>
+
+<Story kind="history" title="Tim Berners-Lee regrets the double slash">
+
+The `//` after `https:` serves almost no purpose. Tim Berners-Lee, inventor of the web, said in 2009 that it was unnecessary and that he'd remove it if he could go back. Think of all the paper, ink and keystrokes wasted on billboards since 1991. Moral: once a URL convention ships, it's forever. Choose carefully.
+
+</Story>
+
+<Rule guide="zalando" id="134" level="MUST" title="Pluralize resource names" />
+
+<Rule guide="zalando" id="129" level="MUST" title="Use kebab-case for path segments" />
+
+<Rule
+  guide="zalando"
+  id="130"
+  level="MUST"
+  title="Use snake_case (never camelCase) for query parameters"
+/>
+
+<Rule
+  guide="zalando"
+  id="136"
+  level="MUST"
+  title="Use normalized paths without empty path segments and trailing slashes"
+/>
+
+<Rule guide="zalando" id="135" level="SHOULD" title="Not use /api as base path" />
+
+<Rule guide="zalando" id="228" level="MUST" title="Use URL-friendly resource identifiers" />
+
+<Quiz
+  question="Which URL follows all the conventions in this lesson?"
+  options={[
+    "<code>/api/OrderItems/42/</code>",
+    "<code>/order-items/42?pageSize=10</code>",
+    "<code>/order-items/42?page_size=10</code>",
+    "<code>/order_items/42?page_size=10</code>",
+  ]}
+  answer={2}
+>
+
+Plural kebab-case path (`/order-items`), no trailing slash, no `/api` prefix, and a snake_case query parameter (`page_size`).
+
+</Quiz>
+
+<Takeaways>
+
+- Collections are **plural**; paths are **kebab-case**; query params and JSON are **snake_case**.
+- No trailing slashes, no empty segments, no `/api` prefix.
+- IDs should be URL-safe without escaping.
+- The specific convention matters less than applying it **everywhere**.
+
+</Takeaways>

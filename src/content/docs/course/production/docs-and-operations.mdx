@@ -1,0 +1,223 @@
+---
+title: Docs, metadata & operations
+description: API metadata, semantic versioning of specs, audiences, publishing your OpenAPI, and monitoring how your API is really used.
+---
+
+import {
+  Hook,
+  Story,
+  DoDont,
+  Do,
+  Dont,
+  Rule,
+  Quiz,
+  Takeaways,
+  Tabs,
+  TabItem,
+} from "@components/lesson";
+
+<Hook>
+
+In a company with 5 APIs, everyone knows who owns what. With 500, nobody does. Who owns this API? Who's allowed to call it? Which version is deployed? Who's still using that endpoint? **Metadata and operations** are the boring answers to those questions, and they're what makes an API landscape navigable.
+
+</Hook>
+
+## Metadata every spec should carry
+
+```yaml
+openapi: 3.1.0
+info:
+  title: Order Management API
+  version: 1.4.2 # semantic version of the SPEC
+  description: Place, track and cancel customer orders.
+  contact:
+    name: Team Checkout
+    url: https://wiki.example.com/teams/checkout
+    email: checkout@example.com
+  x-api-id: 0f3c1e2d-7a0e-4b8e-9d2b-1f2a3b4c5d6e # stable, never changes
+  x-audience: company-internal # who may use it
+servers:
+  - url: https://order-management.api.example.com
+```
+
+## Semantic versioning for the spec
+
+Even if the API itself is never "versioned" (see [Versioning](/course/evolution/versioning/)), the **spec document** changes. Version it with SemVer:
+
+| Bump    | When                                               | Example         |
+| ------- | -------------------------------------------------- | --------------- |
+| `MAJOR` | Incompatible change (should be extremely rare)     | `1.4.2 → 2.0.0` |
+| `MINOR` | Backward-compatible addition (new field, endpoint) | `1.4.2 → 1.5.0` |
+| `PATCH` | Docs fixes, clarifications                         | `1.4.2 → 1.4.3` |
+
+## Audience: who is this for?
+
+Being explicit about the intended audience changes how careful you need to be:
+
+```text
+component-internal → business-unit-internal → company-internal → external-partner → external-public
+     (move fast)                                                              (move very carefully)
+```
+
+An API for your own frontend can evolve faster than one used by 3,000 external developers.
+
+## Functional naming
+
+Name APIs and their hosts after **what they do**, not which team or tech built them: `order-management.api.example.com`, not `team-falcon-svc-prod-2.example.com`. Teams and technologies change; functions are more stable.
+
+## Publish your spec
+
+A spec that lives only in a repo isn't discoverable. Publish it to an **API portal/catalog** (Backstage, an internal developer portal, or even a static page) so people can find APIs before they build duplicates.
+
+<Tabs syncKey="stack">
+<TabItem label="FastAPI" icon="seti:python">
+
+```python
+app = FastAPI(
+    title="Order Management API",
+    version="1.4.2",
+    description="Place, track and cancel customer orders.",
+    contact={"name": "Team Checkout", "email": "checkout@example.com"},
+)
+
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    schema = get_openapi(title=app.title, version=app.version,
+                         description=app.description, routes=app.routes)
+    schema["info"]["x-api-id"] = "0f3c1e2d-7a0e-4b8e-9d2b-1f2a3b4c5d6e"
+    schema["info"]["x-audience"] = "company-internal"
+    app.openapi_schema = schema
+    return schema
+
+app.openapi = custom_openapi
+# CI: curl /openapi.json and publish it to your API catalog
+```
+
+</TabItem>
+<TabItem label="Django" icon="seti:python">
+
+```python
+# settings.py (drf-spectacular)
+SPECTACULAR_SETTINGS = {
+    "TITLE": "Order Management API",
+    "VERSION": "1.4.2",
+    "DESCRIPTION": "Place, track and cancel customer orders.",
+    "CONTACT": {"name": "Team Checkout", "email": "checkout@example.com"},
+    "EXTENSIONS_INFO": {
+        "x-api-id": "0f3c1e2d-7a0e-4b8e-9d2b-1f2a3b4c5d6e",
+        "x-audience": "company-internal",
+    },
+}
+
+# CI: export the spec and publish it
+#   python manage.py spectacular --file openapi.yaml --validate
+```
+
+</TabItem>
+<TabItem label="Hono" icon="seti:typescript">
+
+```ts
+app.doc31("/openapi.json", {
+  openapi: "3.1.0",
+  info: {
+    title: "Order Management API",
+    version: "1.4.2",
+    description: "Place, track and cancel customer orders.",
+    contact: { name: "Team Checkout", email: "checkout@example.com" },
+    "x-api-id": "0f3c1e2d-7a0e-4b8e-9d2b-1f2a3b4c5d6e",
+    "x-audience": "company-internal",
+  },
+});
+
+// Pretty docs from the same spec, e.g. with @scalar/hono-api-reference
+app.get("/docs", Scalar({ url: "/openapi.json" }));
+```
+
+</TabItem>
+</Tabs>
+
+## Monitor real usage
+
+Docs tell you how an API _should_ be used; monitoring tells you how it _is_ used. Track per endpoint **and per client**:
+
+- Request rate, error rate (4xx vs 5xx), latency percentiles (p50, p95, p99).
+- Which clients call what, so you can contact them about changes.
+- Usage of deprecated endpoints (from [Deprecation & sunset](/course/evolution/deprecation/)).
+
+A common starting point is the **RED method**: **R**ate, **E**rrors, **D**uration for every endpoint.
+
+<DoDont>
+<Do>
+
+```yaml
+info:
+  title: Order Management API
+  version: 1.4.2
+  contact: { name: Team Checkout, email: checkout@example.com }
+  x-audience: external-partner
+```
+
+</Do>
+<Dont>
+
+```yaml
+info:
+  title: svc-api
+  version: "latest"
+  # owner: ask around?
+```
+
+</Dont>
+</DoDont>
+
+<Story kind="real-world" title="Zalando's API linter: Zally">
+
+With hundreds of teams and APIs, reviewing every spec by hand doesn't scale. So Zalando built **Zally**, an open-source API linter that checks OpenAPI specs against their guidelines (many of the rules you've seen in this course) and reports violations by severity. Tools like **Spectral** do the same thing generically. Encoding your style guide as lint rules is how you get consistency at scale.
+
+</Story>
+
+<Story kind="fun-fact" title="Backstage">
+
+Spotify built **Backstage** internally to answer "who owns this service and where are its docs?" across thousands of components, then open-sourced it in 2020. It's now a CNCF project and a common home for API catalogs. The problem is universal: past a certain size, _discoverability_ is the bottleneck, not technology.
+
+</Story>
+
+<Rule guide="zalando" id="218" level="MUST" title="Contain API meta information">
+
+Required: `info.title`, `info.version`, `info.description`, and `info.contact` with name, URL and email.
+
+</Rule>
+
+<Rule guide="zalando" id="116" level="MUST" title="Use semantic versioning" />
+
+<Rule guide="zalando" id="215" level="MUST" title="Provide API identifiers" />
+
+<Rule guide="zalando" id="219" level="MUST" title="Provide API audience" />
+
+<Rule guide="zalando" id="223" level="MUST" title="Use functional naming schema" />
+
+<Rule guide="zalando" id="224" level="MUST" title="Follow naming convention for hostnames" />
+
+<Rule guide="zalando" id="192" level="MUST" title="Publish OpenAPI specification for APIs" />
+
+<Rule guide="zalando" id="193" level="SHOULD" title="Monitor API usage" />
+
+<Quiz
+  question="You add a new optional response field to an API whose spec is at version <code>2.3.1</code>. What's the new spec version under SemVer?"
+  options={["<code>3.0.0</code>", "<code>2.4.0</code>", "<code>2.3.2</code>", "<code>2.3.1-new</code>"]}
+  answer={1}
+>
+
+A backward-compatible addition is a MINOR bump. MAJOR is for incompatible changes; PATCH is for clarifications that don't change the contract.
+
+</Quiz>
+
+<Takeaways>
+
+- Specs carry **owner, version, id and audience**; make APIs findable.
+- Version the spec with **SemVer**; MAJOR bumps should be rare.
+- Name APIs and hosts by **function**, not by team or tech.
+- Publish specs to a catalog and **monitor usage per client**.
+
+</Takeaways>

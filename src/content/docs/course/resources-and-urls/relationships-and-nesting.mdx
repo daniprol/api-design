@@ -1,0 +1,218 @@
+---
+title: Relationships & nesting
+description: When to nest resources, when to keep URLs flat, and how deep is too deep.
+---
+
+import {
+  Hook,
+  Story,
+  DoDont,
+  Do,
+  Dont,
+  Rule,
+  Quiz,
+  Takeaways,
+  Tabs,
+  TabItem,
+} from "@components/lesson";
+
+<Hook>
+
+Orders have line items. Customers have addresses. Teams have members. Every API has to decide: is it `/orders/42/items/3` or `/order-items/3`? Get it right and URLs tell a story. Get it wrong and you end up with `/companies/1/departments/4/teams/9/members/17/roles/2`, a URL that needs a map.
+
+</Hook>
+
+## Sub-resources: "belongs to" relationships
+
+When a resource **only exists in the context of a parent**, nest it. A line item without its order makes no sense, and nesting makes ownership obvious:
+
+```http
+GET    /orders/42/items          # all items of order 42
+POST   /orders/42/items          # add an item to order 42
+GET    /orders/42/items/3        # item 3 of order 42
+DELETE /orders/42/items/3
+```
+
+## Top-level resources: "references" relationships
+
+When a resource has an **identity of its own**, keep it top-level, even if it's related to something else. A customer exists independently of any particular order:
+
+<DoDont>
+<Do>
+
+```http
+GET /customers/7
+GET /orders?customer_id=7
+```
+
+Customers are top-level; filter orders by customer.
+
+</Do>
+<Dont>
+
+```http
+GET /orders/42/customer
+GET /stores/3/orders/42/customer/addresses
+```
+
+Now the customer has as many URLs as it has orders.
+
+</Dont>
+</DoDont>
+
+**The test:** _Can this thing exist, or be looked up, without the parent?_ If yes, it probably deserves a top-level URL. You can still offer a nested _view_ (`/customers/7/orders`) as a convenience, as long as the canonical identity is clear.
+
+## How deep is too deep?
+
+Each level of nesting adds an ID that the client must know. Deep paths are hard to construct and easy to get wrong. A practical limit: **no more than 3 levels** of sub-resources.
+
+```text
+/orders/42/items/3                  ✅ 2 levels: clear
+/orders/42/items/3/discounts/1      🤔 3 levels: OK, borderline
+/shops/1/orders/42/items/3/discounts/1/audits   😵 too deep
+```
+
+If you're hitting the limit, ask whether a deeper resource has its own identity (it probably does) and promote it to the top level.
+
+## Compound keys
+
+Sometimes a resource is naturally identified by _two_ things, e.g. a product's stock _in a specific warehouse_. You can nest it, or expose a **compound key** as a single, opaque-looking ID:
+
+```http
+GET /warehouses/BER-1/stocks/sku-123   # nested
+GET /stocks/BER-1:sku-123              # compound key as one id
+```
+
+## In code
+
+<Tabs syncKey="stack">
+<TabItem label="FastAPI" icon="seti:python">
+
+```python
+items = APIRouter(prefix="/orders/{order_id}/items", tags=["order items"])
+
+@items.get("")
+def list_items(order_id: str) -> ItemList: ...
+
+@items.get("/{item_id}")
+def get_item(order_id: str, item_id: str) -> Item:
+    item = repo.get_item(order_id, item_id)
+    if item is None:  # item exists, but in another order? Still 404 here.
+        raise HTTPException(404)
+    return item
+
+# Customers stay top-level; filtering does the "relationship" work
+@app.get("/orders")
+def list_orders(customer_id: str | None = None) -> OrderList: ...
+```
+
+</TabItem>
+<TabItem label="Django" icon="seti:python">
+
+```python
+# pip install drf-nested-routers
+from rest_framework_nested import routers
+
+router = routers.SimpleRouter(trailing_slash=False)
+router.register("orders", OrderViewSet)
+router.register("customers", CustomerViewSet)
+
+items = routers.NestedSimpleRouter(router, "orders", lookup="order", trailing_slash=False)
+items.register("items", OrderItemViewSet, basename="order-items")
+
+class OrderItemViewSet(viewsets.ModelViewSet):
+    serializer_class = OrderItemSerializer
+
+    def get_queryset(self):  # always scope to the parent!
+        return OrderItem.objects.filter(order_id=self.kwargs["order_pk"])
+```
+
+</TabItem>
+<TabItem label="Hono" icon="seti:typescript">
+
+```ts
+const items = new Hono<{ Variables: { order: Order } }>();
+
+items.use("*", async (c, next) => {
+  const order = await repo.getOrder(c.req.param("orderId")!);
+  if (!order) return c.json({ title: "Order not found" }, 404);
+  c.set("order", order);
+  await next();
+});
+
+items.get("/", (c) => c.json({ items: c.get("order").items }));
+items.get("/:itemId", (c) => {
+  const item = c.get("order").items.find((i) => i.id === c.req.param("itemId"));
+  return item ? c.json(item) : c.json({ title: "Item not found" }, 404);
+});
+
+app.route("/orders/:orderId/items", items);
+```
+
+</TabItem>
+</Tabs>
+
+:::caution[Always scope by the parent]
+A classic security bug: `GET /orders/42/items/3` returns item 3 even though it belongs to order 99, which belongs to someone else. When you nest, **filter by the parent ID** (and by the caller's permissions). This bug class is called IDOR (Insecure Direct Object Reference), and it's [#1 on the OWASP API Security Top 10](https://owasp.org/API-Security/) as "Broken Object Level Authorization".
+:::
+
+## Keep the number of resource types small
+
+An API with 40 resource types is really several APIs in a trench coat. If an API grows past roughly **4 to 8 resource types**, consider whether it should be split by subdomain.
+
+<Story kind="war-story" title="The 2018 USPS API leak">
+
+In 2018, security researcher Brian Krebs reported that a U.S. Postal Service API let any logged-in user query account details of _other_ users, about 60 million of them, just by changing parameters. The API checked that you were logged in, not that the data was _yours_. Object-level authorization is unglamorous and absolutely essential.
+
+</Story>
+
+<Rule
+  guide="zalando"
+  id="143"
+  level="MUST"
+  title="Identify resources and sub-resources via path segments"
+/>
+
+<Rule guide="zalando" id="145" level="MAY" title="Consider using (non-) nested URLs">
+
+Zalando's take: nested URLs are fine for sub-resources that only exist with their parent; if a resource has a globally unique ID, a top-level URL is preferred.
+
+</Rule>
+
+<Rule guide="zalando" id="147" level="SHOULD" title="Limit number of sub-resource levels">
+
+The recommendation is a maximum of 3 sub-resource (nesting) levels.
+
+</Rule>
+
+<Rule guide="zalando" id="146" level="SHOULD" title="Limit number of resource types">
+
+Zalando suggests 4 to 8 resource types per API as a rule of thumb.
+
+</Rule>
+
+<Rule guide="zalando" id="241" level="MAY" title="Expose compound keys as resource identifiers" />
+
+<Quiz
+  question="Your API has reviews written by customers about products. Reviews have globally unique IDs and are often shown in a moderation tool across all products. Best canonical URL?"
+  options={[
+    "<code>/products/9/customers/7/reviews/55</code>",
+    "<code>/reviews/55</code>, plus filters like <code>/reviews?product_id=9</code>",
+    "<code>/customers/7/reviews/55</code> only",
+    "<code>/getReview?id=55</code>",
+  ]}
+  answer={1}
+>
+
+Reviews have their own identity and are queried across parents, so a top-level collection fits. A convenience view like `/products/9/reviews` is fine as an extra.
+
+</Quiz>
+
+<Takeaways>
+
+- Nest resources that **only exist inside a parent** (order items).
+- Keep resources with their **own identity** top-level, and relate them via filters.
+- Max ~3 nesting levels; promote deeper things to top-level.
+- When nesting, **always scope queries by the parent** and the caller's permissions.
+
+</Takeaways>

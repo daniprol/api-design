@@ -1,0 +1,204 @@
+---
+title: Rate limiting
+description: Protect your API from overload and abuse with 429 Too Many Requests, Retry-After and rate limit headers clients can plan around.
+---
+
+import {
+  Hook,
+  Story,
+  DoDont,
+  Do,
+  Dont,
+  Rule,
+  Quiz,
+  Takeaways,
+  Tabs,
+  TabItem,
+  Status,
+} from "@components/lesson";
+
+<Hook>
+
+Sooner or later, a client will call you in a tight loop: a bug, a misconfigured cron job, a scraper, or just a very successful partner. Without limits, one client can take your API down **for everyone**. Rate limiting is how you stay up, and good rate limit _responses_ are how clients play nicely without guessing.
+
+</Hook>
+
+## The response: 429 + Retry-After
+
+When a client exceeds its quota, respond with <Status code={429} /> and tell it **when** to come back:
+
+```http
+HTTP/1.1 429 Too Many Requests
+Content-Type: application/problem+json
+Retry-After: 30
+
+{
+  "type": "https://api.example.com/problems/rate-limit-exceeded",
+  "title": "Too many requests",
+  "status": 429,
+  "detail": "Limit of 100 requests per minute exceeded. Retry in 30 seconds."
+}
+```
+
+## Tell clients where they stand, before they hit the wall
+
+Many APIs send quota headers on **every** response, so well-behaved clients can slow down proactively:
+
+```http
+X-RateLimit-Limit: 100        # requests allowed per window
+X-RateLimit-Remaining: 7      # left in the current window
+X-RateLimit-Reset: 23         # seconds until the window resets
+```
+
+The `X-RateLimit-*` family is a widespread convention (GitHub, Twitter/X…), though details differ: some send `Reset` as a Unix timestamp. The IETF is standardizing `RateLimit` and `RateLimit-Policy` headers to end the guesswork.
+
+## Algorithms in one paragraph each
+
+- **Fixed window**: count requests per calendar minute. Simple, but allows bursts at window edges (100 at 12:00:59 + 100 at 12:01:00).
+- **Sliding window**: weighs the previous window too. Smoother.
+- **Token bucket**: a bucket refills at N tokens/second up to a max; each request takes one. Allows short bursts, enforces an average. The most popular choice.
+- **Concurrency limits**: cap the number of _in-flight_ requests, which protects against slow, expensive calls.
+
+<Tabs syncKey="stack">
+<TabItem label="FastAPI" icon="seti:python">
+
+```python
+# pip install slowapi
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
+
+limiter = Limiter(key_func=get_remote_address, headers_enabled=True)  # X-RateLimit-*
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # → 429
+
+@app.get("/search")
+@limiter.limit("100/minute")
+def search(request: Request, q: str): ...
+
+# Better key than IP for authenticated APIs: the API key / client id
+def client_key(request: Request) -> str:
+    return request.headers.get("Authorization", get_remote_address(request))
+```
+
+</TabItem>
+<TabItem label="Django" icon="seti:python">
+
+```python
+# settings.py: DRF ships with throttling
+REST_FRAMEWORK = {
+    "DEFAULT_THROTTLE_CLASSES": [
+        "rest_framework.throttling.AnonRateThrottle",
+        "rest_framework.throttling.UserRateThrottle",
+    ],
+    "DEFAULT_THROTTLE_RATES": {"anon": "20/minute", "user": "100/minute", "search": "10/second"},
+}
+
+# per-view scope
+from rest_framework.throttling import ScopedRateThrottle
+
+class SearchView(APIView):
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "search"
+# Exceeding → 429 with a Retry-After header, automatically.
+```
+
+</TabItem>
+<TabItem label="Hono" icon="seti:typescript">
+
+```ts
+// npm i hono-rate-limiter
+import { rateLimiter } from "hono-rate-limiter";
+
+app.use(
+  "/search",
+  rateLimiter({
+    windowMs: 60_000,
+    limit: 100,
+    standardHeaders: "draft-7", // IETF RateLimit header
+    keyGenerator: (c) =>
+      c.req.header("Authorization") ?? c.req.header("CF-Connecting-IP") ?? "anon",
+  }),
+);
+// Exceeding → 429 Too Many Requests
+```
+
+</TabItem>
+</Tabs>
+
+## Client side: respect the signals
+
+```ts
+async function call(url: string, attempt = 0): Promise<Response> {
+  const res = await fetch(url);
+  if (res.status === 429 && attempt < 5) {
+    const wait = Number(res.headers.get("Retry-After") ?? 2 ** attempt);
+    await new Promise((r) => setTimeout(r, wait * 1000 + Math.random() * 250)); // + jitter
+    return call(url, attempt + 1);
+  }
+  return res;
+}
+```
+
+<DoDont>
+<Do>
+
+```http
+429 Too Many Requests
+Retry-After: 30
+```
+
+Clear, standard, actionable.
+
+</Do>
+<Dont>
+
+```http
+503 Service Unavailable        (it's not down, you're just limited)
+200 OK {"error": "slow down"}  (invisible to every HTTP tool)
+```
+
+</Dont>
+</DoDont>
+
+<Story kind="real-world" title="GitHub's generous headers">
+
+GitHub's REST API returns `x-ratelimit-limit`, `x-ratelimit-remaining`, `x-ratelimit-used`, `x-ratelimit-reset` and `x-ratelimit-resource` on every response, and offers a `GET /rate_limit` endpoint that doesn't count against your quota. Anonymous clients get 60 requests per hour; authenticated users get 5,000. That 60/hour limit has taught many a developer to add a token to their scripts.
+
+</Story>
+
+<Story kind="fun-fact" title="Thundering herds">
+
+When a popular API recovers from an outage, all its clients retry at once and knock it over again: a **thundering herd**. This is why AWS's architecture blog popularized "exponential backoff **and jitter**": adding randomness spreads the retries out. A little chaos keeps the system stable.
+
+</Story>
+
+<Rule guide="zalando" id="153" level="MUST" title="Use code 429 with headers for rate limits">
+
+Zalando requires `429` plus either `Retry-After` or the `X-RateLimit-Limit`, `X-RateLimit-Remaining` and `X-RateLimit-Reset` headers (with reset expressed in seconds).
+
+</Rule>
+
+<Quiz
+  question="Which response best helps a well-behaved client that has exceeded its quota?"
+  options={[
+    "<code>403 Forbidden</code>",
+    "<code>429 Too Many Requests</code> with <code>Retry-After</code>",
+    "<code>503 Service Unavailable</code> with no headers",
+    "Silently drop the request",
+  ]}
+  answer={1}
+>
+
+`429` says exactly what happened, and `Retry-After` says exactly when to come back. That lets clients back off automatically instead of hammering you.
+
+</Quiz>
+
+<Takeaways>
+
+- Exceeded quota → <Status code={429} /> + `Retry-After` (and a problem body).
+- Send rate limit headers on every response so clients can pace themselves.
+- Token bucket is a solid default; limit per API key/client, not just IP.
+- Clients: honour `Retry-After`, back off exponentially, add jitter.
+
+</Takeaways>

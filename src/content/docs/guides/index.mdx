@@ -1,0 +1,50 @@
+---
+title: How company guides compare
+description: Zalando, Google, Microsoft and others all publish API guidelines. Where they agree, where they disagree, and why.
+---
+
+import { Hook, Story } from "@components/lesson";
+import { guides } from "@data/guides";
+
+<Hook title="Why compare guides?">
+
+Every style guide is a set of **decisions**. When respected companies make _different_ decisions about the same question, the interesting part is the reasoning. Comparing guides is how you move from "following rules" to understanding trade-offs.
+
+</Hook>
+
+## The guides
+
+<div class="dojo-guides not-content">
+  {Object.values(guides).map((guide) => (
+    <div class="dojo-guide-card" style={`--guide-color: ${guide.color}`}>
+      <h3>{guide.short}</h3>
+      <p>{guide.name}</p>
+      <span class="dojo-pill">
+        {guide.status === "available" ? "✅ Referenced in the course" : "🛠️ Coming soon"}
+      </span>
+    </div>
+  ))}
+</div>
+
+## Where they disagree (a preview)
+
+| Question        | Zalando                                           | Google AIP                               |
+| --------------- | ------------------------------------------------- | ---------------------------------------- |
+| JSON field case | `snake_case`                                      | `lowerCamelCase` in JSON                 |
+| Versioning      | Avoid; media types if needed; **no** URL versions | Major version in the URL path (`/v1/`)   |
+| Custom actions  | Avoid; model actions as resources                 | Allowed as _custom methods_ (`:archive`) |
+| Async work      | `202 Accepted` + job resource                     | Long-running `Operation` resources       |
+| Errors          | Problem JSON (RFC 9457)                           | `google.rpc.Status` with error details   |
+| Pagination      | Cursor-based, page object with links              | `page_token` / `next_page_token`         |
+
+And where they **agree**: resource-oriented design, standard methods with standard semantics, consistent naming, backward compatibility above all, and treating the API as a product.
+
+<Story kind="fun-fact" title="Why so many style guides?">
+
+Because consistency only matters _within_ an ecosystem. A developer integrating with 50 Google APIs benefits from them all looking alike; whether Google's choices match Zalando's matters much less. Each company optimizes for its own developers, which is why reading several guides teaches you more than memorizing one.
+
+</Story>
+
+## Adding a new guide
+
+The site is built so that adding a company is easy: one entry in `src/data/guides.ts`, a page under `src/content/docs/guides/`, and `<Rule guide="…">` boxes in the relevant lessons. The rule index on each guide page builds itself from the lessons.

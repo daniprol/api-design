@@ -1,0 +1,219 @@
+---
+title: null, absent & empty
+description: The surprisingly deep question of "nothing". When to omit a field, when to send null, and why booleans and arrays should never be null.
+---
+
+import {
+  Hook,
+  Story,
+  DoDont,
+  Do,
+  Dont,
+  Rule,
+  Quiz,
+  Takeaways,
+  Tabs,
+  TabItem,
+} from "@components/lesson";
+
+<Hook>
+
+There are at least four ways to say "nothing" in JSON: omit the field, `null`, `""`, and `[]`. If your API gives each one a different secret meaning, every client has to learn your secret. A few simple rules make "nothing" boring again.
+
+</Hook>
+
+## The four nothings
+
+```json
+{
+  "middle_name": null,
+  "nickname": "",
+  "tags": []
+}
+```
+
+…and `phone`, which isn't there at all. Do these mean different things? In a well-designed API: **mostly no**.
+
+## Rule 1: null and absent mean the same thing
+
+Many clients (and languages) can't easily tell "field missing" from "field is null": in JavaScript, both read as falsy; in typed languages, both become `None`/`nil`. So in responses, **treat `null` and absent identically**. Pick one style (always include with `null`, or always omit) and be consistent.
+
+:::note[The PATCH exception]
+JSON Merge Patch is the one place where the difference _is_ meaningful: an absent field means "don't touch", while `null` means "remove this value". That's a well-known standard, so clients know about it.
+:::
+
+## Rule 2: Booleans are never null
+
+A nullable boolean is a three-state enum in disguise: `true`, `false` and… _"we don't know"_? _"not applicable"_? _"not loaded yet"_? Nobody can tell.
+
+<DoDont>
+<Do>
+
+```json
+{ "newsletter_consent": "UNKNOWN" }
+```
+
+```json
+{ "newsletter_consent": "GRANTED" }
+```
+
+If there are three states, use an **enum** that names them.
+
+</Do>
+<Dont>
+
+```json
+{ "newsletter_consent": null }
+```
+
+Did the user decline, or did we never ask? This matters legally!
+
+</Dont>
+</DoDont>
+
+## Rule 3: Empty arrays are [], not null
+
+If a list has no elements, send `[]`. Clients can then iterate without null checks.
+
+<DoDont>
+<Do>
+
+```json
+{ "tags": [] }
+```
+
+```ts
+order.tags.map(renderTag); // just works
+```
+
+</Do>
+<Dont>
+
+```json
+{ "tags": null }
+```
+
+```ts
+order.tags.map(renderTag); // 💥 TypeError
+```
+
+</Dont>
+</DoDont>
+
+## In code
+
+<Tabs syncKey="stack">
+<TabItem label="FastAPI" icon="seti:python">
+
+```python
+from enum import StrEnum
+from pydantic import BaseModel, Field
+
+class Consent(StrEnum):
+    GRANTED = "GRANTED"
+    DECLINED = "DECLINED"
+    UNKNOWN = "UNKNOWN"
+
+class Customer(BaseModel):
+    id: str
+    middle_name: str | None = None        # nullable is fine for optional values
+    newsletter_consent: Consent = Consent.UNKNOWN   # no bool | None!
+    tags: list[str] = Field(default_factory=list)   # [] never None
+
+# Pick ONE style for absent values, e.g. always omit them:
+@app.get("/customers/{id}", response_model=Customer, response_model_exclude_none=True)
+def get_customer(id: str): ...
+```
+
+</TabItem>
+<TabItem label="Django" icon="seti:python">
+
+```python
+class Customer(models.Model):
+    class Consent(models.TextChoices):
+        GRANTED = "GRANTED"
+        DECLINED = "DECLINED"
+        UNKNOWN = "UNKNOWN"
+
+    middle_name = models.CharField(max_length=100, blank=True, null=True)
+    newsletter_consent = models.CharField(
+        max_length=10, choices=Consent.choices, default=Consent.UNKNOWN
+    )  # instead of models.BooleanField(null=True)
+
+class CustomerSerializer(serializers.ModelSerializer):
+    tags = serializers.ListField(child=serializers.CharField(), default=list)
+
+    class Meta:
+        model = Customer
+        fields = ["id", "middle_name", "newsletter_consent", "tags"]
+```
+
+</TabItem>
+<TabItem label="Hono" icon="seti:typescript">
+
+```ts
+const Customer = z.object({
+  id: z.string(),
+  middle_name: z.string().nullable().optional(),
+  newsletter_consent: z.enum(["GRANTED", "DECLINED", "UNKNOWN"]).default("UNKNOWN"),
+  tags: z.array(z.string()).default([]),
+});
+
+app.get("/customers/:id", async (c) => {
+  const row = await repo.get(c.req.param("id"));
+  return c.json(Customer.parse(row)); // defaults fill in [] and "UNKNOWN"
+});
+```
+
+</TabItem>
+</Tabs>
+
+## And empty strings?
+
+Avoid using `""` to mean "no value": that's what `null`/absent is for. An empty string should be a real, meaningful empty string (rare!). Don't make clients check for both.
+
+<Story kind="history" title="The billion-dollar mistake">
+
+In 2009, Sir Tony Hoare, inventor of quicksort, apologised for inventing the null reference in ALGOL W in 1965: _"I call it my billion-dollar mistake… I couldn't resist the temptation to put in a null reference, simply because it was so easy to implement."_ Decades of `NullPointerException`s later, languages like Kotlin, Swift, Rust and TypeScript (with `strictNullChecks`) all work hard to make nulls explicit. Your API should too.
+
+</Story>
+
+<Story kind="war-story" title="Mr. Null">
+
+There are real people with the surname **Null**, and they've had a rough time with computers: rejected forms, vanished bookings, a car registration system that matched them to every unpaid ticket where the plate was "NULL" (that one happened to a security researcher who chose the vanity plate "NULL" in California and got thousands of dollars of other people's fines). Lesson: `null` is a value meaning _absence_, never a string.
+
+</Story>
+
+<Rule guide="zalando" id="123" level="MUST" title="Use same semantics for null and absent properties">
+
+Zalando's exception is the same as ours: JSON Merge Patch, where `null` explicitly means "delete".
+
+</Rule>
+
+<Rule guide="zalando" id="122" level="MUST" title="Not use null for boolean properties" />
+
+<Rule guide="zalando" id="124" level="SHOULD" title="Not use null for empty arrays" />
+
+<Quiz
+  question="A <code>has_discount</code> field can be true, false, or &quot;not calculated yet&quot;. Best design?"
+  options={[
+    "<code>has_discount: true | false | null</code>",
+    "Omit the field when not calculated",
+    "<code>discount_status: &quot;APPLIED&quot; | &quot;NOT_APPLIED&quot; | &quot;PENDING&quot;</code>",
+    "<code>has_discount: &quot;maybe&quot;</code>",
+  ]}
+  answer={2}
+>
+
+Three states deserve an enum that names each one. A nullable boolean (or an absent boolean) hides the third state's meaning.
+
+</Quiz>
+
+<Takeaways>
+
+- In responses, `null` and **absent** mean the same thing. Merge Patch is the exception.
+- **Booleans are never null**: use an enum when there's a third state.
+- Empty lists are `[]`, never `null`.
+- Don't use `""` as a stand-in for "no value".
+
+</Takeaways>

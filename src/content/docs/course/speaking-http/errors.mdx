@@ -1,0 +1,273 @@
+---
+title: Errors people can debug
+description: Use Problem Details (RFC 9457) for a consistent, machine-readable error format, and never leak stack traces.
+---
+
+import {
+  Hook,
+  Story,
+  DoDont,
+  Do,
+  Dont,
+  Rule,
+  Quiz,
+  Takeaways,
+  Tabs,
+  TabItem,
+  Status,
+} from "@components/lesson";
+
+<Hook>
+
+Your API will spend a surprising amount of its life saying "no". Errors are where developers form their strongest opinions about an API: a clear error saves an hour of debugging, and a vague one costs a support ticket. The good news: there's a standard error format, and it takes ten minutes to adopt.
+
+</Hook>
+
+## Every API invents its own error format…
+
+```json
+{ "error": "bad request" }
+{ "errors": [{ "msg": "invalid" }] }
+{ "success": false, "code": 4001, "message": "Validation failed" }
+{ "fault": { "faultstring": "Oops", "detail": { "errorcode": "x.y.z" } } }
+```
+
+Four APIs, four shapes, four parsers. Clients hate this.
+
+## …so use Problem Details
+
+**RFC 9457 "Problem Details for HTTP APIs"** (the successor of RFC 7807) defines a tiny, standard JSON error format with its own media type, `application/problem+json`:
+
+```http
+HTTP/1.1 403 Forbidden
+Content-Type: application/problem+json
+
+{
+  "type": "https://api.example.com/problems/insufficient-funds",
+  "title": "Insufficient funds",
+  "status": 403,
+  "detail": "Your balance is 30.00 EUR, but the transfer requires 50.00 EUR.",
+  "instance": "/transfers/tr_8812",
+  "balance": "30.00",
+  "required": "50.00"
+}
+```
+
+| Field      | Meaning                                                                                      |
+| ---------- | -------------------------------------------------------------------------------------------- |
+| `type`     | A URI identifying the **kind** of problem. Clients branch on this. Ideally it links to docs. |
+| `title`    | Short, human-readable summary of the problem _type_. Doesn't change per occurrence.          |
+| `status`   | The HTTP status code (repeated for convenience, e.g. in logs).                               |
+| `detail`   | Human-readable explanation of _this occurrence_.                                             |
+| `instance` | URI identifying this specific occurrence (e.g. for support tickets).                         |
+| _anything_ | Extension members with extra machine-readable context (`balance`, `errors`…).                |
+
+All fields are optional, and `type` defaults to `about:blank` ("nothing more than the status code").
+
+## Validation errors
+
+For a <Status code={400} /> or <Status code={422} />, list every problem at once, so the user doesn't have to fix fields one submission at a time:
+
+```json
+{
+  "type": "https://api.example.com/problems/validation-error",
+  "title": "Your request is not valid",
+  "status": 400,
+  "errors": [
+    { "pointer": "#/email", "detail": "must be a valid email address" },
+    { "pointer": "#/items/0/quantity", "detail": "must be greater than 0" }
+  ]
+}
+```
+
+The `pointer` uses JSON Pointer syntax, so clients can highlight the exact form field.
+
+## Implementing it
+
+<Tabs syncKey="stack">
+<TabItem label="FastAPI" icon="seti:python">
+
+```python
+from fastapi import Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+
+class Problem(Exception):
+    def __init__(self, status: int, title: str, type_: str = "about:blank", **extra):
+        self.status, self.title, self.type, self.extra = status, title, type_, extra
+
+def problem_response(status: int, body: dict) -> JSONResponse:
+    return JSONResponse(body, status_code=status, media_type="application/problem+json")
+
+@app.exception_handler(Problem)
+async def handle_problem(request: Request, exc: Problem):
+    return problem_response(exc.status, {
+        "type": exc.type, "title": exc.title, "status": exc.status,
+        "instance": request.url.path, **exc.extra,
+    })
+
+@app.exception_handler(RequestValidationError)
+async def handle_validation(request: Request, exc: RequestValidationError):
+    errors = [
+        {"pointer": "#/" + "/".join(map(str, e["loc"][1:])), "detail": e["msg"]}
+        for e in exc.errors()
+    ]
+    return problem_response(400, {
+        "type": "https://api.example.com/problems/validation-error",
+        "title": "Your request is not valid", "status": 400, "errors": errors,
+    })
+
+# usage
+raise Problem(403, "Insufficient funds",
+              "https://api.example.com/problems/insufficient-funds", balance="30.00")
+```
+
+</TabItem>
+<TabItem label="Django" icon="seti:python">
+
+```python
+# settings.py
+REST_FRAMEWORK = {"EXCEPTION_HANDLER": "core.errors.problem_exception_handler"}
+
+# core/errors.py
+from rest_framework.views import exception_handler
+from rest_framework.exceptions import ValidationError
+
+def problem_exception_handler(exc, context):
+    response = exception_handler(exc, context)  # DRF builds status + data
+    if response is None:
+        return None  # unhandled → 500 (with DEBUG=False, no stack trace!)
+
+    problem = {
+        "type": "about:blank",
+        "title": response.status_text,
+        "status": response.status_code,
+        "instance": context["request"].path,
+    }
+    if isinstance(exc, ValidationError):
+        problem["type"] = "https://api.example.com/problems/validation-error"
+        problem["errors"] = [
+            {"pointer": f"#/{field}", "detail": str(msg)}
+            for field, msgs in exc.detail.items() for msg in msgs
+        ]
+    else:
+        problem["detail"] = str(exc.detail)
+
+    response.data = problem
+    response.content_type = "application/problem+json"
+    return response
+```
+
+</TabItem>
+<TabItem label="Hono" icon="seti:typescript">
+
+```ts
+import { HTTPException } from "hono/http-exception";
+
+type Problem = {
+  type?: string;
+  title: string;
+  status: number;
+  detail?: string;
+  [k: string]: unknown;
+};
+
+const problem = (p: Problem) =>
+  new Response(JSON.stringify({ type: "about:blank", ...p }), {
+    status: p.status,
+    headers: { "Content-Type": "application/problem+json" },
+  });
+
+app.onError((err, c) => {
+  if (err instanceof HTTPException) {
+    return problem({ title: err.message, status: err.status, instance: c.req.path });
+  }
+  console.error(err); // log the details server-side…
+  return problem({ title: "Internal Server Error", status: 500 }); // …but never send them
+});
+
+app.notFound((c) => problem({ title: "Not Found", status: 404, instance: c.req.path }));
+```
+
+</TabItem>
+</Tabs>
+
+## Never expose stack traces
+
+<DoDont>
+<Do>
+
+```json
+{
+  "type": "about:blank",
+  "title": "Internal Server Error",
+  "status": 500,
+  "instance": "/orders/42",
+  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736"
+}
+```
+
+Log the details; give the client a correlation ID.
+
+</Do>
+<Dont>
+
+```json
+{
+  "error": "psycopg2.errors.UndefinedColumn: column \"pwd_hash\" of relation \"users\" does not exist at /srv/app/db.py line 214"
+}
+```
+
+You just told attackers your DB, your table and your file layout.
+
+</Dont>
+</DoDont>
+
+## Write error messages for humans
+
+A great `detail` answers three questions: **what happened, why, and what can I do about it?**
+
+| 😐 Meh            | 🤩 Helpful                                                                             |
+| ----------------- | -------------------------------------------------------------------------------------- |
+| `Invalid request` | `"quantity" must be between 1 and 99, got 120.`                                        |
+| `Forbidden`       | `This API key has read-only access. Create a key with "orders.write" to place orders.` |
+| `Unsupported`     | `Currency "BTC" is not supported. Supported currencies: EUR, USD, GBP.`                |
+
+<Story kind="real-world" title="Stripe's error docs">
+
+Stripe's errors include a machine-readable `code` (like `card_declined`), a `decline_code` (`insufficient_funds`), a human `message`, and a `doc_url` pointing to a page explaining exactly that error. That `doc_url` idea is precisely what RFC 9457's `type` URI is meant for: make the problem type a link to its own documentation.
+
+</Story>
+
+<Story kind="fun-fact" title="Elm's famous error messages">
+
+The Elm programming language became famous for compiler errors that read like a friendly colleague: they explain the problem, point to the exact spot, and suggest a fix. Many tools (including Rust's compiler) followed. API errors deserve the same care: they are the UX of failure.
+
+</Story>
+
+<Rule guide="zalando" id="176" level="MUST" title="Support Problem JSON">
+
+Zalando requires `application/problem+json` for error responses (4xx and 5xx), so that clients can handle all errors the same way across hundreds of APIs.
+
+</Rule>
+
+<Rule guide="zalando" id="177" level="MUST" title="Not expose stack traces" />
+
+<Quiz
+  question="Which Problem Details field should a client use to decide <em>programmatically</em> how to handle an error?"
+  options={["<code>title</code>", "<code>detail</code>", "<code>type</code>", "<code>instance</code>"]}
+  answer={2}
+>
+
+`type` is the stable identifier for the kind of problem. `title` and `detail` are for humans and may be reworded or translated; `instance` identifies one occurrence.
+
+</Quiz>
+
+<Takeaways>
+
+- Use **Problem Details** (`application/problem+json`, RFC 9457) everywhere.
+- `type` is for machines, `title`/`detail` for humans, extensions for extra context.
+- Report all validation errors at once, with pointers to the fields.
+- **Never** leak stack traces or internals; return a trace ID instead.
+
+</Takeaways>

@@ -1,0 +1,15 @@
+---
+/** Decorative HTTP exchange shown on the home page. */
+---
+
+<div class="dojo-terminal not-content" aria-label="An example HTTP exchange">
+  <div class="dojo-terminal__bar"><i></i><i></i><i></i></div>
+  <pre><span class="c"># What this course is about, in one request</span>
+<span class="m">POST</span> <span class="p">/orders</span> HTTP/1.1
+<span class="k">Idempotency-Key</span>: <span class="s">4f9c2c1e-7a0e-4b8e-9d2b-1f2a3b4c5d6e</span>
+<span class="k">Content-Type</span>: application/json
+
+HTTP/1.1 <span class="ok">201 Created</span>
+<span class="k">Location</span>: <span class="s">https://api.example.com/orders/ord_42</span>
+<span class="k">ETag</span>: <span class="s">"v1"</span></pre>
+</div>

@@ -1,0 +1,220 @@
+---
+title: Headers
+description: The metadata channel of HTTP. Content negotiation, Location, Prefer, trace propagation and the art of not inventing custom headers.
+---
+
+import {
+  Hook,
+  Story,
+  DoDont,
+  Do,
+  Dont,
+  Rule,
+  Quiz,
+  Takeaways,
+  Tabs,
+  TabItem,
+  Status,
+} from "@components/lesson";
+
+<Hook>
+
+Headers are HTTP's envelope: who sent this, what's inside, how to cache it, where the new thing lives. The body is _your_ format, but headers are a **shared language** that every proxy, CDN and library already speaks. Using standard headers well gets you features for free.
+
+</Hook>
+
+## Naming: Hyphenated-Pascal-Case
+
+HTTP header names are **case-insensitive** (and HTTP/2 even lowercases them on the wire), but the convention in docs and code is capitalized words separated by hyphens: `Content-Type`, `Idempotency-Key`, `Retry-After`.
+
+## The headers you'll use every week
+
+| Header                       | Direction | Purpose                                                                                                            |
+| ---------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------ |
+| `Content-Type`               | both      | What's in the body: `application/json`, `application/problem+json`…                                                |
+| `Accept`                     | request   | What the client wants back (content negotiation).                                                                  |
+| `Authorization`              | request   | Credentials, e.g. `Bearer eyJhbGciOi…`                                                                             |
+| `Location`                   | response  | Where the newly created resource lives (with <Status code={201} />) or where to poll (with <Status code={202} />). |
+| `ETag`                       | response  | Version fingerprint of a resource (caching, optimistic locking).                                                   |
+| `If-Match` / `If-None-Match` | request   | Conditional requests using ETags.                                                                                  |
+| `Cache-Control`              | both      | Caching rules.                                                                                                     |
+| `Retry-After`                | response  | When to try again (with <Status code={429} />, <Status code={503} />).                                             |
+| `Prefer`                     | request   | Client preferences, e.g. `return=minimal`, `respond-async`.                                                        |
+
+## Content-\* headers describe the body
+
+`Content-Type`, `Content-Length`, `Content-Encoding` (e.g. `gzip`), `Content-Language`: they describe the payload **in this message**. Get them right: a JSON body labelled `text/html` will confuse clients and can even create security problems in browsers.
+
+## Location vs. Content-Location
+
+- **`Location`**: "the resource you just created is over there" (or "go look over there"). Use it with <Status code={201} /> and <Status code={202} />.
+- **`Content-Location`**: "the body I'm sending you is a representation of _that_ URL". Rarely needed; skip it unless you know you need it.
+
+```http
+POST /orders
+→ 201 Created
+Location: https://api.example.com/orders/ord_42
+```
+
+## Prefer: let clients choose
+
+`Prefer` (RFC 7240) lets clients express optional preferences that the server _may_ honour:
+
+```http
+PATCH /orders/42
+Prefer: return=minimal          # "just say 204, I don't need the body back"
+
+POST /reports
+Prefer: respond-async, wait=10  # "if it takes more than 10s, give me a 202"
+```
+
+If you honour a preference, echo it back with `Preference-Applied: return=minimal`.
+
+## Trace IDs: follow a request across services
+
+In a microservice world, one click can trigger 30 internal calls. A **correlation ID** passed along every hop lets you find all the logs for one request. The modern standard is **W3C Trace Context** (`traceparent`), used by OpenTelemetry; many companies also have their own header.
+
+<Tabs syncKey="stack">
+<TabItem label="FastAPI" icon="seti:python">
+
+```python
+import uuid
+from contextvars import ContextVar
+
+flow_id: ContextVar[str] = ContextVar("flow_id", default="-")
+
+@app.middleware("http")
+async def propagate_flow_id(request: Request, call_next):
+    fid = request.headers.get("X-Flow-ID") or str(uuid.uuid4())
+    flow_id.set(fid)
+    response = await call_next(request)
+    response.headers["X-Flow-ID"] = fid
+    return response
+
+# when calling another service, pass it on:
+httpx.get(url, headers={"X-Flow-ID": flow_id.get()})
+```
+
+</TabItem>
+<TabItem label="Django" icon="seti:python">
+
+```python
+# core/middleware.py
+import uuid
+from contextvars import ContextVar
+
+flow_id: ContextVar[str] = ContextVar("flow_id", default="-")
+
+class FlowIdMiddleware:
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        fid = request.headers.get("X-Flow-ID") or str(uuid.uuid4())
+        flow_id.set(fid)
+        response = self.get_response(request)
+        response["X-Flow-ID"] = fid
+        return response
+
+# settings.py → MIDDLEWARE = ["core.middleware.FlowIdMiddleware", ...]
+```
+
+</TabItem>
+<TabItem label="Hono" icon="seti:typescript">
+
+```ts
+import { requestId } from "hono/request-id";
+
+// Built-in middleware: reads the header if present, otherwise generates one,
+// exposes it as c.get("requestId") and echoes it in the response.
+app.use("*", requestId({ headerName: "X-Flow-ID" }));
+
+app.get("/orders/:id", async (c) => {
+  const res = await fetch(`${INVENTORY_URL}/stock`, {
+    headers: { "X-Flow-ID": c.get("requestId") }, // propagate downstream
+  });
+  // ...
+});
+```
+
+</TabItem>
+</Tabs>
+
+## Don't invent custom headers (much)
+
+Before creating `X-My-Thing`, check whether a standard header already exists. If you really need a custom header, give it a clear name and document it. And note: the `X-` prefix was officially deprecated by RFC 6648 in 2012, because "experimental" headers like `X-Forwarded-For` became permanent standards and the `X-` stuck forever.
+
+<DoDont>
+<Do>
+
+```http
+Idempotency-Key: 8e03978e-40d5…
+Retry-After: 30
+Accept-Language: de-DE
+```
+
+</Do>
+<Dont>
+
+```http
+X-Api-Retry-Seconds: 30
+X-Lang: german
+X-Content-Kind: json
+```
+
+</Dont>
+</DoDont>
+
+<Story kind="history" title="The Referer misspelling">
+
+The `Referer` header (which page linked you here) is misspelled. It should be "Referrer". The typo, credited to Phillip Hallam-Baker, made it into the HTTP spec in the 1990s and could never be fixed, because every browser and server already used it. Newer specs (like `Referrer-Policy`) spell it correctly, so now we have both. Headers are forever.
+
+</Story>
+
+<Rule
+  guide="zalando"
+  id="132"
+  level="SHOULD"
+  title="Use kebab-case with uppercase separate words for HTTP headers"
+/>
+
+<Rule guide="zalando" id="178" level="MUST" title="Use Content-* headers correctly" />
+
+<Rule
+  guide="zalando"
+  id="180"
+  level="SHOULD"
+  title="Use Location header instead of Content-Location header"
+/>
+
+<Rule
+  guide="zalando"
+  id="181"
+  level="MAY"
+  title="Consider to support Prefer header to handle processing preferences"
+/>
+
+<Rule guide="zalando" id="233" level="MUST" title="Support X-Flow-ID">
+
+Zalando's own correlation header. Services must read `X-Flow-ID`, generate one if it's missing, and propagate it to every downstream call and event, so a whole business flow can be traced. ([rule #184](https://opensource.zalando.com/restful-api-guidelines/#184): MUST propagate proprietary headers.)
+
+</Rule>
+
+<Quiz
+  question="After <code>POST /invoices</code> creates invoice <code>inv_9</code>, which header tells the client where to find it?"
+  options={["<code>Content-Location</code>", "<code>Location</code>", "<code>Link</code>", "<code>X-Resource-Url</code>"]}
+  answer={1}
+>
+
+`Location` with `201 Created` is the standard way to point to the newly created resource.
+
+</Quiz>
+
+<Takeaways>
+
+- Headers are a shared language: prefer **standard headers** over custom ones.
+- `Location` for created resources; `Content-*` describes the body.
+- `Prefer` lets clients opt into behaviours like `return=minimal`.
+- Propagate a **trace/correlation ID** through every hop.
+
+</Takeaways>

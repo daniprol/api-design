@@ -1,0 +1,60 @@
+---
+title: Status code cheat sheet
+description: The HTTP status codes worth knowing for API design, when to use them, and when not to.
+---
+
+import { Status } from "@components/lesson";
+
+The working set from the [Status codes](/course/speaking-http/status-codes/) lesson, plus a few you'll meet in the wild.
+
+## 2xx: success
+
+| Code                  | Use it when…                                                | Typical methods          |
+| --------------------- | ----------------------------------------------------------- | ------------------------ |
+| <Status code={200} /> | Success with a response body.                               | all                      |
+| <Status code={201} /> | A resource was created. Include `Location`.                 | `POST`, `PUT`            |
+| <Status code={202} /> | Accepted for async processing. Include `Location` of a job. | `POST`, `PUT`, `DELETE`  |
+| <Status code={204} /> | Success, no body.                                           | `PUT`, `PATCH`, `DELETE` |
+| <Status code={207} /> | Batch with per-item results.                                | `POST`                   |
+
+## 3xx: redirection
+
+| Code                                          | Use it when…                                                    |
+| --------------------------------------------- | --------------------------------------------------------------- |
+| <Status code={304} />                         | The client's cached version (`If-None-Match`) is still current. |
+| <Status code={301} /> / <Status code={308} /> | Permanent move. Avoid in APIs; many clients don't follow.       |
+| <Status code={303} />                         | "See other": after an async job, point to the result.           |
+
+## 4xx: client errors
+
+| Code                  | Use it when…                                                                               |
+| --------------------- | ------------------------------------------------------------------------------------------ |
+| <Status code={400} /> | Malformed request or validation failure.                                                   |
+| <Status code={401} /> | No/invalid credentials. Include `WWW-Authenticate`.                                        |
+| <Status code={403} /> | Authenticated, but not allowed.                                                            |
+| <Status code={404} /> | Resource not found (or hidden on purpose).                                                 |
+| <Status code={405} /> | Method not supported on this resource. Include `Allow`.                                    |
+| <Status code={406} /> | Can't produce any format from `Accept`.                                                    |
+| <Status code={409} /> | Conflicts with current state (duplicate, invalid transition, idempotency key in progress). |
+| <Status code={410} /> | Gone on purpose (after a sunset).                                                          |
+| <Status code={412} /> | `If-Match` precondition failed (optimistic locking).                                       |
+| <Status code={415} /> | Unsupported request `Content-Type`.                                                        |
+| <Status code={422} /> | Syntactically fine, semantically invalid.                                                  |
+| <Status code={428} /> | A precondition header (`If-Match`) is required.                                            |
+| <Status code={429} /> | Rate limited. Include `Retry-After`.                                                       |
+
+## 5xx: server errors
+
+| Code                  | Use it when…                                        |
+| --------------------- | --------------------------------------------------- |
+| <Status code={500} /> | Unexpected failure. Log details, return a trace ID. |
+| <Status code={501} /> | Not implemented (yet).                              |
+| <Status code={502} /> | A downstream service returned garbage.              |
+| <Status code={503} /> | Temporarily unavailable. Include `Retry-After`.     |
+| <Status code={504} /> | A downstream service timed out.                     |
+
+## And one for fun
+
+| Code                  | Use it when…                                                   |
+| --------------------- | -------------------------------------------------------------- |
+| <Status code={418} /> | You are a teapot. (RFC 2324, April 1st 1998. Please don't.) ☕ |

@@ -1,0 +1,268 @@
+---
+title: Idempotency & safe retries
+description: Networks fail and clients retry. Idempotency keys and natural keys make "did my payment go through?" a question with a safe answer.
+---
+
+import {
+  Hook,
+  Story,
+  DoDont,
+  Do,
+  Dont,
+  Rule,
+  Quiz,
+  Takeaways,
+  Tabs,
+  TabItem,
+  Status,
+} from "@components/lesson";
+
+<Hook>
+
+A client sends `POST /payments`. The request reaches your server, the payment succeeds, and then the connection drops before the response arrives. From the client's point of view, **it has no idea whether it paid**. If it retries, the customer may be charged twice. If it doesn't, the order may never be paid. Idempotency is how you make "just retry" always safe.
+
+</Hook>
+
+## The three outcomes of a request
+
+When a request times out, one of three things happened:
+
+```text
+1. Request never arrived          → retry is safe
+2. Arrived, failed halfway        → retry is… probably safe?
+3. Arrived, succeeded, reply lost → retry = duplicate! 💸💸
+```
+
+The client can't tell them apart. So the **server** must make retries safe.
+
+Recall from [HTTP methods](/course/speaking-http/http-methods/): `GET`, `PUT` and `DELETE` are idempotent by design. The problem children are `POST` (and sometimes `PATCH`).
+
+## Technique 1: the Idempotency-Key header
+
+The client generates a unique key (a UUID) **per logical operation** and sends it with the request. The server remembers the key and the response. A retry with the same key gets the **stored response** instead of a second execution.
+
+```http
+POST /payments
+Idempotency-Key: 6d0d3a8e-7f5c-4c71-9a5b-0f3c1e2d4b9a
+Content-Type: application/json
+
+{ "amount": "49.00", "currency": "EUR", "source": "card_123" }
+```
+
+```text
+1st request  → key unknown    → execute, store (key → 201 + body)  → 201 Created
+2nd request  → key known      → don't execute, replay stored reply → 201 Created
+other body   → key known, but payload differs                      → 422 / 400
+concurrent   → key in progress                                     → 409 Conflict
+```
+
+Keys are typically kept for **24 hours** or so: long enough to cover any reasonable retry window.
+
+<Tabs syncKey="stack">
+<TabItem label="FastAPI" icon="seti:python">
+
+```python
+import hashlib, json
+
+@app.post("/payments", status_code=201)
+async def create_payment(body: PaymentIn, idempotency_key: Annotated[str, Header()]):
+    fingerprint = hashlib.sha256(body.model_dump_json().encode()).hexdigest()
+
+    # Atomically claim the key (e.g. Redis SET NX, or a unique DB row)
+    claimed = await store.claim(idempotency_key, fingerprint, ttl=24 * 3600)
+    if not claimed:
+        saved = await store.get(idempotency_key)
+        if saved.fingerprint != fingerprint:
+            raise Problem(422, "Idempotency key reused with a different request")
+        if saved.response is None:
+            raise Problem(409, "A request with this key is still being processed")
+        return JSONResponse(saved.response, status_code=saved.status)  # replay
+
+    payment = await payments.charge(body)
+    await store.save_response(idempotency_key, 201, payment.model_dump(mode="json"))
+    return payment
+```
+
+</TabItem>
+<TabItem label="Django" icon="seti:python">
+
+```python
+from django.db import IntegrityError, transaction
+
+class IdempotencyRecord(models.Model):
+    key = models.CharField(max_length=100, unique=True)
+    fingerprint = models.CharField(max_length=64)
+    status = models.PositiveSmallIntegerField(null=True)
+    response = models.JSONField(null=True)
+    created_at = models.DateTimeField(auto_now_add=True)  # purge after 24h
+
+class PaymentCreate(APIView):
+    def post(self, request):
+        key = request.headers.get("Idempotency-Key")
+        if not key:
+            return problem(400, "Idempotency-Key header is required")
+        fp = fingerprint(request.data)
+        try:
+            with transaction.atomic():
+                record = IdempotencyRecord.objects.create(key=key, fingerprint=fp)
+        except IntegrityError:  # key already seen
+            record = IdempotencyRecord.objects.get(key=key)
+            if record.fingerprint != fp:
+                return problem(422, "Idempotency key reused with a different request")
+            if record.response is None:
+                return problem(409, "Request with this key still in progress")
+            return Response(record.response, status=record.status)
+
+        payment = charge(request.data)
+        record.status, record.response = 201, PaymentSerializer(payment).data
+        record.save(update_fields=["status", "response"])
+        return Response(record.response, status=201)
+```
+
+</TabItem>
+<TabItem label="Hono" icon="seti:typescript">
+
+```ts
+import { createMiddleware } from "hono/factory";
+
+// Reusable middleware: wrap any non-idempotent route
+const idempotent = createMiddleware(async (c, next) => {
+  const key = c.req.header("Idempotency-Key");
+  if (!key) return c.json({ title: "Idempotency-Key header is required" }, 400);
+
+  const fingerprint = await sha256(await c.req.raw.clone().text());
+  const existing = await kv.get(key);
+  if (existing) {
+    if (existing.fingerprint !== fingerprint)
+      return c.json({ title: "Key reused with different payload" }, 422);
+    if (!existing.response) return c.json({ title: "Request still in progress" }, 409);
+    return c.json(existing.response.body, existing.response.status);
+  }
+
+  await kv.put(key, { fingerprint }, { ttl: 86_400 }); // use an atomic put-if-absent in prod!
+  await next();
+  await kv.put(
+    key,
+    { fingerprint, response: { status: c.res.status, body: await c.res.clone().json() } },
+    { ttl: 86_400 },
+  );
+});
+
+app.post("/payments", idempotent, async (c) =>
+  c.json(await payments.charge(await c.req.json()), 201),
+);
+```
+
+</TabItem>
+</Tabs>
+
+## Technique 2: a natural (secondary) key
+
+Sometimes the payload already contains something unique: an external order number, an invoice number, a client-generated ID. Put a **unique constraint** on it. A retry then hits the constraint, and you can return the existing resource (or a <Status code={409} /> pointing to it).
+
+```http
+POST /orders
+{ "external_reference": "SHOP-2026-000123", ... }
+
+→ 201 Created         (first time)
+→ 409 Conflict        (retry: "order SHOP-2026-000123 already exists", with Location)
+```
+
+## Technique 3: let the client choose the ID, then PUT
+
+If the client generates the resource ID, it can use `PUT`, which is idempotent by definition:
+
+```http
+PUT /orders/2b7e1d36-0c5a-4c9e-8f3a-6f2f0d9a1c44
+{ "items": [...] }
+```
+
+## Retries done right (client side)
+
+Idempotency makes retries _safe_; you still need to make them _polite_:
+
+- Retry only on network errors, <Status code={429} />, <Status code={502} />, <Status code={503} />, <Status code={504} />. Never on <Status code={400} />.
+- Use **exponential backoff with jitter** (1s, 2s, 4s… ± random), so a million clients don't retry in lockstep.
+- Reuse the **same** idempotency key for every retry of the same operation.
+
+<DoDont>
+<Do>
+
+```ts
+const key = crypto.randomUUID(); // once per user action
+await retry(() =>
+  api.post("/payments", body, {
+    headers: { "Idempotency-Key": key },
+  }),
+);
+```
+
+</Do>
+<Dont>
+
+```ts
+await retry(() =>
+  api.post("/payments", body, {
+    headers: { "Idempotency-Key": crypto.randomUUID() },
+  }),
+); // new key each retry = no protection!
+```
+
+</Dont>
+</DoDont>
+
+<Story kind="real-world" title="Stripe made idempotency keys famous">
+
+Stripe has supported the `Idempotency-Key` header on all `POST` requests for years, and Brandur Leach's 2017 article _"Designing robust and predictable APIs with idempotency"_ on Stripe's blog became required reading for API designers. The idea spread so widely that the IETF HTTP API working group started standardizing the header in an Internet-Draft, _"The Idempotency-Key HTTP Header Field"_.
+
+</Story>
+
+<Story kind="fun-fact" title="The Two Generals' Problem">
+
+Computer science has a classic proof that two parties communicating over an unreliable channel can **never** be 100% certain they agree. Two generals must attack at the same time, but every messenger might be captured, including the one confirming the confirmation. This is why "exactly once delivery" over a network is impossible; what we build instead is **at-least-once delivery + idempotent processing**. Same idea, everywhere.
+
+</Story>
+
+<Rule
+  guide="zalando"
+  id="229"
+  level="SHOULD"
+  title="Consider to design POST and PATCH idempotent"
+/>
+
+<Rule
+  guide="zalando"
+  id="231"
+  level="SHOULD"
+  title="Use secondary key for idempotent POST design"
+/>
+
+<Rule guide="zalando" id="230" level="MAY" title="Consider to support Idempotency-Key header">
+
+Zalando describes the key as client-generated, unique per request intent, and suggests keeping it for at least 24 hours.
+
+</Rule>
+
+<Quiz
+  question="A client retries <code>POST /payments</code> after a timeout, using the same Idempotency-Key. The first attempt actually succeeded. What should the server do?"
+  options={[
+    "Charge again, since it's a new request",
+    "Return 409 Conflict",
+    "Return the stored response of the first attempt, without charging again",
+    "Return 304 Not Modified",
+  ]}
+  answer={2}
+>
+
+The whole point is that the retry is indistinguishable from the original for the client: it gets the same successful response, and the payment happens exactly once. (`409` is for when the first request is _still in progress_.)
+
+</Quiz>
+
+<Takeaways>
+
+- Timeouts are ambiguous; only the **server** can make retries safe.
+- `Idempotency-Key`: store key → response; replay on retries; reject reuse with a different payload.
+- Alternatives: a **unique natural key**, or client-chosen IDs with `PUT`.
+- Clients: same key per operation, exponential backoff with jitter, retry only retryable errors.
+
+</Takeaways>

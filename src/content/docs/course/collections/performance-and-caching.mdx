@@ -1,0 +1,264 @@
+---
+title: Performance & caching
+description: Compression, partial responses, embedding and HTTP caching with ETags. The fastest request is the one you never make.
+---
+
+import {
+  Hook,
+  Story,
+  DoDont,
+  Do,
+  Dont,
+  Rule,
+  Quiz,
+  Takeaways,
+  Tabs,
+  TabItem,
+  Status,
+} from "@components/lesson";
+
+<Hook>
+
+Your API might be fast on your laptop, but your users are on a train with one bar of 4G. Every byte and every round trip counts. HTTP has decades of performance tooling built in: compression, conditional requests, caching. Using it well can make an API feel instant without touching your database.
+
+</Hook>
+
+## Four levers
+
+| Lever                 | Saves               | How                                      |
+| --------------------- | ------------------- | ---------------------------------------- |
+| Compression           | bytes               | `Accept-Encoding: gzip, br`              |
+| Partial responses     | bytes (and DB work) | `?fields=id,status`                      |
+| Embedding             | round trips         | `?embed=customer`                        |
+| Caching / conditional | entire requests     | `Cache-Control`, `ETag`, `If-None-Match` |
+
+## 1. Compression
+
+JSON is extremely repetitive (all those repeated field names!) and typically compresses by **70–90%**. Clients advertise support, the server compresses:
+
+```http
+GET /products
+Accept-Encoding: gzip, br
+
+HTTP/1.1 200 OK
+Content-Encoding: gzip
+Vary: Accept-Encoding
+```
+
+Usually this is a one-liner in your framework or reverse proxy.
+
+## 2. Partial responses with `fields`
+
+Mobile list views need 3 fields; your product resource has 60.
+
+```http
+GET /products?fields=id,name,price(amount,currency)
+```
+
+```json
+{ "items": [{ "id": "p_1", "name": "Sneaker", "price": { "amount": "89.00", "currency": "EUR" } }] }
+```
+
+## 3. Embedding with `embed`
+
+The opposite problem: the client needs an order _and_ its customer _and_ its items, and you're forcing three round trips (the infamous **N+1 requests**). Let clients opt in to inlining related resources:
+
+```http
+GET /orders/42?embed=customer,items
+```
+
+```json
+{
+  "id": "42",
+  "customer_id": "cus_7",
+  "customer": { "id": "cus_7", "name": "Ada Lovelace" },
+  "items": [{ "sku": "sku-123", "quantity": 2 }]
+}
+```
+
+## 4. HTTP caching
+
+### Freshness: `Cache-Control`
+
+```http
+HTTP/1.1 200 OK
+Cache-Control: public, max-age=300     # anyone may cache it for 5 minutes
+```
+
+```http
+HTTP/1.1 200 OK
+Cache-Control: private, no-store       # personal data: don't store anywhere
+```
+
+### Validation: ETags and `304 Not Modified`
+
+An **ETag** is a fingerprint of the current version of a resource. Clients send it back; if nothing changed, the server answers <Status code={304} /> with no body.
+
+```http
+GET /products/p_1
+→ 200 OK
+  ETag: "a1b2c3"
+  { ...big product JSON... }
+
+GET /products/p_1
+If-None-Match: "a1b2c3"
+→ 304 Not Modified          # zero body bytes, client reuses its copy
+```
+
+<Tabs syncKey="stack">
+<TabItem label="FastAPI" icon="seti:python">
+
+```python
+import hashlib
+from fastapi.middleware.gzip import GZipMiddleware
+
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+@app.get("/products/{product_id}")
+def get_product(product_id: str, request: Request, fields: str | None = None):
+    product = repo.get(product_id) or raise_404()
+    body = product.model_dump_json(include=set(fields.split(",")) if fields else None)
+    etag = '"' + hashlib.sha256(body.encode()).hexdigest()[:16] + '"'
+
+    if request.headers.get("If-None-Match") == etag:
+        return Response(status_code=304, headers={"ETag": etag})
+    return Response(body, media_type="application/json", headers={
+        "ETag": etag,
+        "Cache-Control": "public, max-age=60",
+    })
+```
+
+</TabItem>
+<TabItem label="Django" icon="seti:python">
+
+```python
+# settings.py
+MIDDLEWARE = [
+    "django.middleware.gzip.GZipMiddleware",
+    "django.middleware.http.ConditionalGetMiddleware",  # ETag + 304 for free
+    # ...
+]
+
+# views.py: cheap ETag/Last-Modified without rendering the body
+from django.views.decorators.http import condition
+from django.utils.decorators import method_decorator
+
+def product_etag(request, pk):
+    return Product.objects.filter(pk=pk).values_list("version", flat=True).first()
+
+class ProductDetail(RetrieveAPIView):
+    queryset = Product.objects.all()
+    serializer_class = ProductSerializer
+
+    @method_decorator(condition(etag_func=product_etag))
+    def get(self, request, *args, **kwargs):
+        return super().get(request, *args, **kwargs)
+```
+
+</TabItem>
+<TabItem label="Hono" icon="seti:typescript">
+
+```ts
+import { compress } from "hono/compress";
+import { etag } from "hono/etag";
+import { cache } from "hono/cache"; // Cloudflare/Deno edge cache helper
+
+app.use("*", compress()); // gzip/deflate based on Accept-Encoding
+app.use("/products/*", etag()); // computes ETag, answers 304 automatically
+
+app.get("/products/:id", async (c) => {
+  const product = await repo.get(c.req.param("id"));
+  if (!product) return c.notFound();
+  c.header("Cache-Control", "public, max-age=60");
+  return c.json(product);
+});
+```
+
+</TabItem>
+</Tabs>
+
+:::caution[Caching is opt-in, on purpose]
+A cached response that contains personal data, served to the wrong user, is a security incident. Default to `Cache-Control: no-store` (or `private`) for anything user-specific, and make cacheable endpoints an explicit, documented decision.
+:::
+
+<DoDont>
+<Do>
+
+```http
+GET /orders/42?embed=items&fields=id,status,items
+Accept-Encoding: br, gzip
+If-None-Match: "v7"
+```
+
+One round trip, only needed fields, compressed, and maybe no body at all.
+
+</Do>
+<Dont>
+
+```http
+GET /orders/42
+GET /orders/42/items/1
+GET /orders/42/items/2
+...
+GET /orders/42/items/30
+```
+
+31 round trips on a mobile network: several seconds of spinner.
+
+</Dont>
+</DoDont>
+
+<Story kind="history" title="Why GraphQL happened">
+
+In 2012, Facebook was rebuilding its iOS app with native code. The News Feed needed data from many resources at once, with different fields on different screens, over slow mobile networks. Fetching it through traditional REST endpoints meant many round trips and lots of unneeded data. Their answer was **GraphQL**: let the client describe exactly the shape it needs. `fields` and `embed` are REST's lightweight answer to the same problem.
+
+</Story>
+
+<Story kind="war-story" title="BREACH: when compression leaks secrets">
+
+In 2013, researchers presented **BREACH** at Black Hat: if a compressed HTTPS response contains both a secret (like a CSRF token) and text an attacker can influence, the attacker can guess the secret byte by byte by watching the compressed _size_. Compression is still a huge win for APIs, but avoid reflecting user input next to secrets in the same compressed body.
+
+</Story>
+
+<Rule
+  guide="zalando"
+  id="155"
+  level="SHOULD"
+  title="Reduce bandwidth needs and improve responsiveness"
+/>
+
+<Rule guide="zalando" id="156" level="SHOULD" title="Use gzip compression" />
+
+<Rule guide="zalando" id="157" level="SHOULD" title="Support partial responses via filtering" />
+
+<Rule guide="zalando" id="158" level="SHOULD" title="Allow optional embedding of sub-resources" />
+
+<Rule guide="zalando" id="227" level="MUST" title="Document cacheable GET, HEAD, and POST endpoints">
+
+Zalando treats caching as disabled by default (`Cache-Control: no-store`) and requires that endpoints which _are_ cacheable say so explicitly, including the caching headers and their semantics.
+
+</Rule>
+
+<Quiz
+  question="A client sends <code>If-None-Match: &quot;v3&quot;</code> and the resource's current ETag is <code>&quot;v3&quot;</code>. What should the server return?"
+  options={[
+    "<code>200 OK</code> with the full body",
+    "<code>304 Not Modified</code> with no body",
+    "<code>412 Precondition Failed</code>",
+    "<code>204 No Content</code>",
+  ]}
+  answer={1}
+>
+
+The client's copy is still current, so `304 Not Modified` tells it to reuse its cached version, saving the whole body. (`412` is for `If-Match` failures on writes, which is next module's topic.)
+
+</Quiz>
+
+<Takeaways>
+
+- Compress responses; JSON shrinks dramatically.
+- `fields` trims payloads; `embed` saves round trips.
+- `Cache-Control` sets freshness; `ETag` + `If-None-Match` → <Status code={304} /> saves bandwidth.
+- Caching is **opt-in and documented**; never cache personal data publicly.
+
+</Takeaways>

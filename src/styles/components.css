@@ -1,0 +1,884 @@
+/* ==========================================================================
+   Lesson components
+   ========================================================================== */
+
+.sl-markdown-content
+  :is(.dojo-hook, .dojo-story, .dojo-rule, .dojo-takeaways, .dojo-dodont, .dojo-quiz) {
+  margin-block: 1.75rem;
+}
+
+.sl-markdown-content
+  :is(.dojo-hook, .dojo-story, .dojo-rule, .dojo-takeaways, .dojo-do, .dojo-dont)
+  > *
+  + *,
+.sl-markdown-content :is(.dojo-hook__body, .dojo-story__body, .dojo-rule__body) > * + * {
+  margin-top: 0.75rem;
+}
+
+/* ---------- Hook ---------- */
+.dojo-hook {
+  position: relative;
+  padding: 1.5rem 1.6rem;
+  border-radius: var(--dojo-radius);
+  background:
+    linear-gradient(var(--sl-color-black), var(--sl-color-black)) padding-box,
+    var(--dojo-gradient) border-box;
+  border: 2px solid transparent;
+  box-shadow: var(--dojo-glow);
+  font-size: 1.05rem;
+}
+
+.dojo-hook::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(120deg, rgba(139 92 246 / 0.12), rgba(255 122 89 / 0.08));
+  pointer-events: none;
+}
+
+.dojo-hook > * {
+  position: relative;
+}
+
+.sl-markdown-content .dojo-hook__eyebrow,
+.sl-markdown-content .dojo-story__label,
+.sl-markdown-content .dojo-takeaways__title,
+.dojo-quiz__eyebrow {
+  margin: 0;
+  font-family: var(--dojo-font-display);
+  font-weight: 750;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.dojo-hook__title {
+  background: var(--dojo-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* ---------- Story ---------- */
+.dojo-story {
+  --story-color: var(--dojo-violet);
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 1rem;
+  padding: 1.25rem 1.35rem;
+  border-radius: var(--dojo-radius);
+  background: color-mix(in srgb, var(--story-color) 9%, transparent);
+  border: 1px solid color-mix(in srgb, var(--story-color) 30%, transparent);
+}
+
+.dojo-story--history {
+  --story-color: #d4a35a;
+}
+.dojo-story--war-story {
+  --story-color: var(--dojo-red);
+}
+.dojo-story--fun-fact {
+  --story-color: var(--dojo-violet);
+}
+.dojo-story--real-world {
+  --story-color: #06b6d4;
+}
+
+.dojo-story__icon {
+  display: grid;
+  place-items: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: 0.8rem;
+  font-size: 1.4rem;
+  background: color-mix(in srgb, var(--story-color) 18%, transparent);
+  transform: rotate(-6deg);
+}
+
+.sl-markdown-content .dojo-story__label {
+  color: var(--story-color);
+}
+
+.dojo-story__label span {
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--sl-color-white);
+  font-size: 0.95rem;
+}
+
+.dojo-story__body {
+  margin-top: 0.35rem !important;
+}
+
+/* ---------- Do / Don't ---------- */
+.dojo-dodont {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 1rem;
+}
+
+.sl-markdown-content .dojo-dodont > * {
+  margin: 0;
+}
+
+.dojo-do,
+.dojo-dont {
+  --tone: var(--dojo-green);
+  min-width: 0;
+  padding: 1.1rem 1.2rem;
+  border-radius: var(--dojo-radius);
+  border: 1px solid color-mix(in srgb, var(--tone) 35%, transparent);
+  border-top: 4px solid var(--tone);
+  background: color-mix(in srgb, var(--tone) 7%, transparent);
+}
+
+.dojo-dont {
+  --tone: var(--dojo-red);
+}
+
+.sl-markdown-content :is(.dojo-do__label, .dojo-dont__label) {
+  margin: 0 0 0.5rem;
+  font-family: var(--dojo-font-display);
+  font-weight: 750;
+  color: var(--tone);
+}
+
+.dojo-do .expressive-code,
+.dojo-dont .expressive-code {
+  margin-top: 0.5rem;
+}
+
+/* ---------- Company rule ---------- */
+.dojo-rule {
+  padding: 1rem 1.25rem;
+  border-radius: var(--dojo-radius);
+  background: color-mix(in srgb, var(--guide-color) 8%, transparent);
+  border: 1px dashed color-mix(in srgb, var(--guide-color) 55%, transparent);
+}
+
+.dojo-rule__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+}
+
+.dojo-rule__guide {
+  font-family: var(--dojo-font-display);
+  font-weight: 800;
+  color: var(--guide-color);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.dojo-rule__level {
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+  font-family: var(--sl-font-mono);
+  font-weight: 700;
+  font-size: 0.72rem;
+}
+
+.dojo-rule__level--must {
+  background: color-mix(in srgb, var(--dojo-red) 22%, transparent);
+  color: var(--dojo-red);
+}
+.dojo-rule__level--should {
+  background: color-mix(in srgb, var(--dojo-yellow) 22%, transparent);
+  color: #c99a00;
+}
+.dojo-rule__level--may {
+  background: color-mix(in srgb, var(--dojo-green) 22%, transparent);
+  color: var(--dojo-green);
+}
+
+.sl-markdown-content a.dojo-rule__id {
+  margin-inline-start: auto;
+  color: var(--sl-color-gray-3);
+  text-decoration: none;
+  font-family: var(--sl-font-mono);
+}
+
+.sl-markdown-content a.dojo-rule__id:hover {
+  color: var(--guide-color);
+}
+
+.sl-markdown-content .dojo-rule__title {
+  margin-top: 0.4rem;
+  font-weight: 650;
+  color: var(--sl-color-white);
+}
+
+.dojo-rule__body {
+  font-size: 0.95rem;
+  color: var(--sl-color-gray-2);
+}
+
+/* ---------- Takeaways ---------- */
+.dojo-takeaways {
+  padding: 1.35rem 1.5rem;
+  border-radius: var(--dojo-radius);
+  background: var(--dojo-surface-strong);
+  border: 1px solid var(--dojo-border);
+}
+
+.dojo-takeaways__title {
+  color: var(--sl-color-accent-high);
+}
+
+.sl-markdown-content .dojo-takeaways ul {
+  list-style: none;
+  padding-inline-start: 0;
+}
+
+.sl-markdown-content .dojo-takeaways li {
+  position: relative;
+  padding-inline-start: 1.75rem;
+}
+
+.sl-markdown-content .dojo-takeaways li::before {
+  content: "✓";
+  position: absolute;
+  inset-inline-start: 0;
+  top: 0.05em;
+  display: grid;
+  place-items: center;
+  width: 1.2rem;
+  height: 1.2rem;
+  border-radius: 50%;
+  font-size: 0.7rem;
+  font-weight: 800;
+  color: #fff;
+  background: var(--dojo-gradient);
+}
+
+/* ---------- Status chip ---------- */
+.dojo-status {
+  --tone: var(--sl-color-gray-3);
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.35em;
+  padding: 0.05em 0.5em;
+  border-radius: 0.4rem;
+  font-family: var(--sl-font-mono);
+  font-size: 0.85em;
+  white-space: nowrap;
+  color: var(--tone);
+  background: color-mix(in srgb, var(--tone) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--tone) 30%, transparent);
+}
+
+.dojo-status--1xx {
+  --tone: #94a3b8;
+}
+.dojo-status--2xx {
+  --tone: var(--dojo-green);
+}
+.dojo-status--3xx {
+  --tone: #38bdf8;
+}
+.dojo-status--4xx {
+  --tone: #f59e0b;
+}
+.dojo-status--5xx {
+  --tone: var(--dojo-red);
+}
+
+/* ---------- Quiz ---------- */
+.dojo-quiz {
+  display: block;
+  padding: 1.35rem 1.5rem;
+  border-radius: var(--dojo-radius);
+  background: var(--dojo-surface);
+  border: 1px solid var(--dojo-border);
+  transition:
+    border-color 0.3s,
+    box-shadow 0.3s;
+}
+
+.dojo-quiz.is-solved {
+  border-color: color-mix(in srgb, var(--dojo-green) 60%, transparent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--dojo-green) 12%, transparent);
+}
+
+.dojo-quiz.is-missed {
+  border-color: color-mix(in srgb, var(--dojo-yellow) 60%, transparent);
+}
+
+.dojo-quiz__eyebrow {
+  color: var(--dojo-coral);
+}
+
+.dojo-quiz__question {
+  margin: 0.5rem 0 1rem;
+  font-family: var(--dojo-font-display);
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--sl-color-white);
+}
+
+.dojo-quiz__options {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dojo-quiz__options button {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0.65rem 0.85rem;
+  border-radius: 0.7rem;
+  border: 1px solid var(--dojo-border);
+  background: var(--sl-color-black);
+  color: var(--sl-color-gray-1);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+  transition:
+    transform 0.15s,
+    border-color 0.15s,
+    background 0.15s;
+}
+
+.dojo-quiz__options button:hover:not(:disabled) {
+  transform: translateX(4px);
+  border-color: var(--sl-color-accent);
+}
+
+.dojo-quiz__options button:disabled {
+  cursor: default;
+}
+
+.dojo-quiz__options button:disabled:not(.is-correct, .is-wrong) {
+  opacity: 0.55;
+}
+
+.dojo-quiz__options code {
+  font-family: var(--sl-font-mono);
+  font-size: 0.9em;
+  color: var(--sl-color-accent-high);
+}
+
+.dojo-quiz__letter {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 0.5rem;
+  font-family: var(--sl-font-mono);
+  font-weight: 700;
+  font-size: 0.8rem;
+  background: var(--dojo-surface-strong);
+}
+
+.dojo-quiz__options .is-correct {
+  border-color: var(--dojo-green);
+  background: color-mix(in srgb, var(--dojo-green) 14%, var(--sl-color-black));
+}
+
+.dojo-quiz__options .is-correct .dojo-quiz__letter {
+  background: var(--dojo-green);
+  color: #fff;
+}
+
+.dojo-quiz__options .is-wrong {
+  border-color: var(--dojo-red);
+  background: color-mix(in srgb, var(--dojo-red) 12%, var(--sl-color-black));
+  animation: dojo-shake 0.4s;
+}
+
+.dojo-quiz__options .is-wrong .dojo-quiz__letter {
+  background: var(--dojo-red);
+  color: #fff;
+}
+
+.dojo-quiz__explain {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px dashed var(--dojo-border);
+  animation: dojo-fade-in 0.35s ease-out;
+}
+
+.dojo-quiz__verdict {
+  margin: 0 0 0.4rem;
+  font-weight: 750;
+  color: var(--sl-color-white);
+}
+
+@keyframes dojo-shake {
+  25% {
+    transform: translateX(-5px);
+  }
+  50% {
+    transform: translateX(5px);
+  }
+  75% {
+    transform: translateX(-3px);
+  }
+}
+
+@keyframes dojo-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+/* ---------- Lesson header ---------- */
+.dojo-lesson-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 1rem;
+  font-size: 0.8rem;
+}
+
+.dojo-lesson-meta__module {
+  font-family: var(--dojo-font-display);
+  font-weight: 750;
+  color: var(--module-color);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-inline-end: 0.25rem;
+}
+
+.dojo-lesson-meta__chip {
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  background: var(--dojo-surface-strong);
+  border: 1px solid var(--dojo-border);
+  color: var(--sl-color-gray-2);
+}
+
+.dojo-lesson-meta__done {
+  color: var(--dojo-green);
+  border-color: color-mix(in srgb, var(--dojo-green) 40%, transparent);
+}
+
+.dojo-lesson-meta + h1 {
+  margin-top: 0.5rem !important;
+}
+
+/* ---------- Complete button ---------- */
+.dojo-complete {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 3rem;
+  padding: 1.25rem 1.5rem;
+  border-radius: var(--dojo-radius);
+  background: var(--dojo-surface);
+  border: 1px solid var(--dojo-border);
+}
+
+.dojo-complete__title {
+  margin: 0;
+  font-family: var(--dojo-font-display);
+  font-weight: 750;
+  font-size: 1.1rem;
+  color: var(--sl-color-white);
+}
+
+.dojo-complete__sub {
+  margin: 0.15rem 0 0;
+  font-size: 0.875rem;
+  color: var(--sl-color-gray-3);
+}
+
+.dojo-complete__button {
+  padding: 0.7rem 1.3rem;
+  border: 0;
+  border-radius: 999px;
+  font: inherit;
+  font-weight: 700;
+  color: #fff;
+  background: var(--dojo-gradient);
+  cursor: pointer;
+  box-shadow: 0 10px 25px -10px rgba(139 92 246 / 0.7);
+  transition:
+    transform 0.15s,
+    filter 0.15s;
+}
+
+.dojo-complete__button:hover {
+  transform: translateY(-2px);
+  filter: brightness(1.1);
+}
+
+.dojo-complete .when-done,
+.dojo-complete.is-done .when-todo {
+  display: none;
+}
+
+.dojo-complete.is-done .when-done {
+  display: inline;
+}
+
+.dojo-complete.is-done .dojo-complete__button {
+  background: var(--dojo-green);
+  box-shadow: none;
+}
+
+.dojo-confetti {
+  position: absolute;
+  right: 4rem;
+  top: 50%;
+  font-size: 1.4rem;
+  pointer-events: none;
+  animation: dojo-confetti 1.1s cubic-bezier(0.2, 0.7, 0.3, 1) forwards;
+}
+
+@keyframes dojo-confetti {
+  to {
+    transform: translate(var(--x), var(--y)) rotate(var(--r));
+    opacity: 0;
+  }
+}
+
+/* ---------- Course map ---------- */
+.dojo-map__summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem 2rem;
+  margin-bottom: 1.5rem;
+  padding: 1rem 1.25rem;
+  border-radius: var(--dojo-radius);
+  background: var(--dojo-surface);
+  border: 1px solid var(--dojo-border);
+}
+
+.dojo-map__summary > div:first-child {
+  display: flex;
+  gap: 1.5rem;
+}
+
+.dojo-map__stat {
+  margin: 0;
+  color: var(--sl-color-gray-3);
+}
+
+.dojo-map__stat b {
+  font-family: var(--dojo-font-display);
+  font-size: 1.5rem;
+  color: var(--sl-color-white);
+}
+
+.dojo-map__progress {
+  flex: 1 1 14rem;
+  max-width: 22rem;
+  font-size: 0.85rem;
+  color: var(--sl-color-gray-3);
+}
+
+.dojo-map__progress p {
+  margin: 0.35rem 0 0;
+}
+
+.dojo-map__bar {
+  height: 0.6rem;
+  border-radius: 999px;
+  background: var(--dojo-surface-strong);
+  overflow: hidden;
+}
+
+.dojo-map__bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--dojo-gradient);
+  transition: width 0.6s cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+
+.dojo-map__modules {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));
+  gap: 1rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dojo-module {
+  position: relative;
+  padding: 1.25rem;
+  border-radius: var(--dojo-radius);
+  background: var(--dojo-surface);
+  border: 1px solid var(--dojo-border);
+  overflow: hidden;
+  transition:
+    transform 0.2s,
+    border-color 0.2s,
+    box-shadow 0.2s;
+}
+
+.dojo-module::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 4px;
+  background: var(--module-color);
+}
+
+.dojo-module:hover {
+  transform: translateY(-3px);
+  border-color: color-mix(in srgb, var(--module-color) 50%, transparent);
+  box-shadow: 0 18px 40px -24px var(--module-color);
+}
+
+.dojo-module__head {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.dojo-module__emoji {
+  display: grid;
+  place-items: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: 0.8rem;
+  font-size: 1.4rem;
+  background: color-mix(in srgb, var(--module-color) 18%, transparent);
+}
+
+.dojo-module__number {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--module-color);
+}
+
+.dojo-module__title {
+  margin: 0;
+  font-size: 1.2rem;
+  color: var(--sl-color-white);
+}
+
+.dojo-module__tagline {
+  margin: 0.75rem 0;
+  font-size: 0.9rem;
+  color: var(--sl-color-gray-3);
+}
+
+.dojo-module__lessons {
+  display: grid;
+  gap: 0.15rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dojo-module__lessons a {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.4rem 0.5rem;
+  border-radius: 0.5rem;
+  font-size: 0.92rem;
+  color: var(--sl-color-gray-1);
+  text-decoration: none;
+}
+
+.dojo-module__lessons a:hover {
+  background: var(--dojo-surface-strong);
+  color: var(--sl-color-white);
+}
+
+.dojo-module__check {
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--module-color) 60%, transparent);
+}
+
+.is-done .dojo-module__check {
+  border-color: var(--dojo-green);
+  background: var(--dojo-green)
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 8.5l2.5 2.5L12 5.5' fill='none' stroke='white' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+    center / 100% no-repeat;
+}
+
+.is-done .dojo-module__lesson {
+  color: var(--sl-color-gray-3);
+}
+
+.dojo-module__lesson {
+  flex: 1;
+}
+
+.dojo-module__min {
+  font-family: var(--sl-font-mono);
+  font-size: 0.75rem;
+  color: var(--sl-color-gray-4);
+}
+
+/* ---------- Home page bits ---------- */
+.dojo-features {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 1rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dojo-feature {
+  padding: 1.25rem;
+  border-radius: var(--dojo-radius);
+  background: var(--dojo-surface);
+  border: 1px solid var(--dojo-border);
+}
+
+.dojo-feature__icon {
+  font-size: 1.75rem;
+}
+
+.dojo-feature h3 {
+  margin: 0.5rem 0 0.25rem;
+  font-size: 1.1rem;
+  color: var(--sl-color-white);
+}
+
+.dojo-feature p {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--sl-color-gray-3);
+}
+
+.dojo-terminal {
+  max-width: 36rem;
+  margin-inline: auto;
+  border-radius: var(--dojo-radius);
+  overflow: hidden;
+  border: 1px solid var(--dojo-border);
+  background: #0b0a18;
+  box-shadow: var(--dojo-glow);
+  font-family: var(--sl-font-mono);
+  font-size: 0.85rem;
+  text-align: start;
+}
+
+.dojo-terminal__bar {
+  display: flex;
+  gap: 0.4rem;
+  padding: 0.7rem 0.9rem;
+  background: rgba(255 255 255 / 0.05);
+}
+
+.dojo-terminal__bar i {
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 50%;
+  background: #ff5f57;
+}
+
+.dojo-terminal__bar i:nth-child(2) {
+  background: #febc2e;
+}
+.dojo-terminal__bar i:nth-child(3) {
+  background: #28c840;
+}
+
+.dojo-terminal pre {
+  margin: 0;
+  padding: 1rem 1.2rem 1.2rem;
+  color: #d8d5f0;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  background: none;
+  border: 0;
+}
+
+.dojo-terminal .m {
+  color: #ff9b7a;
+  font-weight: 700;
+}
+.dojo-terminal .p {
+  color: #a78bfa;
+}
+.dojo-terminal .ok {
+  color: #4ade80;
+  font-weight: 700;
+}
+.dojo-terminal .k {
+  color: #7dd3fc;
+}
+.dojo-terminal .s {
+  color: #fcd34d;
+}
+.dojo-terminal .c {
+  color: #6b6890;
+}
+
+.dojo-guides {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 1rem;
+}
+
+.dojo-guide-card {
+  padding: 1.25rem;
+  border-radius: var(--dojo-radius);
+  border: 1px solid color-mix(in srgb, var(--guide-color) 40%, transparent);
+  background: color-mix(in srgb, var(--guide-color) 7%, transparent);
+}
+
+.dojo-guide-card h3 {
+  margin: 0;
+  color: var(--guide-color);
+}
+
+.dojo-guide-card p {
+  margin: 0.4rem 0 0;
+  font-size: 0.9rem;
+  color: var(--sl-color-gray-2);
+}
+
+.dojo-guide-card .dojo-pill {
+  display: inline-block;
+  margin-top: 0.75rem;
+  padding: 0.1rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  background: var(--dojo-surface-strong);
+  color: var(--sl-color-gray-2);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dojo-module,
+  .dojo-quiz__options button,
+  .dojo-complete__button {
+    transition: none;
+  }
+}
+
+/* ---------- Rule index ---------- */
+.dojo-rule-index {
+  overflow-x: auto;
+}
+
+.dojo-rule-index td:first-child a {
+  font-family: var(--sl-font-mono);
+  white-space: nowrap;
+}
+
+.dojo-rule-index td:nth-child(2) {
+  white-space: nowrap;
+}

@@ -1,0 +1,217 @@
+---
+title: HTTP methods
+description: GET, POST, PUT, PATCH, DELETE and friends. What each one promises, and why safe and idempotent are the two most important words in HTTP.
+---
+
+import {
+  Hook,
+  Story,
+  DoDont,
+  Do,
+  Dont,
+  Rule,
+  Quiz,
+  Takeaways,
+  Tabs,
+  TabItem,
+  Status,
+} from "@components/lesson";
+
+<Hook>
+
+HTTP methods are not just labels. Each one is a **promise** to everything between the client and your server: browsers, caches, proxies, retry libraries, crawlers. Break the promise (say, by deleting data on `GET`) and some helpful piece of infrastructure will eventually do something terrible on your behalf.
+
+</Hook>
+
+## The cast
+
+| Method    | Meaning                                                  | Typical success                                                       |
+| --------- | -------------------------------------------------------- | --------------------------------------------------------------------- |
+| `GET`     | Read a resource or collection                            | <Status code={200} />                                                 |
+| `POST`    | Create a resource in a collection, or "process this"     | <Status code={201} /> / <Status code={200} /> / <Status code={202} /> |
+| `PUT`     | Replace a resource completely (or create at a known URL) | <Status code={200} /> / <Status code={201} /> / <Status code={204} /> |
+| `PATCH`   | Partially update a resource                              | <Status code={200} /> / <Status code={204} />                         |
+| `DELETE`  | Remove a resource                                        | <Status code={204} /> / <Status code={200} />                         |
+| `HEAD`    | Like `GET`, but headers only                             | <Status code={200} />                                                 |
+| `OPTIONS` | What can I do here? (CORS preflights live here)          | <Status code={204} />                                                 |
+
+## The two magic properties
+
+**Safe**: the request doesn't change server state. The client can call it anytime, as often as it likes. Crawlers, prefetchers and link previews assume this.
+
+**Idempotent**: doing it once or ten times has the **same effect on the server**. If the network drops the response, the client can just retry.
+
+| Method    | Safe | Idempotent |            Cacheable            |
+| --------- | :--: | :--------: | :-----------------------------: |
+| `GET`     |  ✅  |     ✅     |               ✅                |
+| `HEAD`    |  ✅  |     ✅     |               ✅                |
+| `OPTIONS` |  ✅  |     ✅     |               ❌                |
+| `PUT`     |  ❌  |     ✅     |               ❌                |
+| `DELETE`  |  ❌  |     ✅     |               ❌                |
+| `POST`    |  ❌  |     ❌     | rarely (needs explicit headers) |
+| `PATCH`   |  ❌  |     ❌     |               ❌                |
+
+:::note[Idempotent ≠ same response]
+`DELETE /orders/42` twice: the first returns <Status code={204} />, the second may return <Status code={404} />. That's fine! Idempotency is about the **effect on the server** (the order is gone either way), not identical responses.
+:::
+
+## PUT vs. PATCH
+
+The eternal question. `PUT` sends the **whole** resource; anything you leave out is gone. `PATCH` sends **only the changes**.
+
+```http
+# PUT: full replacement. Forgot "phone"? It's now deleted.
+PUT /customers/7
+{ "name": "Ada Lovelace", "email": "ada@example.com" }
+
+# PATCH with JSON Merge Patch (RFC 7396): only listed fields change.
+PATCH /customers/7
+Content-Type: application/merge-patch+json
+{ "email": "ada@example.com" }
+```
+
+In practice, most APIs use `PATCH` for updates because clients rarely have (or want to send) the full resource. For `PATCH`, prefer **JSON Merge Patch** (`application/merge-patch+json`): it's just "a JSON object with the fields to change, `null` to remove". Its big sibling **JSON Patch** (RFC 6902) is a list of operations (`add`, `remove`, `replace`, `move`…) for when you need fine control over arrays.
+
+<Tabs syncKey="stack">
+<TabItem label="FastAPI" icon="seti:python">
+
+```python
+class CustomerPatch(BaseModel):
+    name: str | None = None
+    email: EmailStr | None = None
+    phone: str | None = None
+
+@app.patch("/customers/{customer_id}")
+def patch_customer(customer_id: str, patch: CustomerPatch) -> Customer:
+    customer = repo.get(customer_id) or raise_404()
+    # exclude_unset: distinguishes "not sent" from "sent as null"
+    changes = patch.model_dump(exclude_unset=True)
+    return repo.save(customer.model_copy(update=changes))
+
+@app.put("/customers/{customer_id}")
+def replace_customer(customer_id: str, body: CustomerIn) -> Customer:
+    return repo.save(Customer(id=customer_id, **body.model_dump()))
+```
+
+</TabItem>
+<TabItem label="Django" icon="seti:python">
+
+```python
+class CustomerViewSet(viewsets.ModelViewSet):
+    queryset = Customer.objects.all()
+    serializer_class = CustomerSerializer
+    # DRF already maps:
+    #   PUT   → update()          (serializer validates ALL required fields)
+    #   PATCH → partial_update()  (serializer(partial=True), only sent fields)
+
+# Want PATCH only (no PUT)? Restrict the allowed methods:
+class CustomerViewSet(viewsets.ModelViewSet):
+    http_method_names = ["get", "post", "patch", "delete", "head", "options"]
+```
+
+</TabItem>
+<TabItem label="Hono" icon="seti:typescript">
+
+```ts
+const CustomerPatch = z
+  .object({ name: z.string(), email: z.string().email(), phone: z.string().nullable() })
+  .partial()
+  .strict(); // unknown fields → 400
+
+app.patch("/customers/:id", zValidator("json", CustomerPatch), async (c) => {
+  const current = await repo.get(c.req.param("id"));
+  if (!current) return c.notFound();
+  const patch = c.req.valid("json"); // only the fields the client sent
+  return c.json(await repo.save({ ...current, ...patch }));
+});
+```
+
+</TabItem>
+</Tabs>
+
+## POST: the Swiss Army knife
+
+`POST` means "process this representation according to the resource's own semantics". Its most common use is **create a new resource in a collection, letting the server pick the ID**:
+
+```http
+POST /orders
+{ "items": [{ "sku": "sku-123", "quantity": 2 }] }
+
+HTTP/1.1 201 Created
+Location: https://api.example.com/orders/ord_42
+```
+
+Because `POST` is not idempotent, a timeout leaves the client wondering: _"Did my order go through? If I retry, will I buy two TVs?"_ We'll solve this properly in [Idempotency & safe retries](/course/robustness/idempotency/).
+
+## GET with a body?
+
+Technically allowed by the spec, practically a trap: many proxies, caches and libraries drop or reject it. If a query is too complex for query parameters, use `POST` on a search resource (more in [Filtering, sorting & fields](/course/collections/querying/)).
+
+<DoDont>
+<Do>
+
+```http
+GET  /orders?status=SHIPPED
+POST /orders/42/cancellations
+```
+
+</Do>
+<Dont>
+
+```http
+GET /orders/42/delete
+GET /newsletter/unsubscribe?email=…
+```
+
+Prefetchers and link previewers will trigger these.
+
+</Dont>
+</DoDont>
+
+<Story kind="war-story" title="The Google Web Accelerator massacre">
+
+In 2005, Google released the **Web Accelerator**, a browser add-on that sped up browsing by _prefetching_ links on the page. It was perfectly allowed to: links are `GET`s, and `GET` is safe. Unfortunately, many web apps had admin pages with plain links like `<a href="/item/42/delete">`. Users opened their admin panels, and the accelerator dutifully "clicked" every delete link. Data vanished. The lesson was learned the hard way: **`GET` must never change state.**
+
+</Story>
+
+<Story kind="fun-fact" title="PATCH came late">
+
+The original HTTP/1.1 spec didn't include `PATCH`. It was added in 2010 by RFC 5789, after years of people abusing `POST` and `PUT` for partial updates. HTTP is extensible: new methods are possible, but in practice, the classic set covers almost everything.
+
+</Story>
+
+<Rule guide="zalando" id="148" level="MUST" title="Use HTTP methods correctly">
+
+Zalando spells out the semantics per method: `GET` reads (and should not have a body), `PUT` replaces whole resources, `PATCH` updates partially (preferring JSON Merge Patch), `POST` creates or performs non-idempotent processing, and `DELETE` removes.
+
+</Rule>
+
+<Rule guide="zalando" id="149" level="MUST" title="Fulfill common method properties">
+
+Implementations must respect safety, idempotency and cacheability as defined by the HTTP standard.
+
+</Rule>
+
+<Quiz
+  question="A client sends <code>PUT /profiles/7</code> containing only <code>{&quot;nickname&quot;: &quot;ada&quot;}</code>. Under strict PUT semantics, what happens to the profile's <code>bio</code>?"
+  options={[
+    "It's unchanged, since it wasn't sent",
+    "It's removed or reset, because PUT replaces the whole resource",
+    "The server must return 405",
+    "It depends on the Content-Type",
+  ]}
+  answer={1}
+>
+
+`PUT` means "store this representation as the new state". Fields you leave out are gone (or reset to defaults). For "only change what I send", use `PATCH`, ideally with JSON Merge Patch.
+
+</Quiz>
+
+<Takeaways>
+
+- **Safe** methods don't change state; **idempotent** ones can be retried without extra effect.
+- `GET` must never change anything. Ever.
+- `PUT` replaces, `PATCH` merges (prefer JSON Merge Patch), `POST` creates or processes.
+- `POST` is not idempotent, so plan for retries.
+
+</Takeaways>

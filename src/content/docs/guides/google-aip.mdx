@@ -1,0 +1,33 @@
+---
+title: Google AIP (coming soon)
+description: Google's API Improvement Proposals will be the next company guide in the dojo.
+---
+
+import { Hook } from "@components/lesson";
+
+<Hook title="Coming soon">
+
+Google's **API Improvement Proposals** ([google.aip.dev](https://google.aip.dev/)) are a numbered set of design documents behind thousands of Google APIs. They're built around gRPC and protocol buffers, but map onto HTTP/JSON, and they make some different choices from Zalando's guide. That makes them a perfect second guide.
+
+</Hook>
+
+## What to expect
+
+- `<Rule guide="google">` boxes added to the existing lessons, right next to Zalando's.
+- A comparison of the places where the two guides disagree, and why.
+- A few topics Google covers in depth: resource names, standard vs. custom methods, field masks, long-running operations.
+
+A sneak peek is already on [How guides compare](/guides/).
+
+## Topics worth comparing first
+
+| AIP         | Topic                    | Lesson it extends                                                          |
+| ----------- | ------------------------ | -------------------------------------------------------------------------- |
+| AIP-121     | Resource-oriented design | [Thinking in resources](/course/resources-and-urls/thinking-in-resources/) |
+| AIP-122     | Resource names           | [The URL style guide](/course/resources-and-urls/url-style-guide/)         |
+| AIP-131…135 | Standard methods         | [HTTP methods](/course/speaking-http/http-methods/)                        |
+| AIP-136     | Custom methods           | [Thinking in resources](/course/resources-and-urls/thinking-in-resources/) |
+| AIP-158     | Pagination               | [Pagination](/course/collections/pagination/)                              |
+| AIP-151     | Long-running operations  | [Async jobs & batch requests](/course/robustness/async-and-batch/)         |
+| AIP-185     | Versioning               | [Versioning](/course/evolution/versioning/)                                |
+| AIP-193     | Errors                   | [Errors people can debug](/course/speaking-http/errors/)                   |

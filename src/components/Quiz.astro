@@ -1,0 +1,76 @@
+---
+/**
+ * A tiny multiple-choice question.
+ *
+ *   <Quiz
+ *     question="Which method is idempotent?"
+ *     options={["POST", "PUT", "PATCH"]}
+ *     answer={1}
+ *   >
+ *     Explanation shown after answering (Markdown allowed).
+ *   </Quiz>
+ */
+interface Props {
+  question: string;
+  options: string[];
+  /** Index of the correct option (0-based). */
+  answer: number;
+}
+const { question, options, answer } = Astro.props;
+---
+
+<dojo-quiz class="dojo-quiz not-content" data-answer={answer}>
+  <p class="dojo-quiz__eyebrow">🧠 Quick check</p>
+  <p class="dojo-quiz__question" set:html={question} />
+  <ol class="dojo-quiz__options">
+    {
+      options.map((option, i) => (
+        <li>
+          <button type="button" data-index={i}>
+            <span class="dojo-quiz__letter">{String.fromCharCode(65 + i)}</span>
+            <span set:html={option} />
+          </button>
+        </li>
+      ))
+    }
+  </ol>
+  <div class="dojo-quiz__explain" hidden>
+    <p class="dojo-quiz__verdict"></p>
+    <div class="sl-markdown-content"><slot /></div>
+  </div>
+</dojo-quiz>
+
+<script>
+  const cheers = ["Nailed it!", "Exactly right!", "Spot on!", "You've got it!", "Sensei approves."];
+
+  class DojoQuiz extends HTMLElement {
+    connectedCallback() {
+      const answer = Number(this.dataset.answer);
+      const buttons = [...this.querySelectorAll<HTMLButtonElement>("button[data-index]")];
+      const explain = this.querySelector<HTMLElement>(".dojo-quiz__explain");
+      const verdict = this.querySelector<HTMLElement>(".dojo-quiz__verdict");
+
+      for (const button of buttons) {
+        button.addEventListener("click", () => {
+          const picked = Number(button.dataset.index);
+          const correct = picked === answer;
+          for (const b of buttons) {
+            b.disabled = true;
+            const index = Number(b.dataset.index);
+            if (index === answer) b.classList.add("is-correct");
+            else if (index === picked) b.classList.add("is-wrong");
+          }
+          this.classList.add(correct ? "is-solved" : "is-missed");
+          if (verdict) {
+            verdict.textContent = correct
+              ? `✅ ${cheers[Math.floor(Math.random() * cheers.length)]}`
+              : "❌ Not quite. Here's why:";
+          }
+          if (explain) explain.hidden = false;
+        });
+      }
+    }
+  }
+
+  if (!customElements.get("dojo-quiz")) customElements.define("dojo-quiz", DojoQuiz);
+</script>

@@ -1,0 +1,193 @@
+---
+title: Versioning
+description: URL versions, media type versions, date-based versions, or no versions at all. The trade-offs, and why the best version is the one you never need.
+---
+
+import {
+  Hook,
+  Story,
+  DoDont,
+  Do,
+  Dont,
+  Rule,
+  Quiz,
+  Takeaways,
+  Tabs,
+  TabItem,
+} from "@components/lesson";
+
+<Hook>
+
+Versioning is the topic where API designers argue the loudest. `/v1/` in the URL? A header? A date? The surprising answer from experienced teams: **avoid needing versions in the first place**. But when you must break things, the strategy you picked on day one decides how painful it is.
+
+</Hook>
+
+## Option 0: don't version (evolve compatibly)
+
+If you follow the [compatibility rules](/course/evolution/compatibility/), most changes never need a new version. Many large APIs go years without a breaking change. A new version means running two APIs, migrating every client, and eventually retiring the old one. That's expensive. Make it rare.
+
+## When you must: the main strategies
+
+| Strategy      | Example                                             | Pros                                               | Cons                                                   |
+| ------------- | --------------------------------------------------- | -------------------------------------------------- | ------------------------------------------------------ |
+| URL path      | `GET /v2/orders/42`                                 | Obvious, easy to route and test in a browser       | Versions the _whole API_; same order now has two URLs  |
+| Media type    | `Accept: application/vnd.shop.order+json;version=2` | Versions a single representation; URLs stay stable | Less visible; needs content negotiation                |
+| Custom header | `Api-Version: 2`                                    | Stable URLs, simple                                | Non-standard; caches need `Vary`                       |
+| Date-based    | `Stripe-Version: 2024-06-20`                        | Fine-grained, per-client pinning                   | Needs serious infrastructure to maintain many versions |
+
+## Media type versioning, in practice
+
+```http
+GET /orders/42
+Accept: application/x.shop.order+json;version=2
+
+HTTP/1.1 200 OK
+Content-Type: application/x.shop.order+json;version=2
+Vary: Accept
+```
+
+Clients that send plain `application/json` (or `version=1`) keep getting the old shape. Only the **order** representation changed, not every endpoint.
+
+<Tabs syncKey="stack">
+<TabItem label="FastAPI" icon="seti:python">
+
+```python
+import re
+
+def requested_version(accept: str | None) -> int:
+    match = re.search(r"application/x\.shop\.order\+json;\s*version=(\d+)", accept or "")
+    return int(match.group(1)) if match else 1
+
+@app.get("/orders/{order_id}")
+def get_order(order_id: str, accept: Annotated[str | None, Header()] = None):
+    order = repo.get(order_id) or raise_404()
+    version = requested_version(accept)
+    body = OrderV2.from_domain(order) if version == 2 else OrderV1.from_domain(order)
+    return JSONResponse(
+        body.model_dump(mode="json"),
+        media_type=f"application/x.shop.order+json;version={version}",
+        headers={"Vary": "Accept"},
+    )
+```
+
+</TabItem>
+<TabItem label="Django" icon="seti:python">
+
+```python
+# settings.py: DRF has built-in versioning schemes
+REST_FRAMEWORK = {
+    "DEFAULT_VERSIONING_CLASS": "rest_framework.versioning.AcceptHeaderVersioning",
+    "DEFAULT_VERSION": "1",
+    "ALLOWED_VERSIONS": ["1", "2"],
+}
+# Clients send: Accept: application/json; version=2
+
+class OrderViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = Order.objects.all()
+
+    def get_serializer_class(self):
+        return OrderV2Serializer if self.request.version == "2" else OrderV1Serializer
+
+# (URLPathVersioning, NamespaceVersioning, QueryParameterVersioning also exist)
+```
+
+</TabItem>
+<TabItem label="Hono" icon="seti:typescript">
+
+```ts
+const versionOf = (accept = "") => Number(/version=(\d+)/.exec(accept)?.[1] ?? 1);
+
+app.get("/orders/:id", async (c) => {
+  const order = await repo.get(c.req.param("id"));
+  if (!order) return c.notFound();
+
+  const version = versionOf(c.req.header("Accept"));
+  c.header("Content-Type", `application/x.shop.order+json;version=${version}`);
+  c.header("Vary", "Accept");
+  return c.body(JSON.stringify(version === 2 ? toV2(order) : toV1(order)));
+});
+```
+
+</TabItem>
+</Tabs>
+
+## URL versioning: popular, with caveats
+
+`/v1/` is by far the most common approach in public APIs, and it's not "wrong". Just know what you're buying: a new major version of the **entire** API, where every resource gets a second URL. If you use it, keep it to a **major** number (`/v1`, `/v2`), never `/v1.3.2`.
+
+<DoDont>
+<Do>
+
+```http
+# Evolve compatibly. If a representation must break,
+# version that representation:
+Accept: application/x.shop.order+json;version=2
+```
+
+</Do>
+<Dont>
+
+```http
+GET /v1.4/orders
+GET /api/v2-beta-new/orders
+GET /orders?version=latest
+```
+
+</Dont>
+</DoDont>
+
+<Story kind="real-world" title="Stripe's date-based versions">
+
+Stripe pins each account to the API version that was current when it made its first request, identified by a **date** like `2024-06-20`. Every breaking change ships as a new dated version, and internally Stripe keeps small "version change" modules that transform responses backward, step by step, to whatever version you're pinned to. Their 2017 blog post _"APIs as infrastructure: future-proofing Stripe with versioning"_ describes this, and many companies have copied the idea.
+
+</Story>
+
+<Story kind="real-world" title="GitHub's media types and dates">
+
+GitHub's REST API used media types for years (`application/vnd.github.v3+json`), including "preview" media types to opt into experimental features. In 2022 they introduced date-based versions through a header: `X-GitHub-Api-Version: 2022-11-28`. Even the biggest APIs change strategies over time.
+
+</Story>
+
+<Rule guide="zalando" id="113" level="SHOULD" title="Avoid versioning" />
+
+<Rule guide="zalando" id="114" level="MUST" title="Use media type versioning">
+
+When a breaking change is unavoidable, Zalando uses versioned media types such as `application/x.zalando.cart+json;version=2`, together with `Vary: Accept`.
+
+</Rule>
+
+<Rule guide="zalando" id="115" level="MUST" title="Not use URL versioning">
+
+A strong opinion. Zalando argues URL versions couple all resources to one version and lead to tightly coupled clients, preferring compatible evolution and media types.
+
+</Rule>
+
+<Rule guide="google" id="185" title="API versioning">
+
+Contrast: Google AIP-185 uses a **major version in the URL path** (`/v1/`, `/v2/`), with stability channels like `v1beta1`. Two respected guides, opposite choices. Both agree: breaking changes should be rare.
+
+</Rule>
+
+<Quiz
+  question="What's the main downside of putting <code>/v2/</code> in the URL compared to media type versioning?"
+  options={[
+    "Browsers can't call it",
+    "It versions the whole API at once, giving every resource a second URL even if it didn't change",
+    "It's not allowed by HTTP",
+    "It disables caching",
+  ]}
+  answer={1}
+>
+
+URL versions are coarse-grained: one breaking change in one resource creates a whole new API surface. Media type versioning lets one representation evolve while URLs stay stable.
+
+</Quiz>
+
+<Takeaways>
+
+- The best versioning strategy is **not needing one**: evolve compatibly.
+- URL, media type, header and date-based versioning all work; know the trade-offs.
+- Zalando: avoid versioning; if needed, media types, never URLs. Google: major version in the URL.
+- Whatever you choose, make breaking changes rare and planned.
+
+</Takeaways>

@@ -1,0 +1,71 @@
+---
+/**
+ * Adds a "mark as complete" button at the end of each lesson.
+ */
+import Default from "@astrojs/starlight/components/Footer.astro";
+import { findLesson, lessons } from "../../data/curriculum";
+
+const lesson = findLesson(Astro.locals.starlightRoute.id);
+const remaining = lesson ? lessons.length - lesson.number : 0;
+---
+
+{
+  lesson && (
+    <dojo-complete class="dojo-complete" data-lesson={lesson.id}>
+      <div>
+        <p class="dojo-complete__title">Finished the lesson?</p>
+        <p class="dojo-complete__sub">
+          {remaining > 0
+            ? `${remaining} more to go. Your progress is saved in this browser.`
+            : "This is the last lesson. What a journey! 🎉"}
+        </p>
+      </div>
+      <button type="button" class="dojo-complete__button" aria-pressed="false">
+        <span class="when-todo">Mark as complete</span>
+        <span class="when-done">✓ Completed</span>
+      </button>
+    </dojo-complete>
+  )
+}
+<Default />
+
+<script>
+  import { getDone, onProgress, setDone } from "../../scripts/progress";
+
+  class DojoComplete extends HTMLElement {
+    connectedCallback() {
+      const id = this.dataset.lesson ?? "";
+      const button = this.querySelector("button");
+      if (!button) return;
+      const render = () => {
+        const done = getDone().has(id);
+        button.setAttribute("aria-pressed", String(done));
+        this.classList.toggle("is-done", done);
+      };
+      button.addEventListener("click", () => {
+        const done = !getDone().has(id);
+        setDone(id, done);
+        if (done) this.celebrate();
+      });
+      render();
+      onProgress(render);
+    }
+
+    celebrate() {
+      if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+      const emojis = ["🎉", "🥋", "✨", "🚀", "💜", "🧡"];
+      for (let i = 0; i < 18; i++) {
+        const span = document.createElement("span");
+        span.className = "dojo-confetti";
+        span.textContent = emojis[i % emojis.length] ?? "🎉";
+        span.style.setProperty("--x", `${(Math.random() - 0.5) * 360}px`);
+        span.style.setProperty("--y", `${-80 - Math.random() * 160}px`);
+        span.style.setProperty("--r", `${(Math.random() - 0.5) * 720}deg`);
+        this.append(span);
+        span.addEventListener("animationend", () => span.remove());
+      }
+    }
+  }
+
+  if (!customElements.get("dojo-complete")) customElements.define("dojo-complete", DojoComplete);
+</script>

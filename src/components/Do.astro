@@ -1,0 +1,11 @@
+---
+interface Props {
+  title?: string;
+}
+const { title = "Do" } = Astro.props;
+---
+
+<section class="dojo-do">
+  <p class="dojo-do__label"><span aria-hidden="true">✅</span> {title}</p>
+  <div><slot /></div>
+</section>
