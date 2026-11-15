@@ -233,6 +233,9 @@ const delay = 1_000; // every client retries in lockstep
   title="Use secondary key for idempotent POST design"
 />
 
+<Rule guide="google" id="155" title="Request identification" />
+<Rule guide="google" id="194" title="Automatic retry configuration" />
+
 </RuleGroup>
 
 Priya found this handler in review. It passed its tests, and it fails the first time a deploy lands at the wrong moment.

@@ -38,6 +38,7 @@ import {
   WorkedProblem,
   Solution,
   Figure,
+  Stepper,
   Status,
   Tabs,
   TabItem,
@@ -53,16 +54,13 @@ import {
 
 </InBrief>
 
-Monday morning at Fernhill. Alice and Bob open the same boot in the admin tool. Alice fixes the price; Bob fixes a typo in the description and saves, sending the whole product with the old price. Alice's fix vanishes. Nobody sees an error, and the bug report a week later says "prices randomly revert". This is the lost update, and it needs nothing more exotic than two browser tabs.
+Monday morning on Fernhill's support desk. Alice opens `ord_42` to fix the delivery address. A minute later Bob opens the same order to add gift wrap, and saves after Alice does, sending back the whole order as he loaded it, old address included. Alice's fix vanishes. Nobody sees an error, and the complaint a week later says "my parcel went to my old house". This is the lost update, and it needs nothing more exotic than two browser tabs.
 
-<Figure n={2} caption="A lost update. Both writes succeed, and the first is silently overwritten.">
+Step through it below. The first four steps are the bug; the last four replay the same morning with the fix this page builds up to.
 
-```text
-Alice  GET /products/sku-1   → { price: 10, description: "Shoos" }   ETag "v7"
-Bob    GET /products/sku-1   → { price: 10, description: "Shoos" }   ETag "v7"
-Alice  PUT /products/sku-1   ← { price: 12, description: "Shoos" }   → 200, now "v8"
-Bob    PUT /products/sku-1   ← { price: 10, description: "Shoes" }   → 200, price back to 10
-```
+<Figure n={1} caption="A lost update on ord_42: without a precondition both writes succeed and the first vanishes. With If-Match the stale write gets 412.">
+
+<Stepper figure="lost-update" />
 
 </Figure>
 
@@ -73,21 +71,21 @@ The instinctive fix is a lock: "I'm editing this, nobody else may." Pessimistic 
 HTTP has this built in. The server sends a validator, the `ETag`, on reads. The client sends it back in `If-Match` on writes. If the resource has moved on, the server refuses with <Status code={412} />. Here's Bob's save, arriving one version too late:
 
 ```http
-PUT /products/sku-1
-If-Match: "v7"
-{ "price": 10, "description": "Shoes" }
+PUT /orders/ord_42
+If-Match: "v1"
+{ "address": "12 Mill Lane", "gift_wrap": true }
 
 HTTP/1.1 412 Precondition Failed
 Content-Type: application/problem+json
 { "type": "https://api.example.com/problems/version-mismatch", "status": 412,
-  "detail": "sku-1 is now at version v8. Reload, reapply your change and retry." }
+  "detail": "ord_42 is now at version v2. Reload, reapply your change and retry." }
 ```
 
 Bob's client can now reload, show him what changed, and let him reapply his edit.
 
 ## Compare and write in one statement
 
-The natural first implementation reads the version, compares it in application code, then writes. It has a race window: two requests can both pass the check before either writes The comparison has to be atomic with the write. Notice the `WHERE` clause doing the real work:
+The natural first implementation reads the version, compares it in application code, then writes. It has a race window: two requests can both pass the check before either writes. The comparison has to be atomic with the write. Notice the `WHERE` clause doing the real work:
 
 ```sql
 UPDATE products
@@ -98,7 +96,7 @@ RETURNING version;   -- no row returned: someone else won
 
 `SELECT … FOR UPDATE` in a transaction, or a conditional write in DynamoDB or another store, are equivalent.
 
-_Assumes:_ an integer `version` column; ETags are `"v<version>"`; `parse_if_match` implements the rules in the next section.
+_Assumes:_ an integer `version` column; ETags are `"v<version>"`; `parse_if_match` implements the rules in the next section. The handlers guard `PUT /products/{sku}`, where price edits collide the same way; orders work identically.
 
 Here's the full handler. The early `parse_if_match` check gives a fast, friendly 412; the conditional update after it is what actually guarantees correctness.
 
@@ -176,6 +174,26 @@ app.put("/products/:sku", zValidator("json", ProductIn), async (c) => {
 
 A parser that does `if_match.strip('"') == str(version)` gets all three wrong, sometimes in the dangerous direction of letting writes through.
 
+So don't compare strings; lean on your framework where it has support. Django does: the `condition(etag_func=…)` decorator in `django.views.decorators.http` evaluates `If-Match` in RFC 9110 order and answers 412 itself, and `django.utils.http.parse_etags` handles lists and `*` while keeping the `W/` prefix, so weak tags never strongly match. Starlette and Hono only handle `If-None-Match` (for static files and the `etag` middleware respectively), so there you write the parser. It's short. Notice the regex reads whole quoted tags rather than splitting on commas, because a comma is legal inside an entity tag:
+
+```python
+@dataclass(frozen=True)
+class IfMatch:
+    any: bool                 # the header was "*"
+    strong: frozenset[str]    # weak tags are dropped: they can never match
+
+    def matches(self, current_etag: str) -> bool:  # current_etag is strong, quotes included
+        return self.any or current_etag in self.strong
+
+def parse_if_match(header: str) -> IfMatch:
+    if header.strip() == "*":
+        return IfMatch(any=True, strong=frozenset())
+    tags = re.findall(r'(W/)?("[^"]*")', header)
+    return IfMatch(any=False, strong=frozenset(tag for weak, tag in tags if not weak))
+```
+
+This is the `parse_if_match` the handlers above call. In Django you can swap it for `parse_etags` plus a check for `*`; the Hono version is the same dozen lines in TypeScript.
+
 Its counterpart, `If-None-Match: *`, makes `PUT` "create only, never overwrite", which is useful with client-generated IDs.
 
 ## Make If-Match mandatory where people collide
@@ -228,6 +246,7 @@ None of this is new. In 1999, while working on editing documents over HTTP, the 
   level="MAY"
   title="Consider to support ETag together with If-Match/If-None-Match header"
 />
+<Rule guide="google" id="154" title="Resource freshness validation" />
 
 </RuleGroup>
 

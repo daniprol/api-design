@@ -39,6 +39,7 @@ import {
   Solution,
   GuidesDiffer,
   Figure,
+  Stepper,
   Tabs,
   TabItem,
 } from "@components/kit";
@@ -62,15 +63,11 @@ Offset pagination ("skip 40, take 20") is everyone's first instinct: easy to exp
 1. **Cost grows with depth.** `OFFSET 1000000` makes the database read and discard a million rows before returning twenty.
 2. **Pages drift under writes.** An insert at the top shifts every row down one place, so the next page repeats an item. A delete shifts rows up, so an item is skipped. A sync job built on offsets silently misses records, and Larkspur Logistics finds out at quarter-end reconciliation.
 
-Here is the drift in slow motion:
+Here is the drift in slow motion, with a page size of three. The first five steps break offsets twice, once with an insert and once with a delete; the last three replay the same morning with the fix this section is heading towards. Watch the client's column on the right.
 
-<Figure n={1} caption="Offset pagination while a new order (Z) arrives between two requests. Order C appears twice.">
+<Figure n={1} caption="Offset pagination repeats an order after an insert and skips one after a delete. A keyset cursor survives both.">
 
-```text
-Request 1   ?offset=0&limit=3    [ A  B  C ]  D  E  F
-            new order Z inserted at the top
-Request 2   ?offset=3&limit=3      Z  A  B  [ C  D  E ]   ← C again
-```
+<Stepper figure="pagination-drift" />
 
 </Figure>
 
@@ -251,6 +248,7 @@ Slack's Web API had grown several pagination styles, including page numbers and 
 <Rule guide="zalando" id="248" level="SHOULD" title="Use pagination response page object" />
 <Rule guide="zalando" id="161" level="SHOULD" title="Use pagination links" />
 <Rule guide="zalando" id="254" level="SHOULD" title="Avoid a total result count" />
+<Rule guide="google" id="158" title="Pagination" />
 
 </RuleGroup>
 

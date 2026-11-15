@@ -233,11 +233,13 @@ Multi-Status was defined for WebDAV, where one `PROPFIND` or `DELETE` on a folde
 <Rule guide="zalando" id="253" level="MAY" title="Support asynchronous request processing" />
 <Rule guide="zalando" id="152" level="MUST" title="Use code 207 for batch or bulk requests" />
 
+<Rule guide="google" id="151" title="Long-running operations" />
+
 </RuleGroup>
 
 ## What to take away
 
-When work outlives a request, turn it into a resource: a `202`, an operation the client can poll, and an idempotent start so a retry never doubles the work. Every one of those endpoints answers to someone, and deciding who is [authentication and authorisation](/security/auth/).
+When work outlives a request, turn it into a resource: a `202`, an operation the client can poll, and an idempotent start so a retry never doubles the work. When one of those operations fails at 3 a.m., someone has to find out which client, which request and why, and that is [observability](/reliability/observability/).
 
 <SelfCheck>
 

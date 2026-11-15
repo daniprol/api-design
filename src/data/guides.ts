@@ -34,7 +34,7 @@ export const guides = {
     short: "Google AIP",
     homepage: "https://google.aip.dev/",
     ruleUrl: (id) => `https://google.aip.dev/${id}`,
-    status: "compared",
+    status: "covered",
   },
   microsoft: {
     id: "microsoft",

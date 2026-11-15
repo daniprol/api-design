@@ -1,0 +1,399 @@
+---
+title: Streaming and real-time
+description: Poll with ETags when a few seconds of delay is fine. For live server-to-client updates use Server-Sent Events with event IDs, heartbeats and jittered retry, keep WebSockets for genuinely two-way traffic, and report mid-stream errors as events because the status code is already gone.
+sources:
+  - label: WHATWG HTML §9.2
+    title: "HTML Living Standard: Server-sent events"
+    url: https://html.spec.whatwg.org/multipage/server-sent-events.html
+    accessed: 2026-11
+  - label: RFC 6455
+    title: "RFC 6455: The WebSocket Protocol"
+    url: https://www.rfc-editor.org/rfc/rfc6455
+    accessed: 2026-11
+  - label: RFC 8441
+    title: "RFC 8441: Bootstrapping WebSockets with HTTP/2"
+    url: https://www.rfc-editor.org/rfc/rfc8441
+    accessed: 2026-11
+  - label: Russell, 2006
+    title: "Alex Russell: Comet: Low Latency Data for the Browser (2006)"
+    url: https://infrequently.org/2006/03/comet-low-latency-data-for-the-browser/
+    accessed: 2026-11
+  - label: MDN
+    title: "MDN Web Docs: EventSource"
+    url: https://developer.mozilla.org/en-US/docs/Web/API/EventSource
+    accessed: 2026-11
+  - label: Anthropic
+    title: "Claude API Docs: Streaming Messages"
+    url: https://platform.claude.com/docs/en/build-with-claude/streaming
+    accessed: 2026-11
+  - label: FastAPI
+    title: "FastAPI documentation: Server-Sent Events (SSE)"
+    url: https://fastapi.tiangolo.com/tutorial/server-sent-events/
+    accessed: 2026-11
+  - label: nginx
+    title: "nginx documentation: ngx_http_proxy_module (proxy_buffering, proxy_read_timeout)"
+    url: https://nginx.org/en/docs/http/ngx_http_proxy_module.html
+    accessed: 2026-11
+related:
+  - events/webhooks
+  - collections/caching
+  - reliability/long-running-operations
+  - security/limits
+---
+
+import {
+  InBrief,
+  Note,
+  Compare,
+  Prefer,
+  Avoid,
+  SelfCheck,
+  Question,
+  Status,
+  Tabs,
+  TabItem,
+} from "@components/kit";
+
+<InBrief>
+
+- Polling with `ETag` and `If-None-Match` is fine when a few seconds of delay is acceptable. Pick the interval for the user, not for the server's ego.
+- For live server-to-client updates, use Server-Sent Events. It's plain HTTP, works through proxies and HTTP/2, and resumes after a drop with `Last-Event-ID`.
+- Use WebSockets only for genuinely two-way, low-latency traffic: chat, collaborative editing, games.
+- Give every event an `id` from an ordered log, send a comment heartbeat every 15 seconds, and send a jittered `retry` so a deploy doesn't cause a reconnect storm.
+- Check auth, existence and input before the first byte. Once the body has started, the status code is spent: errors travel as events.
+
+</InBrief>
+
+The mobile app team wants live tracking: "your parcel is two stops away", updated as the van moves. Support wants a dashboard that shows new orders and failed payments the moment they happen. Someone in the planning meeting says the obvious thing: "Have the app call `GET /orders/ord_42` every second." Multiply by every open tracking screen, and Fernhill's API spends its day answering "no change" thousands of times a second, while a phone in a tent burns its battery asking.
+
+The instinct isn't wrong, though. Polling is the simplest real-time design there is, and it's the right one more often than its reputation suggests. The question is how fresh the data must be, which direction it flows, and what happens when the connection drops, because on a train it will.
+
+## Poll until a second of delay costs something
+
+Before you open a long-lived connection, price the boring option properly. A poll with a validator costs one round trip and, when nothing changed, a body of zero bytes. The server compares the client's `If-None-Match` with the resource's current `ETag` and answers <Status code={304} />, which it can do from a version column without rendering anything (see [Caching](/collections/caching/)):
+
+```http
+GET /orders/ord_42/tracking
+If-None-Match: "v17"
+
+HTTP/1.1 304 Not Modified
+ETag: "v17"
+```
+
+Polling is stateless, cacheable, trivially load-balanced and immune to dropped connections: every poll is a fresh start. Its cost is latency, which equals the interval. For a parcel, thirty seconds is fine. For an order status page, a minute is fine. The planning meeting's mistake wasn't polling; it was polling every second for data that changes every few minutes.
+
+So what if a few seconds is too slow? The old trick is **long polling**: the server holds the request open until something changes or a timeout (say 30 seconds) passes, answers, and the client immediately asks again with a cursor. Latency drops to near zero and it works through anything that speaks HTTP. But each event costs a full request, there's a gap between one response and the next request, and every held request occupies a connection on the server for nothing. It was the best available answer in 2006. It's a fallback now.
+
+<Note kind="history" title="Comet" year="2006" source="https://infrequently.org/2006/03/comet-low-latency-data-for-the-browser/">
+
+In March 2006, Alex Russell named a style of web application that kept long-lived HTTP connections open so the server could push data to the browser. He called it Comet, a name to stand beside Ajax. Underneath were long polling and never-ending responses: clever, fragile hacks around a browser that could only ask. Server-Sent Events and WebSockets are what the platform built once it admitted the server sometimes speaks first.
+
+</Note>
+
+## Choose the channel by direction, then by plumbing
+
+Four options live inside one HTTP API, and a fifth sits beside it. Webhooks push to a server you don't run, which is a different problem with its own page: [Webhooks](/events/webhooks/). For a browser or an app, the choice turns on which way the data flows and what sits between you and the client:
+
+| Option                    | Direction                               | Proxies and HTTP/2                                                                                         | Auth                                                          | Resumption                                 | Browser support                        | Pick it when                                                             |
+| ------------------------- | --------------------------------------- | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- | ------------------------------------------ | -------------------------------------- | ------------------------------------------------------------------------ |
+| Short polling with `ETag` | Client asks                             | Plain requests; caches help                                                                                | Any: headers, cookies                                         | Built in: every poll fetches current state | Everywhere                             | Seconds or minutes of delay are fine                                     |
+| Long polling              | Server to client, one batch per request | Plain requests, but proxies may time out held ones                                                         | Any                                                           | A cursor parameter on each request         | Everywhere                             | SSE is blocked by something you can't fix                                |
+| Server-Sent Events        | Server to client                        | Plain HTTP response; multiplexed over HTTP/2; needs proxy buffering off                                    | `EventSource` sends cookies, not custom headers               | Built in: `id:` and `Last-Event-ID`        | All current browsers via `EventSource` | Live updates to a browser or app: tracking, dashboards, progress, tokens |
+| WebSockets                | Both ways                               | Upgrade from HTTP/1.1; over HTTP/2 only via RFC 8441; some proxies and corporate firewalls still interfere | Browser API sends cookies, not custom headers; check `Origin` | None: you build it                         | All current browsers via `WebSocket`   | Both sides send often and latency matters: chat, co-editing, games       |
+| Webhooks                  | Your server to theirs                   | Outbound HTTPS                                                                                             | HMAC signature                                                | Your retry schedule                        | Not applicable                         | The client is a server you don't control                                 |
+
+The table makes the recommendation for you. Most "real-time" features are a server telling a client that something changed, and for that one-way flow SSE is a normal HTTP response with a long body: it goes through your load balancer, your auth middleware and your logs like any other request, and the browser reconnects and resumes on its own. WebSockets give you a raw two-way pipe, and with it everything HTTP gave you for free (status codes, caching, retries, resumption) becomes yours to rebuild. Pay that price when the client sends as much as it receives. Tracking a parcel isn't that.
+
+## Speak the event-stream format fluently
+
+SSE is a response with `Content-Type: text/event-stream` that never quite finishes. The body is UTF-8 text in blocks separated by a blank line; each block is one event made of `field: value` lines. Here's the start of a tracking stream for `ord_42`. Notice the comment line, the `retry`, and that every real event carries an `id`:
+
+```http
+GET /orders/ord_42/tracking/events HTTP/1.1
+Accept: text/event-stream
+
+HTTP/1.1 200 OK
+Content-Type: text/event-stream
+Cache-Control: no-cache
+
+retry: 6400
+
+event: snapshot
+id: 1187
+data: {"order_id": "ord_42", "status": "out_for_delivery", "stops_away": 3}
+
+: ping
+
+event: shipment.progressed
+id: 1191
+data: {"order_id": "ord_42", "stops_away": 2}
+```
+
+| Field    | What it does                                                                                                                     |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `event:` | The event type. The browser dispatches it to `addEventListener("shipment.progressed", …)`. Without it, the event is a `message`. |
+| `data:`  | The payload. Several `data:` lines join with newlines; in practice send one line of JSON.                                        |
+| `id:`    | The client remembers the last one and sends it back as `Last-Event-ID` when it reconnects.                                       |
+| `retry:` | How many milliseconds the client waits before reconnecting.                                                                      |
+| `: …`    | A comment. Clients ignore it, which makes it a free heartbeat.                                                                   |
+
+Treat event types as part of the contract, the way [Event design](/events/event-design/) treats them on a bus: documented, stable, and additive. Clients should ignore types they don't recognise, so you can add `shipment.delayed` next quarter without breaking last year's app.
+
+## Make reconnects resume, not restart
+
+The reason to prefer SSE over a hand-rolled stream is what happens when the train enters the tunnel. The connection drops, `EventSource` waits for the `retry` interval, and reconnects with the last ID it saw:
+
+```http
+GET /orders/ord_42/tracking/events HTTP/1.1
+Last-Event-ID: 1191
+```
+
+That header is only useful if the ID means something on the server. Use a position in an ordered log (the outbox sequence from [Event design](/events/event-design/), a Kafka offset, a database sequence), not a random UUID, so the server can answer "everything after 1191" with one query, then switch to live events. Keep enough history to cover a realistic outage, say an hour. If the client's ID is older than that, don't guess: send a fresh `snapshot` event and carry on from now. The snapshot on first connect does the same job, so a client never has to stitch together a `GET` and a stream and hope nothing slipped between them.
+
+## Keep proxies from hanging up on a quiet stream
+
+A parcel that's stuck in traffic produces no events, and a silent connection looks dead to everything in the path. nginx's `proxy_read_timeout` defaults to 60 seconds; load balancers and corporate proxies have their own ideas. The HTML standard's answer is a comment line every 15 seconds or so. It also does a second job: writing to a socket is how the server finds out the client has gone, so heartbeats let you free connections from phones that left the tunnel on another network.
+
+The other enemy is buffering. A reverse proxy that collects the response before forwarding it turns your stream into one very late batch. Send `Cache-Control: no-cache`, and `X-Accel-Buffering: no` for nginx, and test the stream through the real path, not against `localhost`.
+
+<Note kind="curiosity" title="The spec tells you how to stop it" source="https://html.spec.whatwg.org/multipage/server-sent-events.html">
+
+The SSE section of the HTML standard is unusually practical. It suggests a comment line "every 15 seconds or so" because legacy proxies drop idle connections. It also defines when the browser gives up: a network error means reconnect, but any response that isn't a `200` with `text/event-stream` fails the connection for good, and it names <Status code={204} /> as the way to tell a client to stop. An expired session's <Status code={401} /> ends it the same way, after one `error` event, so clients must handle that event rather than trust the browser to recover.
+
+</Note>
+
+## Authenticate without putting a long-lived token in the URL
+
+Here's the awkward part. The browser's `EventSource` can't set an `Authorization` header. It sends cookies, and with `withCredentials` it sends them cross-origin, and that's all. Teams in a hurry put the bearer token in the query string, where it lands in access logs, proxy logs, browser history and every analytics tool that records URLs.
+
+If the stream is same-site with your web app, a session cookie is the clean answer. Otherwise, exchange the real token for a short-lived, single-purpose ticket through a normal authenticated request, and put only that in the URL:
+
+<Compare>
+<Prefer label="Short-lived stream ticket">
+
+```http
+POST /stream-tickets
+Authorization: Bearer eyJhbGciOi…
+{ "stream": "orders/ord_42/tracking" }
+→ 201 { "ticket": "stk_9fQ2", "expires_in": 60 }
+
+GET /orders/ord_42/tracking/events?ticket=stk_9fQ2
+```
+
+</Prefer>
+<Avoid label="The access token in the URL">
+
+```http
+GET /orders/ord_42/tracking/events?access_token=eyJhbGciOi…
+```
+
+</Avoid>
+</Compare>
+
+The ticket is scoped to one stream, expires in a minute, and is useless by the time anyone reads the log. Native mobile clients aren't bound by `EventSource` and can send `Authorization` with a fetch-based SSE reader, so give them that path too. Either way, end the stream when the credential expires: a stream opened with an hour-long token shouldn't outlive the token by a week. The client reconnects, re-authenticates, and resumes from `Last-Event-ID`. More on tokens in [Authentication](/security/auth/).
+
+## Check everything before the first byte
+
+The handler below is the tracking stream in three stacks. Watch where the checks happen: authentication and ownership are resolved before the stream starts, so a stranger asking for `ord_42` gets a proper <Status code={404} /> with Problem Details. After that, the code only ever writes events.
+
+_Assumes:_ `tracking.events(order_id, after=…)` replays stored events after an ID and then yields live ones, and yields `None` after 15 idle seconds (FastAPI sends its own pings, so it ignores the idle signal); `jittered_retry_ms()` returns a random value between 2,000 and 10,000; `owned_order` returns the caller's order or raises a 404 problem. FastAPI 0.135 or later (earlier versions can use the `sse-starlette` package); Django served over ASGI with a plain async view, because DRF views are synchronous.
+
+<Tabs syncKey="stack">
+<TabItem label="FastAPI">
+
+```python
+from fastapi.sse import EventSourceResponse, ServerSentEvent
+
+@app.get("/orders/{order_id}/tracking/events", response_class=EventSourceResponse)
+async def tracking_events(
+    order: Annotated[Order, Depends(owned_order)],  # 401/404 happen here, before streaming
+    last_event_id: Annotated[str | None, Header()] = None,
+) -> AsyncIterable[ServerSentEvent]:
+    if last_event_id is None:
+        yield ServerSentEvent(event="snapshot", data=order.tracking, retry=jittered_retry_ms())
+    try:
+        async for ev in tracking.events(order.id, after=last_event_id):
+            if ev is not None:
+                yield ServerSentEvent(event=ev.type, id=str(ev.id), data=ev.payload)
+    except TrackingUnavailable:
+        yield ServerSentEvent(event="error", data=problem_body(503, "tracking-unavailable"))
+```
+
+FastAPI's `EventSourceResponse` sends a `: ping` comment after 15 idle seconds and sets `Cache-Control: no-cache` and `X-Accel-Buffering: no` for you.
+
+</TabItem>
+<TabItem label="Django">
+
+```python
+def sse(data, event=None, id=None, retry=None) -> str:
+    fields = {"event": event, "id": id, "retry": retry, "data": json.dumps(data)}
+    return "".join(f"{k}: {v}\n" for k, v in fields.items() if v is not None) + "\n"
+
+async def tracking_events(request, order_id):
+    user = await request.auser()
+    order = await Order.objects.filter(id=order_id, customer__user=user).afirst()
+    if order is None:
+        return problem(404, "order-not-found")  # still a normal response
+    last_id = request.headers.get("Last-Event-ID")
+
+    async def stream():
+        if last_id is None:
+            yield sse(order.tracking, event="snapshot", retry=jittered_retry_ms())
+        try:
+            async for ev in tracking.events(order.id, after=last_id):
+                yield ": ping\n\n" if ev is None else sse(ev.payload, event=ev.type, id=ev.id)
+        except TrackingUnavailable:
+            yield sse(problem_body(503, "tracking-unavailable"), event="error")
+
+    response = StreamingHttpResponse(stream(), content_type="text/event-stream")
+    response["Cache-Control"] = "no-cache"
+    response["X-Accel-Buffering"] = "no"
+    return response
+```
+
+Under WSGI, Django has to consume an async iterator in full before sending it, which defeats the point, and each stream ties up a worker. Serve streams over ASGI.
+
+</TabItem>
+<TabItem label="Hono">
+
+```ts
+import { streamSSE } from "hono/streaming";
+
+app.get("/orders/:id/tracking/events", async (c) => {
+  const order = await ownedOrder(c, c.req.param("id"));
+  if (!order) return problem(c, 404, "order-not-found"); // before the stream starts
+  const lastId = c.req.header("Last-Event-ID");
+
+  return streamSSE(
+    c,
+    async (stream) => {
+      if (!lastId) {
+        await stream.writeSSE({
+          event: "snapshot",
+          data: JSON.stringify(order.tracking),
+          retry: jitteredRetryMs(),
+        });
+      }
+      for await (const ev of tracking.events(order.id, { after: lastId })) {
+        if (stream.aborted) break;
+        if (ev)
+          await stream.writeSSE({ event: ev.type, id: ev.id, data: JSON.stringify(ev.payload) });
+        else await stream.write(": ping\n\n");
+      }
+    },
+    async (err, stream) => {
+      await stream.writeSSE({
+        event: "error",
+        data: JSON.stringify(problemBody(503, "tracking-unavailable")),
+      });
+    },
+  );
+});
+```
+
+Errors thrown inside the callback don't reach Hono's `onError`, because the response has already started; the third argument is where they land.
+
+</TabItem>
+</Tabs>
+
+In all three, a missing order is an ordinary response and a failure halfway through is an event. That split is the subject of the next section.
+
+## Once the body starts, errors are events
+
+An HTTP response sends its status line first. By the time your database falls over at event 40, the client has had `200 OK` for ten minutes and there's no way to take it back. The same is true of any streamed response, not only SSE. So decide, for every failure, which side of the first byte it lives on. Everything you can check up front (credentials, permissions, existence, a valid `422`-worthy query) gets a real status code and Problem Details. Everything after that travels in-band, as an event the client is documented to expect.
+
+The LLM APIs, which stream more bytes to more clients than most, do exactly this.
+
+<Note kind="practice" title="LLM APIs stream tokens over SSE" source="https://platform.claude.com/docs/en/build-with-claude/streaming">
+
+Anthropic's Messages API and OpenAI's API both stream generated text as Server-Sent Events: a request with `stream: true` gets back a `text/event-stream` of named events, ending in a terminal one. Anthropic's docs say errors can arrive inside the stream, giving the example of an `overloaded_error` event "which would normally correspond to an HTTP 529 in a non-streaming context". They also tell clients to expect `ping` events and to ignore unknown event types gracefully. Status code up front, errors in-band, room to grow.
+
+</Note>
+
+Two details make in-band errors usable. First, give the error event the same shape as your Problem Details body, so clients reuse one parser. Second, end every finite stream with an explicit terminal event (`done`, `message_stop`, whatever you name it). A stream that stops without one was cut off, and the client can tell the difference between "finished" and "the proxy timed out".
+
+### Stream a single response as JSON Lines
+
+Not every stream is a live feed. An order export or an LLM answer is one response that happens to be long, and the client wants rows as they're produced rather than after the last one. SSE works for this, and the LLM APIs use it, but `EventSource` only does `GET`, so their clients read the stream with `fetch` anyway. For machine-to-machine streams of records, newline-delimited JSON (JSON Lines, or NDJSON) is simpler: one JSON document per line, flushed as you go. The same rule applies, and the last line says how it ended:
+
+```text
+{"type": "order", "order_id": "ord_40", "total": {"amount": "129.00", "currency": "EUR"}}
+{"type": "order", "order_id": "ord_41", "total": {"amount": "54.50", "currency": "EUR"}}
+{"type": "error", "status": 503, "title": "Export source unavailable", "after": "ord_41"}
+```
+
+A client that reads to the end of the body and never sees `{"type": "end", "count": …}` or an error line knows the export is incomplete, and the `after` cursor tells it where to resume. For large exports that should survive a dropped connection entirely, a job with a downloadable result is the sturdier design: see [Long-running operations](/reliability/long-running-operations/) and [Bulk operations](/collections/bulk/).
+
+## Budget connections, and drop updates deliberately
+
+A request costs you for milliseconds; a stream costs you for hours. Each open stream holds a socket, a buffer, a subscription to your event source, and on some stacks a whole worker. So limit them like any other resource. Cap concurrent streams per client or token, and refuse the extra one before it starts with <Status code={429} /> and Problem Details (see [Rate limits](/security/limits/)). The support dashboard open in twelve tabs is a real case: over HTTP/1.1 browsers allow only six connections per origin, and the seventh tab waits forever. HTTP/2 multiplexes streams over one connection and makes the problem go away, which is reason enough to serve SSE over it.
+
+Then there's the slow consumer: the phone on two bars of signal that reads events slower than you produce them. Buffer without limit and one bad connection eats your memory. Give each connection a bounded queue, and decide what happens when it fills, because the right answer depends on what the events mean:
+
+| Stream carries                           | When the client falls behind                                                                        |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| State ("two stops away", a stock level)  | Coalesce: keep only the newest value per key. Intermediate positions are worthless once stale.      |
+| Facts that must not be lost (new orders) | Disconnect the client. It reconnects with `Last-Event-ID` and catches up from the log, at its pace. |
+| Ephemeral signals (typing indicators)    | Drop them.                                                                                          |
+
+Notice that the middle row only works because events have durable IDs. Resumption turns "disconnect the slow client" from data loss into flow control.
+
+### Spread the reconnect storm after a deploy
+
+The failure that surprises everyone happens at the end of a deploy. Fifty thousand tracking screens lose their connections in the same second, all wait the same `retry` interval, and all reconnect in the same second, each asking to replay everything since its last ID. The new instances meet a synchronised crowd and fall over, which drops the connections again. It's the thundering herd from [Idempotency and retries](/reliability/idempotency/), with the clocks synchronised by you.
+
+Three habits defuse it. Send each connection a jittered `retry` (the handlers above pick between two and ten seconds), so reconnects spread out. On shutdown, close streams gradually over a minute or two rather than all at once. And cap connection lifetime, with jitter, at something like 30 to 60 minutes: clients reconnect in a trickle, land on whichever instance has room, and pick up fresh credentials as a side effect. Clients still need their own backoff for repeated failures, because `retry` only sets the first wait.
+
+## What to take away
+
+Start from polling with ETags, and move to a stream only when seconds matter. For server-to-client updates that stream is SSE, because it stays HTTP: IDs make reconnects resume, comments keep it alive, a jittered `retry` keeps deploys calm, and anything that fails after the first byte becomes an event. That ends the Events section. To see these ideas and the rest of the guide applied to one draft API, read [Appendix A: an annotated design review](/guide/design-review/).
+
+<SelfCheck>
+
+<Question
+  q="An SSE stream has delivered 40 events when the database behind it fails. How should the server tell the client?"
+  answer={2}
+  options={[
+    {
+      text: "Respond with 503 and a Problem Details body.",
+      why: "The status line went out with the first byte; it can't change now.",
+    },
+    {
+      text: "Close the connection; the client will notice.",
+      why: "The browser reconnects and the client can't tell an error from a network blip.",
+    },
+    {
+      text: "Send a documented error event with a Problem Details body, then close the stream.",
+      why: "Once the body has started, errors must travel in-band, in a shape the client already parses.",
+    },
+    {
+      text: "Keep the connection open and send heartbeats until the database recovers.",
+      why: "The client sees a live stream with no updates and no explanation.",
+    },
+  ]}
+/>
+
+<Question
+  q="After every deploy, the tracking service falls over as thousands of clients reconnect at once. Which change helps most?"
+  answer={1}
+  options={[
+    {
+      text: "Remove the event IDs so reconnects don't replay history.",
+      why: "Then every drop loses events, and the crowd still arrives in the same second.",
+    },
+    {
+      text: "Send a jittered retry per connection and close streams gradually on shutdown.",
+      why: "Spreading reconnects over time turns a synchronised spike into a steady trickle.",
+    },
+    {
+      text: "Switch to WebSockets.",
+      why: "WebSocket clients reconnect after a deploy too, and have no built-in resumption.",
+    },
+    {
+      text: "Return 204 to reconnecting clients during the deploy.",
+      why: "204 tells EventSource to stop reconnecting for good, so live screens go quietly stale.",
+    },
+  ]}
+/>
+
+</SelfCheck>

@@ -18,7 +18,7 @@ export const glossary: Term[] = [
     term: "BOLA",
     definition:
       "Broken Object Level Authorization: reaching someone else's object by changing an ID in the request. First in the OWASP API Security Top 10 (2023).",
-    see: "/security/auth/",
+    see: "/security/attacks/",
   },
   {
     term: "Brownout",
@@ -176,7 +176,7 @@ export const glossary: Term[] = [
     term: "SSRF",
     definition:
       "Server-side request forgery: making a server send requests to a URL the attacker chooses, often an internal one. The main risk of accepting webhook URLs.",
-    see: "/events/webhooks/",
+    see: "/security/attacks/",
   },
   {
     term: "Sub-resource",
@@ -217,5 +217,113 @@ export const glossary: Term[] = [
     term: "Webhook",
     definition: "An event delivered by an HTTP `POST` to a URL the receiver registered.",
     see: "/events/webhooks/",
+  },
+  {
+    term: "Backpressure",
+    definition:
+      "A consumer's way of telling a producer to slow down, or a server's policy for slow clients: buffer up to a limit, then drop or disconnect.",
+    see: "/events/streaming/",
+  },
+  {
+    term: "Bulk operation",
+    definition:
+      "One request that creates, updates or reads many items, with a documented maximum and a result for each item.",
+    see: "/collections/bulk/",
+  },
+  {
+    term: "Canonical log line",
+    definition:
+      "One structured log line per request that carries everything worth knowing about it: route, client, status, duration, trace ID.",
+    see: "/reliability/observability/",
+  },
+  {
+    term: "Egress proxy",
+    definition:
+      "A proxy that every outbound request passes through, which checks the IP it actually connects to. The standard defence against SSRF through webhook URLs.",
+    see: "/security/attacks/",
+  },
+  {
+    term: "Error budget",
+    definition:
+      "The amount of failure an SLO allows over its window, such as 0.1% of requests in 30 days. Spent budget slows releases down.",
+    see: "/reliability/observability/",
+  },
+  {
+    term: "Last-Event-ID",
+    definition:
+      "The header a Server-Sent Events client sends when it reconnects, so the server can resume the stream after the last event the client saw.",
+    see: "/events/streaming/",
+  },
+  {
+    term: "Long polling",
+    definition:
+      "A request the server holds open until there is something new or a timeout passes; the client then asks again.",
+    see: "/events/streaming/",
+  },
+  {
+    term: "Lost update",
+    definition:
+      "Two clients read the same version, both write, and the second write silently erases the first. Prevented with `If-Match`.",
+    see: "/reliability/concurrency/",
+  },
+  {
+    term: "Mass assignment",
+    definition:
+      "Binding a request body straight onto a model, so a client can set fields it should never write, such as `role` or `total`.",
+    see: "/security/attacks/",
+  },
+  {
+    term: "Multi-tenancy",
+    definition:
+      "Serving many customer organisations from one deployment, with each tenant's data, limits and events isolated from the others.",
+    see: "/security/multi-tenancy/",
+  },
+  {
+    term: "Noisy neighbour",
+    definition:
+      "A tenant whose load degrades service for everyone else on shared infrastructure. Countered with per-tenant limits.",
+    see: "/security/multi-tenancy/",
+  },
+  {
+    term: "Row-level security",
+    definition:
+      "A database feature that filters every query by a policy, such as the current tenant, so a forgotten `WHERE` can't leak rows.",
+    see: "/security/multi-tenancy/",
+  },
+  {
+    term: "Server-Sent Events",
+    definition:
+      "A one-way stream of events from server to client over a plain HTTP response with media type `text/event-stream`, with built-in reconnect and resume.",
+    see: "/events/streaming/",
+  },
+  {
+    term: "SLO",
+    definition:
+      "Service level objective: a target for a measured indicator (an SLI), such as 99.9% of requests succeeding over 30 days.",
+    see: "/reliability/observability/",
+  },
+  {
+    term: "Trace context",
+    definition:
+      "The W3C standard `traceparent` and `tracestate` headers that carry a trace ID across every hop of a request.",
+    see: "/reliability/observability/",
+  },
+  {
+    term: "WebSocket",
+    definition:
+      "A two-way, message-based connection upgraded from HTTP. Worth its operational cost only for genuinely bidirectional, low-latency traffic.",
+    see: "/events/streaming/",
+  },
+  {
+    term: "AIP",
+    definition:
+      "API Improvement Proposal: one of Google's numbered API design guidelines, published at google.aip.dev.",
+    see: "/guidelines/google/",
+  },
+  {
+    term: "Field mask",
+    definition:
+      "A list of field paths that says which fields a request reads or updates, as in Google's `update_mask`. This guide uses JSON Merge Patch instead.",
+    see: "/guidelines/google/",
   },
 ];

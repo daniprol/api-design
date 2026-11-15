@@ -95,7 +95,16 @@ RateLimit: "default";r=0;t=30
 
 ## Show the quota before clients hit it
 
-A 429 is a wall the client finds by walking into it. Clients behave better when every response, not only the rejected ones, shows the wall coming. For years, every API invented its own `X-RateLimit-*` headers with incompatible semantics: GitHub's `X-RateLimit-Reset` is a Unix timestamp, others use seconds remaining. The IETF HTTPAPI working group's `RateLimit-Policy` (the quota) and `RateLimit` (current state) headers standardise this as Structured Fields. Several gateways already emit them. Use them for new APIs, and keep any legacy headers you've already published.
+A 429 is a wall the client finds by walking into it. Clients behave better when every response, not only the rejected ones, shows the wall coming. For years, every API invented its own `X-RateLimit-*` headers with incompatible semantics: GitHub's `X-RateLimit-Reset` is a Unix timestamp, others use seconds remaining. The IETF HTTPAPI working group's draft replaces them with two Structured Fields. `RateLimit-Policy` states the quota, and `RateLimit` states where this client stands against it:
+
+```http
+RateLimit-Policy: "default";q=100;w=60
+RateLimit: "default";r=42;t=30
+```
+
+Read it as: the policy named `default` allows 100 requests (`q`) per 60-second window (`w`); this client has 42 left (`r`), and the quota resets in 30 seconds (`t`). The name ties the two headers together, which matters once you publish more than one policy, such as `"burst";q=10;w=1,"daily";q=5000;w=86400`. An optional `qu` parameter counts something other than requests (`"content-bytes"`, for example), and `pk` carries a partition key when the quota belongs to something other than the caller.
+
+The draft has changed shape more than once, and libraries lag it. Many still emit the older `RateLimit-Limit`, `RateLimit-Remaining` and `RateLimit-Reset` trio, or a single `RateLimit: limit=100, remaining=42, reset=30`; a client written against one of those can't parse the other. Emit the current syntax for new APIs, write it yourself if your library doesn't, and keep any legacy headers you've already published until their callers are gone.
 
 ## Pick the algorithm for what you're protecting
 
@@ -108,66 +117,123 @@ The algorithms differ mainly in how they treat bursts. The mobile app opening a 
 
 Key limits by the authenticated client (API key, OAuth client, account). IP-based limits get it wrong in both directions: they punish everyone behind a corporate NAT or a mobile carrier, and a botnet evades them trivially. Use them only for anonymous endpoints such as login.
 
-_Assumes:_ Redis-backed limits shared across instances; `request.state.client_id` set by authentication middleware.
+_Assumes:_ Redis-backed limits shared across instances; `request.state.client_id` (FastAPI) or `c.get("clientId")` (Hono) set by authentication middleware that runs first; a `problem_response` helper as in [Errors](/http/errors/).
 
-Here's the setup. Notice that the key falls back to the IP address only when there's no authenticated client.
+Here's the setup. Notice two things: the key falls back to the IP address only when there's no authenticated client, and the quota headers go on every response, with the 429 carrying `Retry-After` as well.
 
 <Tabs syncKey="stack">
 <TabItem label="FastAPI">
 
 ```python
-def client_key(request: Request) -> str:
-    return getattr(request.state, "client_id", None) or get_remote_address(request)
+import time
+from limits import parse, storage, strategies
 
-limiter = Limiter(key_func=client_key, storage_uri="redis://redis:6379", headers_enabled=True)
-app.state.limiter = limiter
+DEFAULT = parse("100/minute")
+limiter = strategies.FixedWindowRateLimiter(storage.RedisStorage("redis://redis:6379"))
 
-@app.exception_handler(RateLimitExceeded)
-async def on_limit(request: Request, exc: RateLimitExceeded):
-    return problem_response(429, {"type": f"{PROBLEMS}/rate-limit-exceeded", "title": "Too many requests",
-                                  "detail": str(exc.detail)}, headers={"Retry-After": "30"})
+def ratelimit_headers(policy: str, quota: int, window: int, remaining: int, reset: int) -> dict:
+    return {"RateLimit-Policy": f'"{policy}";q={quota};w={window}',
+            "RateLimit": f'"{policy}";r={remaining};t={reset}'}
 
-@app.get("/orders/search")
-@limiter.limit("100/minute")
-def search(request: Request, response: Response, q: str): ...
+@app.middleware("http")
+async def rate_limit(request: Request, call_next):
+    key = getattr(request.state, "client_id", None) or request.client.host
+    allowed = limiter.hit(DEFAULT, key)
+    stats = limiter.get_window_stats(DEFAULT, key)
+    reset = max(int(stats.reset_time - time.time()), 0)
+    headers = ratelimit_headers("default", DEFAULT.amount, DEFAULT.get_expiry(), stats.remaining, reset)
+    if not allowed:
+        return problem_response(429, {"type": f"{PROBLEMS}/rate-limit-exceeded", "title": "Too many requests",
+                                      "detail": f"Retry in {reset} seconds."},
+                                headers={**headers, "Retry-After": str(reset)})
+    response = await call_next(request)
+    response.headers.update(headers)
+    return response
 ```
 
 </TabItem>
 <TabItem label="Django">
 
 ```python
-# settings.py: DRF throttling, with a shared cache backend (Redis) across instances
+# throttling.py: DRF throttles that remember their state, so the response can publish it
+from rest_framework.throttling import AnonRateThrottle, ScopedRateThrottle, UserRateThrottle
+
+class PublishedRateMixin:
+    def allow_request(self, request, view):
+        allowed = super().allow_request(request, view)
+        history = getattr(self, "history", None)  # unset when this throttle didn't apply
+        if history is not None:
+            reset = int(self.duration - (self.now - history[-1])) if history else self.duration
+            request.ratelimit = {
+                "RateLimit-Policy": f'"{self.scope}";q={self.num_requests};w={self.duration}',
+                "RateLimit": f'"{self.scope}";r={max(self.num_requests - len(history), 0)};t={reset}',
+            }
+        return allowed
+
+class AnonThrottle(PublishedRateMixin, AnonRateThrottle): ...
+class UserThrottle(PublishedRateMixin, UserRateThrottle): ...
+class SmsThrottle(PublishedRateMixin, ScopedRateThrottle): ...
+
+# views.py: every view inherits the header publishing; 429s get Retry-After from DRF
+class FernhillView(APIView):
+    def finalize_response(self, request, response, *args, **kwargs):
+        response = super().finalize_response(request, response, *args, **kwargs)
+        for name, value in getattr(request, "ratelimit", {}).items():
+            response[name] = value
+        return response
+
+class PhoneVerification(FernhillView):
+    throttle_classes = [SmsThrottle]
+    throttle_scope = "sms"  # an expensive side effect gets its own, much lower limit
+
+# settings.py: a shared cache backend (Redis) keeps counts consistent across instances
 REST_FRAMEWORK = {
-    "DEFAULT_THROTTLE_CLASSES": ["rest_framework.throttling.AnonRateThrottle",
-                                 "rest_framework.throttling.UserRateThrottle"],
+    "DEFAULT_THROTTLE_CLASSES": ["shop.throttling.AnonThrottle", "shop.throttling.UserThrottle"],
     "DEFAULT_THROTTLE_RATES": {"anon": "20/minute", "user": "100/minute", "sms": "5/hour"},
 }
-
-class PhoneVerification(APIView):
-    throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "sms"  # an expensive side effect gets its own, much lower limit
-# Exceeding a limit returns 429 with Retry-After automatically.
 ```
 
 </TabItem>
 <TabItem label="Hono">
 
 ```ts
+const WINDOW = 60;
+
+// hono-rate-limiter only knows older drafts, so turn its headers off and write the current ones.
+function setRateLimitHeaders(c: Context): number {
+  const { limit, remaining, resetTime } = c.get("rateLimit");
+  const reset = resetTime
+    ? Math.max(0, Math.ceil((resetTime.getTime() - Date.now()) / 1000))
+    : WINDOW;
+  c.header("RateLimit-Policy", `"default";q=${limit};w=${WINDOW}`);
+  c.header("RateLimit", `"default";r=${remaining};t=${reset}`);
+  return reset;
+}
+
 app.use(
   "/orders/*",
   rateLimiter({
-    windowMs: 60_000,
+    windowMs: WINDOW * 1000,
     limit: 100,
-    standardHeaders: "draft-7", // RateLimit headers in an older draft syntax
+    standardHeaders: false,
     keyGenerator: (c) => c.get("clientId") ?? c.req.header("x-forwarded-for") ?? "anon",
     store: new RedisStore({ client: redis }),
-    handler: (c) => problem(c, 429, "rate-limit-exceeded", "Retry after the time in Retry-After."),
+    handler: (c) => {
+      c.header("Retry-After", String(setRateLimitHeaders(c)));
+      return problem(c, 429, "rate-limit-exceeded", "Retry after the time in Retry-After.");
+    },
   }),
+  async (c, next) => {
+    setRateLimitHeaders(c);
+    await next();
+  },
 );
 ```
 
 </TabItem>
 </Tabs>
+
+All three tabs build the strings by hand, which is safe while the values are plain integers and a quoted name. Once you add `pk` or several policies, use a Structured Fields library (`http-sf` in Python, `structured-headers` in TypeScript) rather than more string formatting.
 
 ## Limit the business flow, not only the endpoint
 
@@ -206,13 +272,17 @@ Before RFC 6585 registered 429 in 2012, Twitter's original API answered rate-lim
 
 <RuleGroup>
 
-<Rule guide="zalando" id="153" level="MUST" title="Use code 429 with headers for rate limits" />
+<Rule guide="zalando" id="153" level="MUST" title="Use code 429 with headers for rate limits">
+
+Zalando accepts either `Retry-After` or a trio of `X-RateLimit-Limit`, `-Remaining` and `-Reset` headers. This guide sends `Retry-After` on every 429 and the IETF `RateLimit` fields in place of the `X-` trio.
+
+</Rule>
 
 </RuleGroup>
 
 ## What to take away
 
-Cap what one request can cost, cap how often each client may call, and tell clients both numbers before they find out the hard way. Limits are a promise about behaviour, like everything in a response; keeping promises while the API changes is [compatibility](/evolution/compatibility/).
+Cap what one request can cost, cap how often each client may call, and tell clients both numbers before they find out the hard way. Limits stop the clumsy and the greedy. A determined attacker goes after your logic instead, and those [attacks are best told as stories](/security/attacks/).
 
 <SelfCheck>
 

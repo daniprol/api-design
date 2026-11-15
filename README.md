@@ -4,9 +4,11 @@ A practical reference for designing HTTP APIs that stay pleasant to use and chea
 
 **Live site:** https://daniprol.github.io/api-design/
 
-- **Guide:** 27 chapters in nine sections, each with a clear recommendation, examples in FastAPI, Django REST Framework and Hono, sourced notes on history and real incidents, and a short self-check. Appendix A walks through a full design review.
+- **Guide:** 32 chapters in nine sections, each with a clear recommendation, examples in FastAPI, Django REST Framework and Hono, sourced notes on history and real incidents, and a short self-check. Appendix A walks through a full design review.
+- **Practice:** four design challenges set at the same shop, with hints, model answers and a self-review.
+- **In the wild:** teardowns of Stripe, GitHub, Shopify and Twilio, mapped to the Guide's recommendations.
 - **Reference:** status codes, headers, media types, a review checklist, a glossary, an RFC index and a rule index.
-- **Guidelines:** where Zalando, Google AIP, Microsoft Azure and Stripe agree and differ, with Zalando rules cited chapter by chapter.
+- **Guidelines:** where Zalando, Google AIP, Microsoft Azure and Stripe agree and differ, with Zalando and Google AIP rules cited chapter by chapter.
 
 Built with [Astro](https://astro.build) and [Starlight](https://starlight.astro.build).
 
@@ -39,6 +41,8 @@ src/
 │   ├── index.mdx                 # home page
 │   ├── guide/                    # contents and Appendix A
 │   ├── <section>/<topic>.mdx     # the Guide: foundations, modelling, http, …, events
+│   ├── practice/                 # design-it-yourself challenges with model answers
+│   ├── in-the-wild/              # teardowns of real APIs: Stripe, GitHub, Shopify, Twilio
 │   ├── reference/                # tables: status codes, headers, glossary, rule index…
 │   ├── guidelines/               # comparison and per-guideline pages
 │   └── about/                    # about, sources, changelog, contributing, license

@@ -207,6 +207,12 @@ On 1 April 1998, RFC 2324 defined the Hyper Text Coffee Pot Control Protocol, in
 <Rule guide="zalando" id="220" level="MUST" title="Use most specific HTTP status codes" />
 <Rule guide="zalando" id="251" level="SHOULD" title="Not use redirection codes" />
 
+<Rule guide="google" id="211" title="Authorization checks">
+
+Google answers <Status code={403} /> with a message that says the resource "might not exist", where this guide answers <Status code={404} />. Both refuse to confirm that the resource exists.
+
+</Rule>
+
 </RuleGroup>
 
 Here is the checkout from the start of the page, in full. It is a good test of everything above.

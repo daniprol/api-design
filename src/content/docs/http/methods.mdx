@@ -215,6 +215,12 @@ Larkspur wants every order matching forty SKUs, three warehouses and a date rang
   title="Consider to design POST and PATCH idempotent"
 />
 
+<Rule guide="google" id="134" title="Standard methods: Update">
+
+Google also updates with `PATCH`, but the client names the fields to change in an `update_mask` instead of the server inferring them from the body. See [Google AIP](/guidelines/google/).
+
+</Rule>
+
 </RuleGroup>
 
 <WorkedProblem kind="Review" title="An email preference endpoint">

@@ -259,7 +259,7 @@ A shop sends `order.paid` webhooks to merchants. The docs say: "We POST JSON to 
 
 ## What to take away
 
-A webhook is an HTTP request to a stranger's URL, so sign it over ID, timestamp and body, retry for days, keep it off your internal network, and ask receivers to acknowledge fast and deduplicate. That's the last topic. To see the whole guide applied to one draft, read [Appendix A: an annotated design review](/guide/design-review/).
+A webhook is an HTTP request to a stranger's URL, so sign it over ID, timestamp and body, retry for days, keep it off your internal network, and ask receivers to acknowledge fast and deduplicate. Webhooks suit servers that can receive requests; a phone on a train or a browser tab can't, and for those the answer is [streaming](/events/streaming/).
 
 <SelfCheck>
 

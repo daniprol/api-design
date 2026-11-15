@@ -213,6 +213,8 @@ Facebook hit this problem at scale while rewriting its iOS News Feed natively. E
   title="Document cacheable GET, HEAD, and POST endpoints"
 />
 
+<Rule guide="google" id="157" title="Partial responses" />
+
 </RuleGroup>
 
 This change ships more often than anyone admits, usually on a Friday.
@@ -238,7 +240,7 @@ Fix: `Cache-Control: private, no-store` (or `private, no-cache` with an `ETag`) 
 
 ## What to take away
 
-Every response gets a caching decision, and anything with a user in it gets `no-store` or `private`, never `public`. A version column then pays twice: cheap 304s on reads and safe conditional writes. Caching makes reads cheap to repeat; the next problem is making writes safe to repeat, which is [idempotency](/reliability/idempotency/).
+Every response gets a caching decision, and anything with a user in it gets `no-store` or `private`, never `public`. A version column then pays twice: cheap 304s on reads and safe conditional writes. Caching makes reads cheap to repeat. The opposite problem is a client with thousands of writes to send at once, which is [bulk operations](/collections/bulk/).
 
 <SelfCheck>
 

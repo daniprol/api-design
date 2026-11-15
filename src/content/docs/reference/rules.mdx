@@ -1,10 +1,20 @@
 ---
 title: Rule index
-description: Every Zalando guideline rule cited in the Guide, with its level and the chapters that discuss it. Generated from the pages, so it can't drift.
+description: Every Zalando rule and Google AIP cited in the Guide, with the chapters that discuss them. Generated from the pages, so it can't drift.
 ---
 
 import RuleIndex from "@components/RuleIndex.astro";
 
-Rule numbers link to the original guideline; chapter links go to the discussion here. Levels follow RFC 2119 as Zalando states them. For what this guide does with them, see [Sources and method](/about/sources/).
+Rule numbers link to the original guideline; chapter links go to the discussion here. For what this guide does with them, see [Sources and method](/about/sources/).
+
+## Zalando
+
+Levels follow RFC 2119 as Zalando states them. For how the guidelines are organised and where this guide departs from them, see [Zalando](/guidelines/zalando/).
 
 <RuleIndex guide="zalando" />
+
+## Google AIP
+
+Each AIP mixes MUST and SHOULD rules, so AIPs are listed by number without a level. For how AIPs read from a REST/JSON shop and where this guide departs from them, see [Google AIP](/guidelines/google/).
+
+<RuleIndex guide="google" />

@@ -121,12 +121,17 @@ export const guide: Section[] = [
         title: "Caching",
         summary: "Compression, partial responses, validators, Cache-Control.",
       },
+      {
+        slug: "bulk",
+        title: "Bulk operations",
+        summary: "Many items per request, per-item results, limits.",
+      },
     ],
   },
   {
     slug: "reliability",
     title: "Reliability",
-    summary: "Retries, concurrent writers and work that outlives a request.",
+    summary: "Retries, concurrent writers, work that outlives a request, and seeing what happened.",
     topics: [
       {
         slug: "idempotency",
@@ -143,12 +148,17 @@ export const guide: Section[] = [
         title: "Long-running operations and batches",
         summary: "202 and job resources, 207 for partial success.",
       },
+      {
+        slug: "observability",
+        title: "Observability",
+        summary: "Correlation IDs, traceparent, per-client metrics, SLOs, safe logs.",
+      },
     ],
   },
   {
     slug: "security",
     title: "Security",
-    summary: "Who may call what, on which object, and how often.",
+    summary: "Who may call what, on which object, how often, and how attacks actually go.",
     topics: [
       {
         slug: "auth",
@@ -158,7 +168,17 @@ export const guide: Section[] = [
       {
         slug: "limits",
         title: "Abuse and resource limits",
-        summary: "Rate limits, 429, quotas, OWASP API Top 10.",
+        summary: "Rate limits, 429, quotas, unbounded consumption.",
+      },
+      {
+        slug: "attacks",
+        title: "Attacks, told as stories",
+        summary: "OWASP API Top 10: BOLA, mass assignment, SSRF, abuse of flows.",
+      },
+      {
+        slug: "multi-tenancy",
+        title: "Multi-tenancy",
+        summary: "Where the tenant lives, isolation, per-tenant limits.",
       },
     ],
   },
@@ -192,7 +212,7 @@ export const guide: Section[] = [
   {
     slug: "events",
     title: "Events",
-    summary: "When the API speaks first: event contracts and delivery.",
+    summary: "When the API speaks first: event contracts, delivery and live streams.",
     topics: [
       {
         slug: "event-design",
@@ -208,6 +228,11 @@ export const guide: Section[] = [
         slug: "webhooks",
         title: "Webhooks",
         summary: "Signing, delivery IDs, retries, receiver obligations.",
+      },
+      {
+        slug: "streaming",
+        title: "Streaming and real-time",
+        summary: "SSE, WebSockets, long polling, resuming, backpressure.",
       },
     ],
   },

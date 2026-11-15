@@ -1,0 +1,340 @@
+---
+title: Observability
+description: Give every response an ID the caller can quote, measure rate, errors and duration per client and per route, write one structured log line per request with no secrets in it, and hold the API to SLOs measured at the edge.
+sources:
+  - label: W3C Trace Context
+    title: "W3C Recommendation: Trace Context"
+    url: https://www.w3.org/TR/trace-context/
+    accessed: 2026-11
+  - label: Google SRE, 2016
+    title: "Site Reliability Engineering (O'Reilly, 2016), Chapter 3: Embracing Risk"
+    url: https://sre.google/sre-book/embracing-risk/
+    accessed: 2026-11
+  - label: Leach, 2019
+    title: "Brandur Leach: Fast and flexible observability with canonical log lines (Stripe, 2019)"
+    url: https://stripe.com/blog/canonical-log-lines
+    accessed: 2026-11
+  - label: RED method
+    title: "InfoWorld: The RED method, a new strategy for monitoring microservices"
+    url: https://www.infoworld.com/article/2270578/the-red-method-a-new-strategy-for-monitoring-microservices.html
+    accessed: 2026-11
+  - label: RFC 9457
+    title: "RFC 9457: Problem Details for HTTP APIs"
+    url: https://www.rfc-editor.org/rfc/rfc9457
+    accessed: 2026-11
+related:
+  - http/headers
+  - http/errors
+  - evolution/deprecation
+  - security/limits
+---
+
+import {
+  InBrief,
+  Note,
+  Compare,
+  Prefer,
+  Avoid,
+  Rule,
+  RuleGroup,
+  SelfCheck,
+  Question,
+  Status,
+  Tabs,
+  TabItem,
+} from "@components/kit";
+
+<InBrief>
+
+- Propagate W3C Trace Context, and echo the trace ID on every response: a `Trace-Id` header always, a `trace_id` member in every problem body.
+- Measure rate, errors and duration per route template and per client ID. A partner failing completely can be a rounding error in the total.
+- Write one structured log line per request with the fields you'll query, and never tokens, `Authorization`, card data or personal data from URLs.
+- Measure SLOs at the edge. 5xx responses spend the error budget; 4xx responses don't, except the 429s you send because you're overloaded.
+- Count deprecated calls by client, so retirement is a list of names, not a traffic graph.
+
+</InBrief>
+
+Tuesday, 10.40 a.m. An email from Larkspur Logistics: "Your API has been down since 6 a.m." Priya opens the dashboard. Error rate 0.3 percent, latency normal, every line green. She asks for a request ID; Larkspur sends a screenshot of a log with a timestamp and the word "failed". It takes her two hours to find that a deploy at 5.55 a.m. broke one rarely used field for one partner, and that partner was 0.3 percent of traffic. The API was observable. It wasn't observable per caller.
+
+## Give every response an ID the caller can quote
+
+The first question in any support thread is "which request?", and the caller should be able to answer it without screenshots. [Headers](/http/headers/) covers the mechanism: propagate `traceparent` on every hop and send the trace ID back in a `Trace-Id` response header. This page is about using it. Every response carries the header, success or failure, and every problem body carries the same ID as a `trace_id` extension member, so a client that logs only bodies still has it:
+
+```json
+{
+  "type": "https://api.example.com/problems/insufficient-stock",
+  "title": "Insufficient stock",
+  "status": 422,
+  "detail": "Only 2 units of sku-1042 are available; the order requested 5.",
+  "instance": "/orders/ord_42",
+  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736"
+}
+```
+
+Why an extension and not `instance`? RFC 9457 lets `instance` identify the occurrence, but APIs fill it differently: some with a request URI, others, like the example in [Errors](/http/errors/), with the path of the resource concerned. A dedicated `trace_id` means one thing everywhere, so nobody has to guess. Then tell partners, in the docs and in onboarding, to log the `Trace-Id` they receive. Larkspur won't, but the next partner will, and their tickets will take minutes.
+
+A `traceparent` from outside your network is a request, not an order. Keeping its trace ID lets a partner quote their own ID, which is pleasant. Obeying its sampled flag means any caller can make you record every request it sends, which is less so. Make the sampling decision at your edge, and never put personal data in `tracestate`: the specification forbids it, because the header travels to systems you don't control. The standard itself exists because tracers spent years unable to understand each other.
+
+<Note kind="history" title="One header instead of five" year="2020" source="https://www.w3.org/TR/trace-context/">
+
+Before Trace Context, every tracer spoke its own dialect: Zipkin's `X-B3-TraceId`, Jaeger's `uber-trace-id`, and a proprietary header from each APM vendor. A request crossing from one to another lost its trace at the border. Engineers from Microsoft, Google, Dynatrace and others standardised a single format in the W3C Distributed Tracing Working Group, and it became a Recommendation in February 2020. OpenTelemetry propagates it by default, which is why a new API should never invent its own.
+
+</Note>
+
+## Count per client and per route, not only in total
+
+Priya's dashboard was accurate. It answered "how is the API doing?", and the question that mattered was "how is Larkspur doing?". Aggregates are dominated by the biggest callers, so a partner sending a sliver of traffic can fail completely without moving the line. The fix is to measure the three numbers of the RED method, rate, errors and duration, broken down by who called and what they called.
+
+"What they called" means the route template, `/orders/{order_id}`, not the raw path. Every distinct label value becomes a separate time series, so `/orders/ord_42` and `/orders/ord_43` as labels turn a metrics system into an expensive copy of the orders table. "Who called" means the client ID from authentication: Fernhill has dozens of API clients, which a metrics system handles happily, and millions of customers, which it doesn't. Customer IDs belong in logs and traces, where high cardinality is the point.
+
+<Compare>
+<Prefer>
+
+```text
+http_server_request_duration_seconds{
+  method="GET", route="/orders/{order_id}",
+  status_class="5xx", client_id="larkspur"}
+```
+
+</Prefer>
+<Avoid>
+
+```text
+http_server_request_duration_seconds{
+  path="/orders/ord_42", customer="cus_7",
+  trace_id="4bf92f…"}
+```
+
+</Avoid>
+</Compare>
+
+With `client_id` on the error series, "errors for Larkspur above 5 percent for ten minutes" is a one-line alert, and Tuesday's two-hour hunt becomes a page at 6.10 a.m. One histogram covers all three RED numbers: its count is the rate, its count filtered by `status_class` gives errors, and its buckets give duration.
+
+## Write one line per request with everything you'll ask
+
+Scattered log lines ("auth ok", "loaded order", "calling payments") are written in the order the code runs and read in the order a human panics. During an incident, nobody wants to join eight lines by timestamp. So, in addition to whatever else you log, emit one structured line when the request finishes, holding every field you'd want to filter or group by. Stripe calls this a canonical log line, and their write-up is the case for it.
+
+<Note kind="practice" title="Stripe's canonical log lines" year="2019" source="https://stripe.com/blog/canonical-log-lines">
+
+Brandur Leach described how every request to Stripe's API emits one dense line at the end: method, path, status, the authenticated account and API key ID, the rate-limit decision, total duration, time and query count in the database, and the request ID. Because the schema is stable, the same lines feed long-term analysis and the charts in Stripe's own Developer Dashboard. One line per request turned "grep and squint" into a query.
+
+</Note>
+
+What goes in that line, and what must never go near it:
+
+| Log it                                                  | Never log it                                                               |
+| ------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `trace_id`, `client_id`, API key ID (not the key)       | `Authorization`, API keys, access and refresh tokens, cookies              |
+| Method, route template, status, `duration_ms`           | Passwords and one-time codes, even "only at debug level"                   |
+| Problem `type` on errors                                | Card numbers and security codes                                            |
+| Rate-limit decision and remaining quota                 | Full request and response bodies                                           |
+| API version, SDK name and version from `User-Agent`     | Raw query strings, which carry emails and other personal data (`?email=…`) |
+| Deprecated route hit; item counts and failures for bulk | Anything from `tracestate` or `baggage` you haven't allow-listed           |
+
+The right-hand column is a list of things that escape by accident. Nobody writes `log.info(password)`. They write a debug line that dumps request headers, or log the full URL of a search on [an email filter](/collections/filtering/), and the secret is in three log stores and a backup before anyone reads the line. Card data has its own rule: PCI DSS forbids storing security codes after authorisation at all, and logs count as storage. So log from an allow-list of fields, never by dumping objects, and redact at the logger as a second net. Twitter found out what the first net is worth.
+
+<Note kind="incident" title="Twitter's password log" year="2018" source="https://techcrunch.com/2018/05/03/twitter-password-bug/">
+
+In May 2018 Twitter disclosed that a bug had written users' passwords to an internal log before the hashing step ran, so they sat there unmasked. Twitter said it found the bug itself, saw no evidence of misuse, and removed the passwords, but still advised every user to consider changing their password. Strong hashing in the database protects nothing if the plaintext takes a detour through a logger first.
+
+</Note>
+
+_Assumes:_ Prometheus client libraries and structlog (or pino); authentication puts the caller's client ID on the request; `trace_id` is set by the middleware in [Headers](/http/headers/); the `problem()` helper records the problem type on the request.
+
+Here's one middleware that does both jobs. Notice the `finally`: a request that dies with an unhandled exception still gets counted and logged, as a 500, which is the request you most need to see.
+
+<Tabs syncKey="stack">
+<TabItem label="FastAPI">
+
+```python
+REQUESTS = Histogram("http_server_request_duration_seconds", "API requests",
+                     ["method", "route", "status_class", "client_id"])
+
+@app.middleware("http")
+async def observe(request: Request, call_next):
+    start, status = time.perf_counter(), 500  # unhandled exceptions count as 500
+    try:
+        response = await call_next(request)
+        status = response.status_code
+        return response
+    finally:
+        elapsed = time.perf_counter() - start
+        route = getattr(request.scope.get("route"), "path", "unmatched")  # "/orders/{order_id}"
+        client = getattr(request.state, "client_id", "anonymous")
+        REQUESTS.labels(request.method, route, f"{status // 100}xx", client).observe(elapsed)
+        log.info("request", trace_id=trace_id.get(), client_id=client, method=request.method,
+                 route=route, status=status, duration_ms=round(elapsed * 1000),
+                 problem_type=getattr(request.state, "problem_type", None))
+```
+
+</TabItem>
+<TabItem label="Django">
+
+```python
+REQUESTS = Histogram("http_server_request_duration_seconds", "API requests",
+                     ["method", "route", "status_class", "client_id"])
+
+class ObserveMiddleware:
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        start, status = time.perf_counter(), 500  # unhandled exceptions count as 500
+        try:
+            response = self.get_response(request)
+            status = response.status_code
+            return response
+        finally:
+            elapsed = time.perf_counter() - start
+            match = getattr(request, "resolver_match", None)
+            route = match.route if match else "unmatched"  # "orders/<str:order_id>"
+            client = getattr(request, "client_id", "anonymous")
+            REQUESTS.labels(request.method, route, f"{status // 100}xx", client).observe(elapsed)
+            log.info("request", trace_id=trace_id.get(), client_id=client, method=request.method,
+                     route=route, status=status, duration_ms=round(elapsed * 1000),
+                     problem_type=getattr(request, "problem_type", None))
+```
+
+</TabItem>
+<TabItem label="Hono">
+
+```ts
+import { routePath } from "hono/route";
+
+const requests = new Histogram({
+  name: "http_server_request_duration_seconds",
+  help: "API requests",
+  labelNames: ["method", "route", "status_class", "client_id"],
+});
+
+app.use(async (c, next) => {
+  const start = performance.now();
+  let status = 500; // unhandled exceptions count as 500
+  try {
+    await next();
+    status = c.res.status;
+  } finally {
+    const seconds = (performance.now() - start) / 1000;
+    const route = routePath(c, -1); // "/orders/:order_id": the matched handler's pattern
+    const client = c.get("clientId") ?? "anonymous";
+    requests.labels(c.req.method, route, `${Math.floor(status / 100)}xx`, client).observe(seconds);
+    logger.info({
+      msg: "request",
+      trace_id: c.get("traceId"),
+      client_id: client,
+      method: c.req.method,
+      route,
+      status,
+      duration_ms: Math.round(seconds * 1000),
+      problem_type: c.get("problemType"),
+    });
+  }
+});
+```
+
+</TabItem>
+</Tabs>
+
+There's no URL, header or body in that log call, and that's deliberate: everything in the line was chosen by name.
+
+## Set SLOs where the client stands
+
+Metrics tell you what happened; an SLO tells you whether it was good enough. The temptation is to take the numbers the application already exports. But a request that dies at the load balancer, times out in the gateway or never reaches a healthy pod is invisible to the application, and those are exactly the requests clients complain about. Measure service level indicators at the edge, at the gateway or load balancer, where the client's request first meets you.
+
+Fernhill's two SLIs are the ones most APIs need. Availability is the share of valid requests that didn't fail because of Fernhill. Latency is the share of requests answered faster than a threshold, set per kind of route, because a search and a stock read have different reasonable speeds: say 99 percent of reads under 300 ms. Averages don't appear anywhere, since an average latency of 80 ms is compatible with one checkout in fifty taking eight seconds.
+
+What counts as "failed because of Fernhill" is the decision that makes the availability number mean something:
+
+| Response                                                                 | Counts against availability                                  |
+| ------------------------------------------------------------------------ | ------------------------------------------------------------ |
+| 2xx, 3xx                                                                 | No                                                           |
+| <Status code={422} />, <Status code={404} />, <Status code={401} />      | No: the request was wrong, and the API answered it correctly |
+| <Status code={429} /> for a client over its own quota                    | No: the limit did its job                                    |
+| <Status code={429} /> or <Status code={503} /> because you're overloaded | Yes: the client did nothing wrong                            |
+| 5xx, and timeouts or resets at the edge                                  | Yes                                                          |
+| Failed items inside a <Status code={207} /> with a 5xx status            | Yes, per item; a 207 is not a success until you look inside  |
+
+The <Status code={429} /> row needs care. [Limits](/security/limits/) says to answer overload with <Status code={503} />, but load shedders and gateways sometimes send <Status code={429} /> to clients that are within quota. Count those as failures, or the SLO will look healthiest exactly when you're shedding the most traffic. And leaving 4xx out of the SLO doesn't mean ignoring it: a deploy that breaks token validation turns into a wall of <Status code={401} /> responses that the availability SLO calls fine. Alert on a sudden jump in any client's 4xx rate separately.
+
+The target then becomes a budget. At 99.9 percent over 28 days, Fernhill may fail one request in a thousand: ten thousand failures in ten million requests, or about 40 minutes of complete outage. Google's SRE book turned that arithmetic into a way of running teams.
+
+<Note kind="history" title="Google's error budgets" year="2016" source="https://sre.google/sre-book/embracing-risk/">
+
+Google's _Site Reliability Engineering_ book describes defining availability as request success rate rather than uptime, and treating the gap between the target and 100 percent as an error budget. As long as budget remains, teams ship; when it runs out, releases are halted while the effort goes into reliability. The book's point is that the target is both a floor and a ceiling: an API far more reliable than its SLO is spending caution it could have spent on features.
+
+</Note>
+
+## Measure who still calls what you're retiring
+
+[Deprecation](/evolution/deprecation/) asks you to remove an endpoint only when its remaining callers are a list of names you've spoken to. That list comes from here. The canonical log line already carries `client_id` and the route, so add a `deprecated` field and a counter labelled by client and route, and the "who still calls it" question is one query. Add the SDK version from `User-Agent` and you can tell a partner which release of your library still makes the old call, which is far more useful to them than a date.
+
+Keep that dashboard per client and show it to the people deciding the sunset. Larkspur at 40 calls a night, from a library version that is three years old, is a conversation to have this month, not on removal day.
+
+<RuleGroup>
+
+<Rule guide="zalando" id="233" level="MUST" title="Support X-Flow-ID" />
+<Rule guide="zalando" id="193" level="SHOULD" title="Monitor API usage" />
+<Rule
+  guide="zalando"
+  id="188"
+  level="MUST"
+  title="Monitor usage of deprecated API scheduled for sunset"
+/>
+
+</RuleGroup>
+
+Zalando's rule 233 asks for its own correlation header. If you're bound by it, propagate `X-Flow-ID` alongside `traceparent`, as [Headers](/http/headers/) suggests, and log both.
+
+## What to take away
+
+Observability for an API is the ability to answer one partner's question about one request, quickly: an ID they can quote, metrics broken down by client, a log line with everything and nothing secret, and an SLO that counts what clients feel. Every one of those breakdowns depends on knowing who the caller is, and making sure they are who they claim is [authentication and authorisation](/security/auth/).
+
+<SelfCheck>
+
+<Question
+  q="Which of these responses should count against Fernhill's availability SLO?"
+  answer={2}
+  options={[
+    {
+      text: "A 422 because the mobile app sent a negative quantity.",
+      why: "The request was invalid and the API answered it correctly; the budget is for failures that are yours.",
+    },
+    {
+      text: "A 429 to a partner that exceeded its documented quota.",
+      why: "The limit worked as designed. It only counts when you send 429 because you're overloaded.",
+    },
+    {
+      text: "A 503 from the gateway while the database fails over.",
+      why: "The client did nothing wrong and got no answer, which is exactly what the SLO measures.",
+    },
+    {
+      text: "A 404 for an order ID that doesn't exist.",
+      why: "Not found is a correct answer, not a failure of the service.",
+    },
+  ]}
+/>
+
+<Question
+  q="Priya wants to alert when a single partner's requests start failing. Which labels should the request metric carry?"
+  answer={1}
+  options={[
+    {
+      text: "The raw request path and the customer ID.",
+      why: "Each order and customer creates a new time series, and the metrics system drowns long before it helps.",
+    },
+    {
+      text: "Method, route template, status class and client ID.",
+      why: "All bounded, and client ID is the one that separates Larkspur's failures from everyone's.",
+    },
+    {
+      text: "Only the status class; partners are visible in the logs.",
+      why: "Then the alert sees the aggregate, where a partner at 0.3 percent of traffic disappears.",
+    },
+    {
+      text: "The trace ID, so each data point links to a trace.",
+      why: "Unbounded cardinality. Traces and logs carry the trace ID; metrics carry aggregates.",
+    },
+  ]}
+/>
+
+</SelfCheck>

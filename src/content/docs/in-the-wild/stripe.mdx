@@ -1,0 +1,181 @@
+---
+title: Stripe
+description: Stripe's API is built so that an integration written years ago keeps working and a retried payment never charges twice. Copy its idempotency keys and signed webhooks; copy its per-account version pinning only if you can afford to run every old version.
+sources:
+  - label: Stripe API
+    title: "Stripe API reference: introduction"
+    url: https://docs.stripe.com/api
+    accessed: 2026-11
+  - label: Stripe versioning
+    title: "Stripe API reference: Versioning"
+    url: https://docs.stripe.com/api/versioning
+    accessed: 2026-11
+  - label: Stripe, 2017
+    title: "Brandur Leach: APIs as infrastructure: future-proofing Stripe with versioning (2017)"
+    url: https://stripe.com/blog/api-versioning
+    accessed: 2026-11
+  - label: Stripe, 2024
+    title: "Stripe Blog: Introducing Stripe's new API release process (2024)"
+    url: https://stripe.com/blog/introducing-stripes-new-api-release-process
+    accessed: 2026-11
+  - label: Stripe idempotency
+    title: "Stripe API reference: Idempotent requests"
+    url: https://docs.stripe.com/api/idempotent_requests
+    accessed: 2026-11
+  - label: Stripe pagination
+    title: "Stripe API reference: Pagination"
+    url: https://docs.stripe.com/api/pagination
+    accessed: 2026-11
+  - label: Stripe expand
+    title: "Stripe API reference: Expanding responses"
+    url: https://docs.stripe.com/api/expanding_objects
+    accessed: 2026-11
+  - label: Stripe errors
+    title: "Stripe API reference: Errors"
+    url: https://docs.stripe.com/api/errors
+    accessed: 2026-11
+  - label: Stripe webhooks
+    title: "Stripe Docs: Receive Stripe events in your webhook endpoint"
+    url: https://docs.stripe.com/webhooks
+    accessed: 2026-11
+  - label: Stripe API v2
+    title: "Stripe Docs: API v2 overview"
+    url: https://docs.stripe.com/api-v2-overview
+    accessed: 2026-11
+related:
+  - evolution/versioning
+  - reliability/idempotency
+  - collections/pagination
+  - events/webhooks
+---
+
+import { InBrief, Note } from "@components/kit";
+
+<InBrief>
+
+- Versions are dates, and each account has a default version that requests use unless they send `Stripe-Version`. Official SDKs now pin the version for you.
+- Every `POST` accepts an `Idempotency-Key`. This Guide's [idempotency](/reliability/idempotency/) page is, in large part, a description of this design.
+- Lists paginate with object IDs as cursors (`starting_after`), and related objects expand inline with `expand[]`.
+- Version 1 takes form-encoded bodies and returns JSON. The newer `/v2` namespace takes JSON, and its differences from v1 read like a list of second thoughts.
+- Webhooks are signed with HMAC-SHA256 over a timestamp and the raw body.
+
+</InBrief>
+
+You paste the first `curl` example from Stripe's reference into a terminal, change the amount, and a test customer appears in your dashboard before you've finished the paragraph below it. Three years later, nobody on the team remembers that integration, and it still works. Those two experiences, the fast first call and the integration that never breaks, explain nearly every decision below. Stripe moves money for businesses that can't afford a surprise, so it pays for compatibility with its own engineering time rather than its users'.
+
+## Versions are dates, and your account remembers yours
+
+Every breaking change ships in a dated version, and you choose one per request with a header:
+
+```bash
+curl https://api.stripe.com/v1/customers/cus_7 \
+  -u sk_test_…: \
+  -H "Stripe-Version: 2024-09-30.acacia"
+```
+
+Leave the header out and the request uses your account's default version, which you change in the dashboard. Stripe's 2017 write-up describes how the default gets set: on your first request, the account is pinned to the newest version. Behind the scenes, each breaking change lives in a small "version change" module that transforms a current response back into older shapes, so the core code knows only the latest one.
+
+**Why it fits Stripe.** A payment integration is often written once by a contractor and left alone. Pinning means Stripe can keep changing the API without breaking that code, and in 2017 it wrote that every version since 2011 still worked.
+
+**Against this Guide.** [Versioning](/evolution/versioning/) lists date pinning as the scheme that scales best and costs most, and Stripe is the reason. Where we'd push back is the implicit default: a request with no header behaves differently in two accounts, so the version that matters isn't visible in the code. Stripe's SDKs have since closed that gap: from `stripe-node` v12 and `stripe-python` v6, each SDK release sends the version that was current when it shipped, and every `/v2` request must carry `Stripe-Version`. Explicit beats remembered.
+
+<Note kind="history" title="Dates become named releases" year="2024" source="https://stripe.com/blog/introducing-stripes-new-api-release-process">
+
+In October 2024 Stripe changed the cadence. Monthly releases add features with no breaking changes; twice a year, a major release, named after a plant and starting with Acacia, carries the breaking ones. A version string now reads `2024-09-30.acacia`: the date still orders releases, and the name tells you which ones need code changes.
+
+</Note>
+
+## Every POST takes an idempotency key
+
+Stripe accepts an `Idempotency-Key` on every `POST` in v1. Its docs suggest a V4 UUID, up to 255 characters, and never personal data:
+
+```bash
+curl https://api.stripe.com/v1/customers \
+  -u sk_test_…: \
+  -H "Idempotency-Key: 6d0d3a8e-7f5c-4c71-9a5b-0f3c1e2d4b9a" \
+  -d email="priya@fernhill.example"
+```
+
+In v1, Stripe saves the status and body of the first request once execution begins, and replays them for any retry with the same key, including a `500`. A retry with different parameters is an `idempotency_error`. Keys can be pruned after 24 hours.
+
+**Why it fits Stripe.** A charge is the textbook operation that can't be safely repeated, and Stripe's clients are servers on networks that drop responses.
+
+**Against this Guide.** We recommend the same design, almost line for line, in [Idempotency and retries](/reliability/idempotency/). The interesting difference is the `500`. Replaying a stored failure is predictable, but it means the client must mint a new key to try again. Stripe's own `/v2` changed course: there, a retry re-executes failed or partially failed work to completion, and keys last 30 days. Our recommendation, storing the outcome in the same transaction as the effect, sits between the two: a rolled-back failure stores nothing, so a retry runs again.
+
+## Cursors are object IDs, and lists are objects
+
+Every list endpoint takes `limit` (1 to 100, default 10) and either `starting_after` or `ending_before`, each an object ID:
+
+```bash
+curl -G https://api.stripe.com/v1/customers -u sk_test_…: \
+  -d limit=3 -d starting_after=cus_7
+```
+
+```json
+{ "object": "list", "url": "/v1/customers", "has_more": true, "data": [ … ] }
+```
+
+**Why it fits Stripe.** Object IDs are already in the client's hands, so "give me the ones after this" needs no new concept, and it's keyset pagination underneath.
+
+**Against this Guide.** [Pagination](/collections/pagination/) agrees on keyset and on wrapping lists in an object, and disagrees on two details: we prefer opaque cursors and a `next` link the client follows rather than builds. A bare object ID can't carry the filters forward, so the client must resend them. Stripe's `/v2` lists switched to a `page` token with `next_page_url` and `previous_page_url`, which is exactly the shape we recommend.
+
+## Related objects expand on request
+
+A charge refers to its customer by ID. Ask for `expand[]` and you get the object instead, nesting with dots up to four levels deep:
+
+```bash
+curl -G https://api.stripe.com/v1/charges/ch_123 -u sk_test_…: \
+  -d "expand[]=customer" -d "expand[]=payment_intent.customer"
+```
+
+**Why it fits Stripe.** One payment touches customers, payment methods, invoices and intents. Without expansion, rendering a receipt is five sequential requests.
+
+**Against this Guide.** This is the `embed` parameter from [Caching](/collections/caching/), and the advice there applies: offer it where measurements show the round trips hurt. Stripe's docs warn that deep expansions on many list requests can be slow, and `/v2` drops `expand` in favour of a narrower `include` parameter on endpoints that support it.
+
+## Form-encoded in, JSON out
+
+The v1 API accepts `application/x-www-form-urlencoded` bodies and returns JSON. Nested fields use brackets, `metadata[order_id]=ord_42`, and arrays use `expand[]=…`.
+
+**Why it fits Stripe.** Form encoding is what `curl -d` sends by default, which is why that first call takes seconds. It also needs no JSON library on the oldest server-side stacks.
+
+**Against this Guide.** We'd use JSON in both directions, because a request and its response should share one model. Brackets struggle with deep nesting and with the difference between "empty" and "absent": v1 removes a metadata key when you set it to an empty string. Stripe agrees in its own way: `/v2` is JSON in both directions and removes metadata keys with `null`.
+
+## Errors explain themselves, in Stripe's own shape
+
+A declined card comes back as `402` with an error object:
+
+```json
+{
+  "error": {
+    "type": "card_error",
+    "code": "card_declined",
+    "decline_code": "insufficient_funds",
+    "message": "…",
+    "doc_url": "…"
+  }
+}
+```
+
+The `type` is one of four (`api_error`, `card_error`, `idempotency_error`, `invalid_request_error`), `code` and `decline_code` are for programs, `param` names the offending field, and `doc_url` links to the documentation for that code.
+
+**Why it fits Stripe.** A decline isn't a bug: the request was valid and the bank said no. Its docs describe `402` as "the parameters were valid but the request failed", which is what a checkout needs to tell apart from a malformed request.
+
+**Against this Guide.** [Errors](/http/errors/) recommends Problem Details, where `type` is a URI that resolves to documentation. Stripe's `doc_url` is the same idea in a home-grown envelope. A bespoke shape is fine when you are the only API your clients call; a platform whose clients also call ten others gains more from the standard.
+
+## Webhooks carry a timestamped signature
+
+Every delivery carries a `Stripe-Signature` header with a timestamp and one or more signatures:
+
+```http
+Stripe-Signature: t=1798765432,v1=5257a869e7ecebeda32affa62cdca3fa51cad7e77a0e56ff536d0ce8e108d8bd
+```
+
+The `v1` value is an HMAC-SHA256 of `{t}.{raw body}` using the endpoint's secret. The libraries reject timestamps more than five minutes old by default, and while you roll a secret, Stripe signs with both for up to seven days. Failed deliveries are retried for up to three days in live mode.
+
+**Why it fits Stripe.** A forged `payment_intent.succeeded` ships goods for free, so an unsigned webhook is an open till.
+
+**Against this Guide.** [Webhooks](/events/webhooks/) recommends signing the delivery ID too, as Standard Webhooks does. Stripe signs the timestamp and body, and the event ID sits inside the body, so it's covered anyway. Stripe's dashboard now recommends thin events for new endpoints, and every `/v2` event is thin: it carries an ID and you fetch the current state, the shape we suggest for new APIs.
+
+## What to take away
+
+Stripe's API is what compatibility looks like when a company decides to pay for it: pinned versions, replayable writes, and a second namespace instead of breaking the first. Copy the idempotency keys and the signed webhooks; they cost little. Weigh the version pinning against [what it costs to run](/evolution/versioning/). Next, [GitHub](/in-the-wild/github/) shows an API that came to dated versions a decade later, and how it got there.

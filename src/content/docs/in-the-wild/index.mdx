@@ -1,0 +1,100 @@
+---
+title: Reading real APIs
+description: Real APIs show what a design decision costs after years in production. Read them for the constraint behind each choice, compare them with this Guide row by row, and copy the reasoning rather than the surface.
+sources:
+  - label: Stripe API
+    title: "Stripe API reference"
+    url: https://docs.stripe.com/api
+    accessed: 2026-11
+  - label: GitHub REST API
+    title: "GitHub Docs: REST API"
+    url: https://docs.github.com/en/rest
+    accessed: 2026-11
+  - label: Shopify GraphQL Admin
+    title: "Shopify Dev: GraphQL Admin API reference"
+    url: https://shopify.dev/docs/api/admin-graphql
+    accessed: 2026-11
+  - label: Twilio requests
+    title: "Twilio Docs: Requests to Twilio"
+    url: https://www.twilio.com/docs/usage/requests-to-twilio
+    accessed: 2026-11
+related:
+  - collections/pagination
+  - evolution/versioning
+  - http/errors
+  - events/webhooks
+---
+
+import { InBrief, CardGrid, LinkCard } from "@components/kit";
+
+<InBrief>
+
+- Four teardowns of public APIs: Stripe, GitHub, Shopify and Twilio, each read against this Guide.
+- Every section follows the same pattern: what the API does, why it fits that company, and where it agrees or disagrees with the Guide.
+- Read an API for the constraint behind each choice. Copy the reasoning when you share the constraint, not the surface when you don't.
+- The comparison table below puts all four side by side, one row per Guide topic.
+
+</InBrief>
+
+Fernhill's design review has reached pagination, and someone says what someone always says: "Why not do what Stripe does?" It's a reasonable instinct. Stripe's API is careful, popular and well documented. But Stripe chose object-ID cursors under constraints Fernhill doesn't have, and its own newer API namespace chose differently. Copying the surface of a famous API gets you its decisions without its reasons, and the reasons are the part that transfers.
+
+These four teardowns read real APIs the way you'd read a colleague's design: what they chose, why it suits them, where it matches this Guide, and where one of us is wrong for your situation.
+
+<CardGrid>
+  <LinkCard
+    title="Stripe"
+    href="/in-the-wild/stripe/"
+    description="Date versions pinned per account, idempotency keys, expandable objects, signed webhooks."
+  />
+  <LinkCard
+    title="GitHub"
+    href="/in-the-wild/github/"
+    description="Link header pagination, REST beside GraphQL, dated versions, free conditional requests."
+  />
+  <LinkCard
+    title="Shopify"
+    href="/in-the-wild/shopify/"
+    description="GraphQL as the API, priced queries, a version every quarter, 200 with errors."
+  />
+  <LinkCard
+    title="Twilio"
+    href="/in-the-wild/twilio/"
+    description="A 2010 version still in the URL, numbered errors with pages, status callbacks."
+  />
+</CardGrid>
+
+## Read an API for its constraints, not its style
+
+Read each API as an answer to its hardest problem. Stripe moves money, where a duplicate request charges a card twice, and idempotency keys are everywhere. GitHub serves integrations it didn't write, many of them polling, and its unchanged answers are free. Shopify runs other people's apps against shops of every size, and it prices each query. Twilio waits on phone networks that answer in their own time, and it reports outcomes later. Once you can name the problem, the design reads as a set of answers to it, and you can ask whether the problem is yours.
+
+## What to look for
+
+When you open an API's documentation, these are the pages that tell you the most, roughly in the order worth reading them:
+
+- **The first request.** How long from reading the docs to a working `curl`? Stripe's and Twilio's form-encoded bodies make it one `curl` command.
+- **A list response.** Where the next page comes from, and whether the client builds the URL or follows it.
+- **An error.** Whether a program can branch on it, and whether a person can fix it from the message alone.
+- **A retry.** What happens if the same create arrives twice. If the docs don't say, assume the worst.
+- **The version.** Where it lives, what the default is when you don't send one, and how long a version lives after its successor ships.
+- **A webhook.** What's signed, with which key, and whether a captured delivery can be replayed.
+- **The changelog, and any second API.** This is where a company admits what it would do differently. Stripe's `/v2` namespace, GitHub's retired preview media types and Shopify's legacy REST API are each a list of second thoughts.
+
+## Four APIs, side by side
+
+Each row links to the Guide topic that covers it. Cells are short by design; the teardowns have the detail and the sources.
+
+| Topic                                    | Stripe                                                | GitHub                                                     | Shopify                                                        | Twilio                                                        |
+| ---------------------------------------- | ----------------------------------------------------- | ---------------------------------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------- |
+| [Pagination](/collections/pagination/)   | `starting_after` an object ID, `has_more` in the body | `Link` header with `rel="next"`                            | GraphQL connections, `after` an `endCursor`, up to 250         | `next_page_uri` in the body                                   |
+| [Versioning](/evolution/versioning/)     | `Stripe-Version` date; account default otherwise      | `X-GitHub-Api-Version` date; 24 months after the successor | `YYYY-MM` in the URL, quarterly; at least 12 months            | `2010-04-01` in the path                                      |
+| [Errors](/http/errors/)                  | `type`, `code`, `param`, `doc_url`                    | `message`; `errors[].code` on 422                          | `errors[].extensions.code` and `userErrors`, often with 200    | numeric `code` and a `more_info` URL                          |
+| [Idempotency](/reliability/idempotency/) | `Idempotency-Key` on every `POST`                     | Not covered in the docs cited                              | `@idempotent(key:)`, required on some mutations from `2026-04` | Webhook retries carry `I-Twilio-Idempotency-Token`            |
+| [Authentication](/security/auth/)        | Secret API key (Basic in v1 examples, Bearer in v2)   | `Authorization: Bearer` token                              | `X-Shopify-Access-Token`                                       | HTTP Basic: Account SID and Auth Token, or API key            |
+| [Webhook signing](/events/webhooks/)     | HMAC-SHA256 of timestamp and body, `Stripe-Signature` | HMAC-SHA256 of body, `X-Hub-Signature-256`                 | HMAC-SHA256 of body, base64, `X-Shopify-Hmac-SHA256`           | HMAC-SHA1 of URL and sorted params, keyed with the Auth Token |
+| [Casing](/representations/json/)         | snake_case                                            | snake_case in REST, camelCase in GraphQL                   | camelCase in GraphQL, snake_case in legacy REST                | PascalCase parameters, snake_case JSON                        |
+
+Two patterns stand out. All four sign webhooks with an HMAC, and only Stripe puts a timestamp under the signature, which is the part [Webhooks](/events/webhooks/) cares about most. And none of the four returns Problem Details, yet every one gives its errors a stable code, and Stripe and Twilio link each code to a page about it. That's the idea [Errors](/http/errors/) is built on, with a standard envelope around it.
+
+## What to take away
+
+A famous API is evidence, not a precedent. Read it for the constraint behind each choice, check whether you share that constraint, and look hardest at what its owners changed later. Start with [Stripe](/in-the-wild/stripe/), the API this Guide cites most, and the one with the most to teach about [what compatibility costs](/evolution/versioning/).

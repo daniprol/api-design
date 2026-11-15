@@ -2,6 +2,15 @@
 
 Dated record of content changes. The three most recent entries appear on the home page.
 
+## 2026-11-15
+
+- New Practice section: four design challenges set at Fernhill (returns, Larkspur's inventory sync, back-in-stock alerts, gift cards), each with hints, a model answer and a self-review.
+- New In the wild section: teardowns of the Stripe, GitHub, Shopify and Twilio APIs, mapped to the Guide's recommendations.
+- New topics: Bulk operations, Observability, Attacks told as stories (OWASP API Top 10), Multi-tenancy, and Streaming and real-time.
+- Google AIP now has its own Guidelines page, and AIP rules are cited next to Zalando's in the chapters and the rule index.
+- Pagination and Concurrency control now explain drift and lost updates with step-through figures.
+- Rate-limit examples follow the current `RateLimit` and `RateLimit-Policy` header draft; added a `Location` vs `Content-Location` example and notes on parsing `If-Match`.
+
 ## 2026-11-14
 
 - New look: Geist type, an indigo accent, and coloured cards for notes, comparisons and folded sections.

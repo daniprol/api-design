@@ -18,6 +18,31 @@ const reference = [
   { label: "RFC index", path: "/reference/rfcs/" },
 ];
 
+const beyond = [
+  {
+    title: "Practice",
+    path: "/practice/",
+    blurb: "Four Fernhill design challenges with hints, model answers and a self-review.",
+    links: [
+      { label: "Returns and refunds", path: "/practice/returns/" },
+      { label: "Larkspur's inventory sync", path: "/practice/inventory-sync/" },
+      { label: "Back-in-stock alerts", path: "/practice/back-in-stock/" },
+      { label: "Gift cards", path: "/practice/gift-cards/" },
+    ],
+  },
+  {
+    title: "In the wild",
+    path: "/in-the-wild/",
+    blurb: "Teardowns of real APIs: what they chose, and where they part ways with this guide.",
+    links: [
+      { label: "Stripe", path: "/in-the-wild/stripe/" },
+      { label: "GitHub", path: "/in-the-wild/github/" },
+      { label: "Shopify", path: "/in-the-wild/shopify/" },
+      { label: "Twilio", path: "/in-the-wild/twilio/" },
+    ],
+  },
+];
+
 // Last three dated bullets from CHANGELOG.md
 const recent: { date: string; text: string }[] = [];
 let date = "";
@@ -45,6 +70,29 @@ for (const line of changelog.split("\n")) {
               {section.topics.map((t) => (
                 <li>
                   <a href={href(`/${section.slug}/${t.slug}/`)}>{t.title}</a>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))
+      }
+    </div>
+  </section>
+
+  <section aria-labelledby="home-beyond">
+    <h2 id="home-beyond" class="fg-home__h">Then put it to work</h2>
+    <div class="fg-home__sections">
+      {
+        beyond.map((b) => (
+          <div class="fg-home__section">
+            <h3>
+              <a href={href(b.path)}>{b.title}</a>
+            </h3>
+            <p class="fg-home__blurb">{b.blurb}</p>
+            <ul>
+              {b.links.map((l) => (
+                <li>
+                  <a href={href(l.path)}>{l.label}</a>
                 </li>
               ))}
             </ul>

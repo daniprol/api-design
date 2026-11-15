@@ -241,6 +241,8 @@ An attachment is a resource with a status and a link to its bytes, never the byt
 </Avoid>
 </Compare>
 
+Priya found this endpoint in an old branch. It works in the demo, and it's a security incident waiting for a filename.
+
 <WorkedProblem kind="Review" title="Profile picture upload">
 
 ```python
@@ -266,11 +268,26 @@ What's wrong, ordered by severity?
 </Solution>
 </WorkedProblem>
 
+<RuleGroup>
+
+<Rule
+  guide="zalando"
+  id="168"
+  level="MAY"
+  title="Pass non-JSON media types using data specific standard formats"
+/>
+<Rule guide="zalando" id="178" level="MUST" title="Use Content-* headers correctly" />
+<Rule guide="zalando" id="251" level="SHOULD" title="Not use redirection codes">
+
+This guide makes one exception: a <Status code={303} /> or <Status code={307} /> to a short-lived presigned download URL, which keeps the bytes off your servers.
+
+</Rule>
+
+</RuleGroup>
+
 ## What to take away
 
 Your API should talk about files, not carry them: it issues slots, tracks status and hands out links, while storage and CDNs move the bytes. Collections have the same problem at a different scale, when `GET /orders` would return a million rows. That's [pagination](/collections/pagination/).
-
-Priya found this endpoint in an old branch. It works in the demo, and it's a security incident waiting for a filename.
 
 <SelfCheck>
 

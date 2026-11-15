@@ -389,3 +389,14 @@ starlight-tabs [role="tab"][aria-selected="true"] {
 .sl-markdown-content .fg-compare__col {
   margin: 0 !important;
 }
+
+.fg-home__blurb {
+  margin: 0.45rem 0 0;
+  color: var(--sl-color-gray-3);
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+
+.fg-home > section + section {
+  margin-top: 3.25rem;
+}
