@@ -1,0 +1,441 @@
+---
+title: Attacks, told as stories
+description: Most API breaches are well-formed requests that the API should have refused. Test object access across accounts on every route, allow-list properties both ways, send outbound requests from a network that can't reach your own, and limit business flows, not only endpoints.
+sources:
+  - label: OWASP API Top 10
+    title: "OWASP API Security Top 10 (2023)"
+    url: https://owasp.org/API-Security/editions/2023/en/0x11-t10/
+    accessed: 2026-11
+  - label: OWASP API1:2023
+    title: "OWASP API Security Top 10 (2023): API1 Broken Object Level Authorization"
+    url: https://owasp.org/API-Security/editions/2023/en/0xa1-broken-object-level-authorization/
+    accessed: 2026-11
+  - label: OWASP API3:2023
+    title: "OWASP API Security Top 10 (2023): API3 Broken Object Property Level Authorization"
+    url: https://owasp.org/API-Security/editions/2023/en/0xa3-broken-object-property-level-authorization/
+    accessed: 2026-11
+  - label: OWASP API7:2023
+    title: "OWASP API Security Top 10 (2023): API7 Server Side Request Forgery"
+    url: https://owasp.org/API-Security/editions/2023/en/0xa7-server-side-request-forgery/
+    accessed: 2026-11
+  - label: Krebs, 2019a
+    title: "Krebs on Security: First American Financial Corp. Leaked Hundreds of Millions of Title Insurance Records (24 May 2019)"
+    url: https://krebsonsecurity.com/2019/05/first-american-financial-corp-leaked-hundreds-of-millions-of-title-insurance-records/
+    accessed: 2026-11
+  - label: Krebs, 2019b
+    title: "Krebs on Security: What We Can Learn from the Capital One Hack (2 August 2019)"
+    url: https://krebsonsecurity.com/2019/08/what-we-can-learn-from-the-capital-one-hack/
+    accessed: 2026-11
+  - label: AWS, 2019
+    title: "Colm MacCárthaigh: Add defense in depth against open firewalls, reverse proxies, and SSRF vulnerabilities with enhancements to the EC2 Instance Metadata Service (AWS Security Blog, 2019)"
+    url: https://aws.amazon.com/blogs/security/defense-in-depth-open-firewalls-reverse-proxies-ssrf-vulnerabilities-ec2-instance-metadata-service/
+    accessed: 2026-11
+  - label: Smokescreen
+    title: "Stripe: Smokescreen, an SSRF-preventing egress proxy (GitHub)"
+    url: https://github.com/stripe/smokescreen
+    accessed: 2026-11
+related:
+  - security/auth
+  - security/limits
+  - security/multi-tenancy
+  - events/webhooks
+---
+
+import {
+  InBrief,
+  Note,
+  Compare,
+  Prefer,
+  Avoid,
+  Rule,
+  RuleGroup,
+  SelfCheck,
+  Question,
+  Status,
+  Tabs,
+  TabItem,
+} from "@components/kit";
+
+<InBrief>
+
+- Object IDs turn up in paths, bodies, query filters and batch arrays. Every one of them needs an ownership check, and a test that runs each route as the wrong customer.
+- Allow-list the properties a caller may write and the ones they may read. A schema that accepts "whatever the model has" will one day accept `loyalty_tier`.
+- A URL supplied by someone else is an instruction to your network. Send outbound requests through an egress proxy that resolves the name, checks the IP and connects to that IP, with redirects off.
+- Never show a caller the body your server fetched on their behalf.
+- Protect business flows at the flow: the API is a second front door to everything the website guards with friction.
+
+</InBrief>
+
+Saturday, 4 a.m. Priya's dashboard shows one customer account, `cus_9001`, created the evening before, sending `GET /orders/ord_10442`, then `ord_10441`, then `ord_10440`, three a second. Almost all of them return <Status code={404} />. Every fortieth or so returns <Status code={200} />, and those are the ones she reads about over breakfast. None of the attackers on this page breaks any cryptography. Each sends well-formed requests that the API was happy to answer, which is why the OWASP API Security Top 10 reads less like a list of exploits and more like a list of questions nobody asked.
+
+## Attack one: walking the order IDs
+
+Here is how the Saturday night went from the other side. The attacker signs up, buys a pair of socks, and gets back `ord_10442`. The IDs look sequential, so they try one less. `GET /orders/{id}` is scoped properly, as [Authentication and authorization](/security/auth/) describes, and answers 404. But the attacker isn't trying one endpoint; they're trying all of them. The invoice download, added in a hurry before Christmas, looks the order up by ID alone. That's the 200.
+
+This is broken object level authorisation, API1 in the 2023 list and first since the list began. The auth page covers the fix for the obvious route. The trouble is that IDs travel in more places than the path, and each one is a separate chance to forget:
+
+| Where the ID travels | Example                                          | The forgotten check                            |
+| -------------------- | ------------------------------------------------ | ---------------------------------------------- |
+| Path                 | `GET /orders/ord_42/invoice`                     | A sub-resource loaded by its own ID            |
+| Body                 | `POST /returns {"order_id": "ord_42"}`           | A reference validated for existence, not owner |
+| Query filter         | `GET /shipments?customer_id=cus_8`               | A filter the caller was allowed to choose      |
+| Batch                | `POST /orders/batch-get {"ids": [...]}`          | Checked for the first item, not each           |
+| Event or webhook     | A subscription to `order.shipped` for any `cus_` | Authorised at subscribe time, never again      |
+
+The body row is the one that slips through review, because the handler reads like validation: "does `ord_42` exist? Yes, create the return." It existed. It wasn't theirs, and now a stranger has a refund label for it.
+
+Opaque IDs such as `ord_01JCX3N4Q8` help, because they turn a walk into a guessing game, but they don't fix anything: IDs leak through emails, shared links and support tickets. [URL design](/modelling/urls/) explains why sequential IDs turn one missing check into a full export, and that is exactly what happened to a title insurer in 2019.
+
+<Note kind="incident" title="First American Financial" year="2019" source="https://krebsonsecurity.com/2019/05/first-american-financial-corp-leaked-hundreds-of-millions-of-title-insurance-records/">
+
+A real estate developer, Ben Shoval, noticed that a document link from First American's website carried a nine-digit record number. Changing one digit returned someone else's file, with no login required. The numbers were sequential back to a 2003 transaction, and Brian Krebs reported about 885 million documents within reach: bank statements, mortgage records, Social Security numbers. One unchecked lookup plus a counter is not a bug; it's an export feature.
+
+</Note>
+
+### Make the forgotten check a failing test
+
+A rule that every handler must remember will be forgotten by one handler, so stop relying on memory twice. First, as the auth page says, build queries from the caller's account so that another account's row is not found. Second, write one test that tries every object route as the wrong customer, and make it fail when someone adds a route without adding it to the test. The second half is what catches the invoice endpoint.
+
+_Assumes:_ fixtures that create two customers, Alice with an order and Bob with a token; `POST /returns` answers a foreign `order_id` with <Status code={422} />, the same as for an ID that doesn't exist.
+
+Here's the test. Notice the last function: it compares the list against the app's real routes, so a new route without a cross-account case breaks the build.
+
+<Tabs syncKey="stack">
+<TabItem label="FastAPI">
+
+```python
+# Every route that takes an object ID, how to aim it at Alice's order, and the expected status.
+CROSS_ACCOUNT = [
+    ("GET",   "/orders/{order_id}",         None,                       404),
+    ("GET",   "/orders/{order_id}/invoice", None,                       404),
+    ("PATCH", "/orders/{order_id}",         {"note": "hi"},             404),
+    ("POST",  "/returns",                   {"order_id": "{order_id}"}, 422),
+]
+
+@pytest.mark.parametrize("method,path,body,expected", CROSS_ACCOUNT)
+def test_bob_cannot_reach_alices_order(client, alice_order, bob_token, method, path, body, expected):
+    aim = lambda s: s.format(order_id=alice_order.id)
+    json = {k: aim(v) for k, v in body.items()} if body else None
+    r = client.request(method, aim(path), json=json, headers={"Authorization": f"Bearer {bob_token}"})
+    assert r.status_code == expected, r.text
+
+def test_every_object_route_is_covered():
+    routes = {r.path for r in app.routes if "{" in getattr(r, "path", "")}
+    assert routes <= {path for _, path, _, _ in CROSS_ACCOUNT}
+```
+
+</TabItem>
+<TabItem label="Django">
+
+```python
+CROSS_ACCOUNT = [
+    ("get",   "/orders/{order_id}",         None,                       404),
+    ("get",   "/orders/{order_id}/invoice", None,                       404),
+    ("patch", "/orders/{order_id}",         {"note": "hi"},             404),
+    ("post",  "/returns",                   {"order_id": "{order_id}"}, 422),
+]
+
+class CrossAccountTests(APITestCase):
+    def test_bob_cannot_reach_alices_order(self):
+        order = OrderFactory(customer=CustomerFactory())  # Alice's
+        self.client.force_authenticate(user=CustomerFactory().user)  # Bob
+        aim = lambda s: s.format(order_id=order.public_id)
+        for method, path, body, expected in CROSS_ACCOUNT:
+            with self.subTest(method=method, path=path):
+                data = {k: aim(v) for k, v in body.items()} if body else None
+                r = getattr(self.client, method)(aim(path), data, format="json")
+                self.assertEqual(r.status_code, expected, r.content)
+# Pair it with a check over get_resolver().url_patterns, so new routes can't skip the list.
+```
+
+</TabItem>
+<TabItem label="Hono">
+
+```ts
+const CROSS_ACCOUNT = [
+  ["GET", "/orders/:id", undefined, 404],
+  ["GET", "/orders/:id/invoice", undefined, 404],
+  ["PATCH", "/orders/:id", { note: "hi" }, 404],
+  ["POST", "/returns", { order_id: ":id" }, 422],
+] as const;
+
+test.each(CROSS_ACCOUNT)("%s %s as the wrong customer", async (method, path, body, expected) => {
+  const { aliceOrder, bobToken } = await seedTwoCustomers();
+  const aim = (s: string) => s.replace(":id", aliceOrder.id);
+  const res = await app.request(aim(path), {
+    method,
+    headers: { Authorization: `Bearer ${bobToken}`, "Content-Type": "application/json" },
+    body:
+      body && JSON.stringify(Object.fromEntries(Object.entries(body).map(([k, v]) => [k, aim(v)]))),
+  });
+  expect(res.status).toBe(expected);
+});
+
+test("every object route is covered", () => {
+  const covered = new Set<string>(CROSS_ACCOUNT.map(([, p]) => p));
+  const missing = app.routes.filter((r) => r.path.includes(":") && !covered.has(r.path));
+  expect(missing).toEqual([]);
+});
+```
+
+</TabItem>
+</Tabs>
+
+Then watch for the walk itself. A client whose object lookups are mostly 404s is either broken or enumerating, and both deserve a look. Per-client 404 ratios are cheap to chart once requests carry a client ID; [Observability](/reliability/observability/) shows how.
+
+## Attack two: the field nobody put on the form
+
+The second attacker reads the mobile app's traffic and notices that `GET /customers/me` returns `"loyalty_tier": "standard"`. Staff accounts get 40 percent off, and the app's profile screen sends a `PATCH` when you change your name. So they send this:
+
+```http
+PATCH /customers/me
+Content-Type: application/json
+
+{ "name": "Sam", "loyalty_tier": "staff" }
+```
+
+The handler validated the object (it's Sam's own profile, so API1 is fine) and then copied every field in the body onto the model. That's API3, broken object property level authorisation: you may own the object and still have no business with some of its properties. It runs in both directions. Mass assignment is the way in; on the way out, the same serializer that accepts every column also returns every column, including `cost_price` and `fraud_score`.
+
+The auth page shows the input fix with a strict schema. The way this usually arrives in a codebase is a serializer that tracks the model by default, so a column added next year becomes writable next year without anyone touching the API:
+
+<Compare>
+<Prefer>
+
+```python
+class CustomerSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Customer
+        fields = ["id", "name", "email", "loyalty_tier"]
+        read_only_fields = ["id", "loyalty_tier"]
+```
+
+New columns stay private until someone lists them, and `loyalty_tier` can be read but not written.
+
+</Prefer>
+<Avoid>
+
+```python
+class CustomerSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Customer
+        fields = "__all__"
+```
+
+Every column, present and future, is readable and writable.
+
+</Avoid>
+</Compare>
+
+Two details make the fix hold. Reject unknown and read-only fields with <Status code={422} /> rather than silently dropping them, because a silent drop hides the probe and confuses honest clients. And don't trust `readOnly` in your OpenAPI document to enforce anything: it's a promise to readers, and many frameworks generate it without checking requests against it. Finding 11 of the [worked design review](/guide/design-review/) is this bug caught on paper, before it shipped.
+
+## Attack three: the webhook that points inward
+
+The third attacker doesn't touch your data at all. They sign up for Fernhill's partner portal, the one Larkspur Logistics uses, and register a webhook endpoint:
+
+```text
+http://169.254.169.254/latest/meta-data/iam/security-credentials/
+```
+
+On most clouds, 169.254.169.254 is the instance metadata service, reachable only from inside the machine, and on older AWS setups a plain `GET` to that path returns the role name. Fernhill's delivery worker posts an `order.shipped` event there. The delivery "fails" because the response isn't 2xx, and the partner dashboard helpfully shows the last response body for debugging. The attacker reads the role name, registers a second endpoint with it appended, and gets temporary cloud credentials. This is server-side request forgery, API7, and [Webhooks](/events/webhooks/) lists the three defences. Here is why each of them is needed, because the obvious fix fails three ways.
+
+### Validating the URL at registration isn't enough
+
+The obvious fix is to check the URL when it's registered and reject private addresses. Priya ships that on Monday. By Wednesday the attacker has found three ways round it:
+
+1. **DNS changes.** They register `https://hooks.attacker.example/`, which resolves to a public IP. It passes. Then they change the DNS record, with a TTL of zero, to point at 169.254.169.254. The worker resolves the name again at delivery time and connects inside.
+2. **Redirects.** The public endpoint answers <Status code={302} /> with `Location: http://169.254.169.254/...`, and an HTTP client with default settings follows it.
+3. **Other spellings.** `http://2852039166/` is 169.254.169.254 written as one decimal number, and `http://[::ffff:169.254.169.254]/` is the same address in IPv6 clothing. A string check on the URL misses both; the operating system's resolver understands them perfectly.
+
+The lesson is that a URL isn't an address. It becomes one at connect time, possibly a different one each time, so the check has to happen at connect time on the exact IP the connection uses.
+
+### Resolve, check, then connect to what you checked
+
+The robust shape is an egress proxy that every outbound delivery goes through. For each connection it resolves the hostname, rejects the request if any address is loopback, private, link-local or otherwise not globally routable, and then connects to the address it checked, so a DNS change between check and connect can't slip past. Stripe open-sourced theirs: Smokescreen is an HTTP `CONNECT` proxy that carries most of Stripe's outbound traffic, webhooks included, and dials exactly the address it approved. Put the delivery workers in a network segment that can reach the internet only through that proxy, and a bug in your application code no longer means a route to your database.
+
+Keep a check at registration too, for fast feedback to an honest partner who typed a staging URL. Then send with redirects off, HTTPS only, a short timeout, and a status code as the only thing you record. The partner can see "returned 500"; they never see the body.
+
+_Assumes:_ an egress proxy at `EGRESS_PROXY` that enforces the IP check on every connection; the registration check below is the friendly early warning, not the defence.
+
+Watch the address check. It inspects every address the name resolves to, and unwraps IPv4-mapped IPv6 before deciding.
+
+<Tabs syncKey="stack">
+<TabItem label="FastAPI">
+
+```python
+def check_endpoint(url: str) -> None:  # at registration: friendly, not sufficient
+    u = urlsplit(url)
+    if u.scheme != "https" or u.port not in (None, 443) or not u.hostname:
+        raise problem(422, "webhook-url-invalid", detail="Use https on port 443.")
+    for *_, sockaddr in socket.getaddrinfo(u.hostname, 443, proto=socket.IPPROTO_TCP):
+        ip = ipaddress.ip_address(sockaddr[0])
+        ip = getattr(ip, "ipv4_mapped", None) or ip
+        if not ip.is_global:
+            raise problem(422, "webhook-url-not-public")
+
+delivery = httpx.Client(proxy=EGRESS_PROXY, follow_redirects=False, timeout=15)
+
+def deliver(endpoint, body: bytes, headers: dict) -> int:
+    r = delivery.post(endpoint.url, content=body, headers=headers)
+    return r.status_code  # record the status only; never store or show r.text
+```
+
+</TabItem>
+<TabItem label="Django">
+
+```python
+def check_endpoint(url: str) -> None:  # call from the serializer's validate_url
+    u = urlsplit(url)
+    if u.scheme != "https" or u.port not in (None, 443) or not u.hostname:
+        raise ValidationError("Use https on port 443.")
+    for *_, sockaddr in socket.getaddrinfo(u.hostname, 443, proto=socket.IPPROTO_TCP):
+        ip = ipaddress.ip_address(sockaddr[0])
+        ip = getattr(ip, "ipv4_mapped", None) or ip
+        if not ip.is_global:
+            raise ValidationError("The URL must resolve to a public address.")
+
+@shared_task
+def deliver(endpoint_id: int, body: str, headers: dict) -> int:
+    endpoint = WebhookEndpoint.objects.get(pk=endpoint_id)
+    r = requests.post(endpoint.url, data=body, headers=headers, timeout=15,
+                      allow_redirects=False, proxies={"https": EGRESS_PROXY})
+    return r.status_code  # the response body is never stored or shown
+```
+
+</TabItem>
+<TabItem label="Hono">
+
+```ts
+import { lookup } from "node:dns/promises";
+import ipaddr from "ipaddr.js";
+import { fetch, ProxyAgent } from "undici";
+
+export async function checkEndpoint(raw: string): Promise<void> {
+  const url = new URL(raw);
+  if (url.protocol !== "https:" || (url.port && url.port !== "443"))
+    throw new UnsafeUrl("https on 443 only");
+  const addrs = await lookup(url.hostname, { all: true });
+  // process() unwraps ::ffff:a.b.c.d; only "unicast" is globally routable
+  if (addrs.some((a) => ipaddr.process(a.address).range() !== "unicast"))
+    throw new UnsafeUrl("not public");
+}
+
+const proxy = new ProxyAgent(EGRESS_PROXY);
+
+export async function deliver(url: string, body: string, headers: Record<string, string>) {
+  const res = await fetch(url, {
+    method: "POST",
+    body,
+    headers,
+    redirect: "manual",
+    dispatcher: proxy,
+    signal: AbortSignal.timeout(15_000),
+  });
+  return res.status; // never read or expose the body
+}
+```
+
+</TabItem>
+</Tabs>
+
+Fix the target as well as the sender. AWS's Instance Metadata Service version 2, announced in November 2019, answers only requests that carry a session token, and the token comes from a `PUT` that it refuses whenever an `X-Forwarded-For` header is present. A plain forwarded `GET`, which is all a webhook sender or a confused proxy can usually produce, gets nothing. Make version 2 required, not merely available, on every instance.
+
+<Note kind="incident" title="Capital One" year="2019" source="https://krebsonsecurity.com/2019/08/what-we-can-learn-from-the-capital-one-hack/">
+
+In 2019 an intruder tricked a misconfigured web application firewall in Capital One's AWS account into relaying requests to the metadata service. It returned temporary credentials for the firewall's role, and that role could list and read the company's storage buckets. Brian Krebs reported more than 100 million credit applications taken. SSRF wasn't among the firewall's default detection rules. Every server that fetches a URL for someone else needs the same suspicion, including your webhook sender.
+
+</Note>
+
+## Attack four: the bot that skips the website
+
+The fourth attacker plays fair with every rate limit. Fernhill releases 200 pairs of a limited-edition boot, and the website's checkout has a queue and a CAPTCHA. The mobile app's checkout API has neither, because the app team assumed only the app would call it. A bot reads the app's traffic, calls the API directly with ten accounts, and the boots are gone in four seconds. Nothing was broken; the business flow was unguarded on its second front door.
+
+This is API6, unrestricted access to sensitive business flows. [Abuse and resource limits](/security/limits/#limit-the-business-flow-not-only-the-endpoint) covers the defences: limits per account, payment instrument and address, friction where it costs bots more than people, and holding suspicious orders for review. The point to add here is architectural. Any friction the website applies to a flow has to live in the API behind it, or it's a lock on the front door with the back door propped open.
+
+<RuleGroup>
+
+<Rule guide="zalando" id="104" level="MUST" title="Secure endpoints" />
+<Rule
+  guide="zalando"
+  id="252"
+  level="SHOULD"
+  title="Design single resource schema for reading and writing"
+>
+
+Zalando prefers one schema with `readOnly` and `writeOnly` markings over separate input and output types, and lets the server ignore or reject read-only properties in a request. Choose reject, with <Status code={422} />: the marking alone enforces nothing, and a silent ignore hides the probe.
+
+</Rule>
+
+</RuleGroup>
+
+## All ten, and where this Guide covers them
+
+The four stories above are the ones that most need telling. The rest of the 2023 list is covered where the design decision lives:
+
+| OWASP 2023                                      | The question it asks                                           | Where it's covered                                                                                                   |
+| ----------------------------------------------- | -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| API1 Broken object level authorisation          | Is this object theirs?                                         | [Auth](/security/auth/), attack one above, [URL design](/modelling/urls/), [Multi-tenancy](/security/multi-tenancy/) |
+| API2 Broken authentication                      | Is this token real, unexpired and meant for us?                | [Auth](/security/auth/)                                                                                              |
+| API3 Broken object property level authorisation | May they write, or read, this field?                           | [Auth](/security/auth/), attack two above, [Design review](/guide/design-review/)                                    |
+| API4 Unrestricted resource consumption          | How much can one request cost?                                 | [Limits](/security/limits/), [Pagination](/collections/pagination/), [Bulk operations](/collections/bulk/)           |
+| API5 Broken function level authorisation        | May this kind of caller call this operation at all?            | [Auth](/security/auth/) (scopes such as `refunds:write`)                                                             |
+| API6 Unrestricted access to sensitive flows     | What happens when a bot runs this flow a thousand times?       | [Limits](/security/limits/), attack four above                                                                       |
+| API7 Server-side request forgery                | Where can a URL we're given make our servers go?               | Attack three above, [Webhooks](/events/webhooks/)                                                                    |
+| API8 Security misconfiguration                  | What do our defaults leak?                                     | [Errors](/http/errors/) (stack traces, internals)                                                                    |
+| API9 Improper inventory management              | Which APIs and versions are still running, and who calls them? | [Specs in CI](/evolution/specs-in-ci/), [Deprecation](/evolution/deprecation/)                                       |
+| API10 Unsafe consumption of APIs                | Do we trust what a partner's API sends us?                     | [Webhooks](/events/webhooks/) (verify signatures), [Consuming events](/events/consuming-events/)                     |
+
+API5 deserves one sentence of its own, because it's API1's sibling. BOLA asks whether this order is yours; function level authorisation asks whether a customer token may call `POST /refunds` at all. Admin and support endpoints sitting next to customer endpoints, distinguished only by an undocumented path, are where it hides.
+
+## What to take away
+
+Every story on this page is an API answering a question it should have refused, and every fix is a check placed where it can't be skipped: in the query, in the schema, in the network. Write the cross-account test once and let it guard every route you add. When Fernhill starts serving whole businesses rather than single customers, "whose is this?" grows a second layer. That's [multi-tenancy](/security/multi-tenancy/).
+
+<SelfCheck>
+
+<Question
+  q="Fernhill checks webhook URLs at registration and rejects private IP addresses. Which attack still reaches the metadata service?"
+  answer={1}
+  options={[
+    {
+      text: "None: the registration check covers it.",
+      why: "A URL becomes an address at connect time, and the answer can change after registration.",
+    },
+    {
+      text: "A hostname whose DNS record is changed to 169.254.169.254 after registration, or an endpoint that redirects there.",
+      why: "Both bypass a one-time check. Check the IP at connect time, through an egress proxy, with redirects off.",
+    },
+    {
+      text: "An HTTPS URL with a valid certificate.",
+      why: "A certificate says nothing about which network the address is on.",
+    },
+    {
+      text: "A URL on port 443.",
+      why: "The port is irrelevant to whether the address is internal.",
+    },
+  ]}
+/>
+
+<Question
+  q="<code>GET /orders/{id}</code> is correctly scoped to the caller. Where is BOLA most likely to remain?"
+  answer={2}
+  options={[
+    {
+      text: "Nowhere: one scoped route proves the pattern.",
+      why: "Each route that touches an ID is its own chance to forget the check.",
+    },
+    {
+      text: "In the JWT signature check.",
+      why: "That's authentication, API2. The caller here is correctly identified.",
+    },
+    {
+      text: "In routes that take the ID elsewhere: sub-resources, request bodies, filters and batches.",
+      why: "<code>POST /returns</code> with someone else's <code>order_id</code> is the classic. A cross-account test over every route finds it.",
+    },
+    {
+      text: "In the 404 page.",
+      why: "Returning 404 for another customer's object is the correct behaviour.",
+    },
+  ]}
+/>
+
+</SelfCheck>

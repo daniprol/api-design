@@ -1,0 +1,140 @@
+---
+title: Twilio
+description: Twilio's core API still carries the version 2010-04-01 in every URL, takes form-encoded parameters and reports a lifecycle through status callbacks. Copy its numbered error codes with a documentation page each; sign your webhooks with something stronger than an API credential.
+sources:
+  - label: Twilio requests
+    title: "Twilio Docs: Requests to Twilio"
+    url: https://www.twilio.com/docs/usage/requests-to-twilio
+    accessed: 2026-11
+  - label: Twilio responses
+    title: "Twilio Docs: Twilio API responses"
+    url: https://www.twilio.com/docs/usage/twilios-response
+    accessed: 2026-11
+  - label: Twilio Messages
+    title: "Twilio Docs: Messages resource"
+    url: https://www.twilio.com/docs/messaging/api/message-resource
+    accessed: 2026-11
+  - label: Twilio error 21211
+    title: "Twilio Docs: Error 21211, Invalid 'To' Phone Number"
+    url: https://www.twilio.com/docs/api/errors/21211
+    accessed: 2026-11
+  - label: Twilio status callbacks
+    title: "Twilio Docs: Track the message status of outbound messages"
+    url: https://www.twilio.com/docs/messaging/guides/track-outbound-message-status
+    accessed: 2026-11
+  - label: Twilio callback timing
+    title: "Twilio Docs: Outbound message status in status callbacks"
+    url: https://www.twilio.com/docs/messaging/guides/outbound-message-status-in-status-callbacks
+    accessed: 2026-11
+  - label: Twilio webhook security
+    title: "Twilio Docs: Webhooks security"
+    url: https://www.twilio.com/docs/usage/webhooks/webhooks-security
+    accessed: 2026-11
+  - label: Twilio connection overrides
+    title: "Twilio Docs: Webhooks connection overrides"
+    url: https://www.twilio.com/docs/usage/webhooks/webhooks-connection-overrides
+    accessed: 2026-11
+related:
+  - http/errors
+  - events/webhooks
+  - reliability/long-running-operations
+  - events/consuming-events
+---
+
+import { InBrief } from "@components/kit";
+
+<InBrief>
+
+- The core API's version is a date in the path, `2010-04-01`, followed by your Account SID: `/2010-04-01/Accounts/{AccountSid}/Messages.json`.
+- Requests are form-encoded with PascalCase parameters (`To`, `From`, `Body`); JSON responses use snake_case; the `.json` suffix picks the format.
+- Errors carry a numeric `code` and a `more_info` URL, and every code has its own documentation page.
+- Sending a message returns `queued` at once. What happens next arrives at your `StatusCallback` URL, possibly out of order.
+- Webhooks are signed with HMAC-SHA1 over the URL and the sorted parameters, keyed with the account's Auth Token.
+
+</InBrief>
+
+It's 2 a.m. and Fernhill's "your order has shipped" texts have stopped. Priya's logs show every send failing with error code `21211`, and the error links to a page titled "Invalid 'To' Phone Number", which lists the causes: missing `+`, missing country code, spaces in the number. A form change shipped that afternoon had started sending numbers as `07911 123456`. She has the fix before she's finished her tea. That's Twilio at its best: an API from 2010 whose errors still explain themselves better than most written this decade.
+
+## The version is a date from 2010, and your account is in the path
+
+Here's the request that sends a text. Notice the three things in the URL before the resource: the version, the account, and a file extension.
+
+```bash
+curl -X POST "https://api.twilio.com/2010-04-01/Accounts/$TWILIO_ACCOUNT_SID/Messages.json" \
+  -u "$TWILIO_ACCOUNT_SID:$TWILIO_AUTH_TOKEN" \
+  --data-urlencode "To=+447911123456" \
+  --data-urlencode "From=+15017250604" \
+  --data-urlencode "Body=Your order ord_42 has shipped" \
+  --data-urlencode "StatusCallback=https://api.fernhill.example/hooks/sms-status"
+```
+
+Authentication is HTTP Basic: the Account SID and Auth Token, or an API key and its secret. The `.json` suffix matters, because the 2010 APIs return XML by default; Twilio's newer product APIs return JSON only.
+
+**Why it fits Twilio.** With the account in the path, "whose messages are these?" is answered by every URL and every log line, before anyone decodes a credential.
+
+**Against this Guide.** Where the tenant belongs, path or credential, is a trade-off [Multi-tenancy](/security/multi-tenancy/) works through; the path version costs you a longer URL and buys you clarity. The bigger difference is the date. [Versioning](/evolution/versioning/) asks you to publish an end date for every version, and `2010-04-01` is still the version in every core URL more than fifteen years later. Never shipping a second version is the cheapest strategy there is, and the hardest to keep up.
+
+## Form-encoded in, snake_case out
+
+The parameters above are form-encoded, as Twilio's docs require (`application/x-www-form-urlencoded` or `multipart/form-data`), and named in PascalCase. The JSON that comes back speaks a different dialect:
+
+```json
+{
+  "sid": "SMaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "status": "queued",
+  "error_code": null,
+  "date_created": "Thu, 24 Aug 2023 05:01:45 +0000",
+  "uri": "/2010-04-01/Accounts/ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/Messages/SMaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json"
+}
+```
+
+The XML representation of the same message uses PascalCase elements such as `<DateCreated>` and `<AccountSid>`, so the request parameters match the XML, and the JSON keys follow JSON's more common style. Dates are RFC 2822 strings in GMT.
+
+**Why it fits Twilio.** Form encoding is what `curl -d` and every HTML form already speak, and it keeps a first request to one `curl` command.
+
+**Against this Guide.** [JSON conventions](/representations/json/) asks for one casing everywhere, and here you send `PageSize` and read back `page_size`. The official SDKs paper over it with each language's own naming; if you call the HTTP API directly, you carry both conventions in your head. And [Data formats](/representations/data-formats/) would use RFC 3339 timestamps, which sort as strings and parse without a locale.
+
+## Every error code has a page
+
+An error response carries four fields: `status`, `message`, `code` and `more_info`. Here's Twilio's own example, a request with no recipient, shown as JSON (the docs print it in XML):
+
+```json
+{
+  "status": 400,
+  "message": "No to number is specified",
+  "code": 21201,
+  "more_info": "http://www.twilio.com/docs/errors/21201"
+}
+```
+
+Each numeric code has its own documentation page with possible causes and possible solutions, as Priya found at 2 a.m.
+
+**Why it fits Twilio.** Telephony fails in hundreds of specific, carrier-shaped ways. A status code says "your fault"; a numbered code with a page says which fault, and what to do about it.
+
+**Against this Guide.** This is the idea at the heart of [Errors](/http/errors/): a stable, machine-readable identifier that resolves to documentation, which RFC 7807, now RFC 9457, later standardised as the `type` URI. Twilio splits it into a number for programs and a URL for people. Problem Details puts both in one field and adds a standard media type that generic tooling understands. If you're starting today, use the standard and keep Twilio's habit of writing a real page for every type.
+
+## Sending is a promise, and the status callback keeps it
+
+A message is accepted long before it's delivered. Creating one returns `queued`, and every later change is sent to your `StatusCallback` URL as a form-encoded `POST`:
+
+```text
+MessageSid=SM1342fe1b2c904d1ab04f0fc7a58abca9&MessageStatus=sent&AccountSid=AC…&From=%2B15017250604
+```
+
+Outbound statuses run through `queued`, `sending`, `sent`, `delivered`, `undelivered` and `failed`, with an `ErrorCode` on the last two. Twilio's docs add two warnings worth reading twice: no callback is sent for the initial status, and "there is no guarantee that the status callback requests always arrive at your endpoint in the order they were sent."
+
+**Why it fits Twilio.** Delivery depends on carriers and handsets that report back seconds or minutes later. Holding the HTTP request open that long would help nobody.
+
+**Against this Guide.** This is a [long-running operation](/reliability/long-running-operations/) with the result pushed rather than polled, and it agrees with us on the shape: accept fast, report the outcome later. The ordering warning is the lesson. Your handler sees `sent` after `delivered` sooner or later, so store the furthest status reached and ignore anything that would move it backwards, as [Consuming events](/events/consuming-events/) describes.
+
+## Webhooks are signed with the account's own key
+
+Every request Twilio makes to your app carries `X-Twilio-Signature`: an HMAC-SHA1 computed with your account's Auth Token over the full URL with the `POST` parameters, sorted alphabetically, appended. For JSON bodies, Twilio adds a `bodySHA256` query parameter to the URL so the body is covered too. Delivery is tuned in the URL fragment: by default Twilio waits 5 seconds to connect and 15 seconds in total, and retries once, only when the connection times out. Adding `#rc=` and `#rp=` changes the retry count (up to 5) and which failures trigger a retry. Retries carry an `I-Twilio-Idempotency-Token` header so you can tell attempts apart.
+
+**Why it fits Twilio.** Many Twilio webhooks are synchronous: an incoming call waits on your answer to know what to say. A reply within 15 seconds is useful; one an hour later is not.
+
+**Against this Guide.** [Webhooks](/events/webhooks/) disagrees on three counts. The key is the Auth Token, the same secret that authenticates API calls, so rotating one rotates the other, and a leaked webhook verifier is a leaked API credential. We'd use a separate per-endpoint signing secret. SHA-1 still works as an HMAC, but it's not what a new design should choose. And the signature covers no timestamp, so a captured request can be replayed. For status callbacks, which aren't time-critical, our advice to retry for days holds; for a ringing phone, Twilio's short fuse is the right one.
+
+## What to take away
+
+Twilio shows that an API can stay on one version for well over a decade if every change is additive, and that numbered errors with real documentation pages are one of the cheapest kindnesses you can offer a developer at 2 a.m. Its mixed casing and credential-keyed signatures are the parts to leave behind. To see how all four APIs compare, row by row, go back to [Reading real APIs](/in-the-wild/).

@@ -233,6 +233,13 @@ In 2012 Egor Homakov attached his public key to the Rails repository on GitHub b
   title="Follow the naming convention for permissions (scopes)"
 />
 
+<Rule guide="google" id="211" title="Authorization checks" />
+<Rule guide="google" id="203" title="Field behavior documentation">
+
+Google's server silently clears values sent for output-only fields, where this guide rejects unknown and read-only fields with <Status code={422} />. Either way, the client can't set them.
+
+</Rule>
+
 </RuleGroup>
 
 Priya was asked to approve this handler because "it's only a PDF download".

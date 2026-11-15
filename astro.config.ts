@@ -42,7 +42,7 @@ const moved: Record<string, string> = {
   "/course/events/consuming-events/": "/events/consuming-events/",
   "/guides/": "/guidelines/",
   "/guides/zalando/": "/guidelines/zalando/",
-  "/guides/google-aip/": "/guidelines/",
+  "/guides/google-aip/": "/guidelines/google/",
   "/reference/cheat-sheet/": "/reference/checklist/",
 };
 
@@ -128,6 +128,26 @@ export default defineConfig({
           ],
         },
         {
+          label: "Practice",
+          items: [
+            { label: "How the challenges work", link: "/practice/" },
+            { label: "1. Returns and refunds", link: "/practice/returns/" },
+            { label: "2. Larkspur's inventory sync", link: "/practice/inventory-sync/" },
+            { label: "3. Back-in-stock alerts", link: "/practice/back-in-stock/" },
+            { label: "4. Gift cards", link: "/practice/gift-cards/" },
+          ],
+        },
+        {
+          label: "In the wild",
+          items: [
+            { label: "Reading real APIs", link: "/in-the-wild/" },
+            { label: "Stripe", link: "/in-the-wild/stripe/" },
+            { label: "GitHub", link: "/in-the-wild/github/" },
+            { label: "Shopify", link: "/in-the-wild/shopify/" },
+            { label: "Twilio", link: "/in-the-wild/twilio/" },
+          ],
+        },
+        {
           label: "Reference",
           items: [
             { label: "Overview", link: "/reference/" },
@@ -145,6 +165,7 @@ export default defineConfig({
           items: [
             { label: "Overview and comparison", link: "/guidelines/" },
             { label: "Zalando", link: "/guidelines/zalando/" },
+            { label: "Google AIP", link: "/guidelines/google/" },
           ],
         },
         {

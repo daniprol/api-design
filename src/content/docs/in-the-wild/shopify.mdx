@@ -1,0 +1,167 @@
+---
+title: Shopify
+description: Shopify made GraphQL its Admin API, prices every query in points, and ships a dated version every quarter with a year of support. Copy its cost reporting and its fixed release calendar; think twice before returning 200 for failures.
+sources:
+  - label: Shopify REST Admin
+    title: "Shopify Dev: REST Admin API reference"
+    url: https://shopify.dev/docs/api/admin-rest
+    accessed: 2026-11
+  - label: Shopify GraphQL Admin
+    title: "Shopify Dev: GraphQL Admin API reference"
+    url: https://shopify.dev/docs/api/admin-graphql
+    accessed: 2026-11
+  - label: Shopify GraphQL limits
+    title: "Shopify Dev: GraphQL Admin API rate limits"
+    url: https://shopify.dev/docs/apps/build/apis/graphql-admin/rate-limits
+    accessed: 2026-11
+  - label: Shopify rate limits
+    title: "Shopify Dev: API rate limits"
+    url: https://shopify.dev/docs/api/usage/rate-limits
+    accessed: 2026-11
+  - label: Shopify versioning
+    title: "Shopify Dev: API versioning"
+    url: https://shopify.dev/docs/api/usage/versioning
+    accessed: 2026-11
+  - label: Shopify pagination
+    title: "Shopify Dev: Paginating results with GraphQL"
+    url: https://shopify.dev/docs/api/usage/pagination-graphql
+    accessed: 2026-11
+  - label: Shopify idempotency
+    title: "Shopify Dev: Implementing idempotency"
+    url: https://shopify.dev/docs/apps/build/apis/graphql-admin/implementing-idempotency
+    accessed: 2026-11
+  - label: Shopify, 2025
+    title: "Shopify developer changelog: Making idempotency mandatory for inventory adjustments and refund mutations (2025)"
+    url: https://shopify.dev/changelog/making-idempotency-mandatory-for-inventory-adjustments-and-refund-mutations
+    accessed: 2026-11
+  - label: Shopify webhooks
+    title: "Shopify Dev: Deliver webhooks through HTTPS"
+    url: https://shopify.dev/docs/apps/build/webhooks/subscribe/https
+    accessed: 2026-11
+related:
+  - security/limits
+  - evolution/versioning
+  - foundations/rest-and-alternatives
+  - events/webhooks
+---
+
+import { InBrief, Note, Status } from "@components/kit";
+
+<InBrief>
+
+- The GraphQL Admin API is the API. REST Admin has been legacy since October 2024, and new public apps must use GraphQL since April 2025.
+- Rate limits are counted in calculated query cost, and every response reports what the query cost and what's left.
+- A new dated version ships every quarter, each supported for at least 12 months, and the version lives in the URL.
+- Errors often arrive with <Status code={200} />: in an `errors` array, or in `userErrors` you must ask for.
+- Webhooks carry a base64 HMAC-SHA256 of the raw body in `X-Shopify-Hmac-SHA256`, and a webhook ID to deduplicate on.
+
+</InBrief>
+
+Your app syncs inventory for a few hundred merchants. The nightly job asks one store for 250 products, each with its variants and their stock at every location, and Shopify declines before running it: no single query may cost more than 1,000 points. You split the query, read the cost the response reports, and learn to pace your requests by the remaining budget instead of by guesswork. Shopify's platform runs other people's apps against millions of shops, and its API is designed so that the cost of a request is something both sides can see before it hurts.
+
+## GraphQL is the API, REST is legacy
+
+Shopify ran a REST Admin API for years. Its docs now say the REST Admin API "is a legacy API as of October 1, 2024", and that from April 1, 2025, new public apps must be built exclusively with GraphQL. Every GraphQL request is a `POST` to one versioned endpoint per store:
+
+```http
+POST /admin/api/2026-10/graphql.json HTTP/1.1
+Host: fernhill.myshopify.com
+X-Shopify-Access-Token: …
+Content-Type: application/json
+
+{"query": "{ products(first: 10) { nodes { id title } pageInfo { hasNextPage endCursor } } }"}
+```
+
+Connections page with `first` and `after` (or `last` and `before`), up to 250 nodes, and `pageInfo` hands back `hasNextPage` and `endCursor` for the next call.
+
+**Why it fits Shopify.** A product has variants, which have inventory items, which have levels at locations. Apps need very different slices of that graph, and a fixed REST representation either over-fetches or needs many round trips.
+
+**Against this Guide.** [REST and alternatives](/foundations/rest-and-alternatives/) recommends GraphQL when many clients need differently shaped reads and you own those clients. Shopify doesn't own them, so it pays with a cost model, a query cap and a different error contract, all described below. It has decided the bill is worth it. One side effect: GraphQL fields are camelCase, while the REST API used snake_case, so an app that spans both learns two conventions for one product.
+
+## Every query has a price, and the receipt comes back
+
+Shopify computes a query's cost from its shape: scalars and enums cost 0, objects cost 1, connections are sized by their `first` or `last` argument, and mutations cost 10. The app's budget refills continuously at a rate set by the store's plan: 100 points a second on Standard, 200 on Advanced, 1,000 on Plus and 2,000 on Shopify for enterprise. Every response tells you how it went; here is the sample from Shopify's own docs:
+
+```json
+{
+  "data": { … },
+  "extensions": {
+    "cost": {
+      "requestedQueryCost": 101,
+      "actualQueryCost": 46,
+      "throttleStatus": { "maximumAvailable": 1000, "currentlyAvailable": 954, "restoreRate": 50 }
+    }
+  }
+}
+```
+
+Notice the two numbers. The requested cost is the worst case, assuming every connection fills its page; the actual cost is what the query really touched. Send `Shopify-GraphQL-Cost-Debug=1` and the response breaks the cost down field by field.
+
+**Why it fits Shopify.** Counting requests makes no sense when one request can ask for one product or ten thousand. Counting points charges for the work, which is what the limit is there to protect.
+
+**Against this Guide.** [Abuse and resource limits](/security/limits/) asks you to bound query complexity and to show clients their quota before they hit it, and this is the most complete public example of both. Our only quarrel is the transport: we'd also publish the budget in the standard `RateLimit` headers, so generic HTTP tooling can see it without parsing GraphQL extensions.
+
+## A new version every quarter, on a fixed date
+
+Version names are dates such as `2026-04`. A stable version ships at 17:00 UTC on the first day of each quarter, each is supported for at least 12 months, and consecutive versions overlap by at least nine. The version sits in the URL, and every response confirms which one served it in `X-Shopify-API-Version`. Ask for a version that's no longer available and Shopify "falls forward" to the oldest supported stable version rather than failing. An `unstable` version carries in-progress changes for testing, and a release candidate arrives alongside each stable release.
+
+**Why it fits Shopify.** Thousands of app developers plan their work around the calendar. A fixed quarterly date turns "when will this break?" into a question with a published answer.
+
+**Against this Guide.** [Versioning](/evolution/versioning/) asks for dates or majors only and for the support window to be published at launch, and Shopify does both. The fall-forward is the decision to examine. It keeps a forgotten app running, which is kind, but on a version with breaking changes it never agreed to. If you copy the pattern, make sure clients notice: the response header is only useful to a client that reads it, so also tell the developer through [deprecation](/evolution/deprecation/) notices well before the date.
+
+## Failures can arrive with 200 OK
+
+Shopify's docs say plainly that the GraphQL API "can return a `200 OK` response code" in cases where REST would return a 4xx or 5xx. Problems go into a top-level `errors` array whose `extensions.code` names the case: `THROTTLED`, `ACCESS_DENIED`, `SHOP_INACTIVE` or `INTERNAL_SERVER_ERROR`. Business validation failures from mutations go into `userErrors`, and only if you request that field:
+
+```graphql
+mutation {
+  productUpdate(product: { id: "gid://shopify/Product/1042", title: "" }) {
+    product {
+      id
+    }
+    userErrors {
+      field
+      message
+    }
+  }
+}
+```
+
+**Why it fits Shopify.** One GraphQL document can contain several operations, some of which succeed. A single status code can't describe a partial result, so the body has to.
+
+**Against this Guide.** [Errors](/http/errors/) and [Status codes](/http/status-codes/) rest on intermediaries understanding the status line: proxies, retry libraries, dashboards and on-call alerts. A throttle returned as 200 is invisible to all of them. If you build on GraphQL, this is a real cost, not a style choice. Keep transport failures (authentication, throttling, outages) on real status codes and reserve the 200-with-errors shape for partial results.
+
+## Idempotency is a directive, and now mandatory where it matters
+
+Shopify adds idempotency to GraphQL with a directive on the mutation:
+
+```graphql
+mutation Adjust($input: InventoryAdjustQuantitiesInput!, $idempotencyKey: String!) {
+  inventoryAdjustQuantities(input: $input) @idempotent(key: $idempotencyKey) {
+    userErrors {
+      field
+      message
+    }
+  }
+}
+```
+
+The client chooses the key, a UUID being the usual choice. Reusing a key with different parameters fails with `IDEMPOTENCY_KEY_PARAMETER_MISMATCH`, and a retry that arrives while the first attempt is still running gets `IDEMPOTENCY_CONCURRENT_REQUEST`.
+
+<Note kind="history" title="From optional to required" year="2025" source="https://shopify.dev/changelog/making-idempotency-mandatory-for-inventory-adjustments-and-refund-mutations">
+
+In December 2025 Shopify announced that the `@idempotent` directive becomes mandatory in version `2026-04` for seventeen mutations, among them `refundCreate`, `inventoryAdjustQuantities` and `inventorySetQuantities`. Those are the operations where a retried request moves stock twice or refunds a customer twice, and the quarterly calendar gave apps a known date to prepare for.
+
+</Note>
+
+**Against this Guide.** The semantics match [Idempotency and retries](/reliability/idempotency/) closely: a client-chosen key, a check that the parameters match, and a distinct answer for a request still in flight. GraphQL puts the key in the document rather than a header, because one HTTP request can hold several mutations. Making the key required on the riskiest operations, through a versioned change, is a move worth copying.
+
+## Webhooks are signed, short-fused and deduplicable
+
+Each HTTPS delivery carries `X-Shopify-Hmac-SHA256`, a base64-encoded HMAC-SHA256 of the raw request body using the app's client secret. `X-Shopify-Webhook-Id` is unique per delivery, for deduplication, and `X-Shopify-Event-Id` ties together deliveries that came from the same merchant action. Shopify allows five seconds for the whole request and retries eight times over four hours; after eight consecutive failures, subscriptions created through the Admin API are deleted.
+
+**Against this Guide.** [Webhooks](/events/webhooks/) agrees on the HMAC, the raw body and the delivery ID, and asks for a signed timestamp as well, which this signature doesn't cover. The retry window is the bigger difference. We suggest retrying for days; four hours means an endpoint that's down overnight misses events, and the subscription disappears. If you consume Shopify webhooks, reconcile through the API on a schedule too.
+
+## What to take away
+
+Shopify treats an API call as a priced unit of work and tells you the price every time, and that idea transfers to any API, GraphQL or not. Its quarterly calendar is the most predictable versioning promise of the four APIs here. Its 200-with-errors contract is the price of GraphQL you should decide to pay deliberately. Next, [Twilio](/in-the-wild/twilio/) shows an API whose 2010 design is still the one you call today.

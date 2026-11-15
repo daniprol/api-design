@@ -46,6 +46,7 @@ for (const [path, source] of Object.entries(sources)) {
 }
 
 const sorted = [...rows.values()].sort((a, b) => Number(a.id) - Number(b.id));
+const hasLevels = sorted.some((r) => r.level);
 const levelClass = (level: string) => (level.startsWith("MUST") ? "must" : level.startsWith("SHOULD") ? "should" : "may");
 ---
 
@@ -54,7 +55,7 @@ const levelClass = (level: string) => (level.startsWith("MUST") ? "must" : level
   <thead>
     <tr>
       <th>Rule</th>
-      <th>Level</th>
+      {hasLevels && <th>Level</th>}
       <th>Title</th>
       <th>Discussed in</th>
     </tr>
@@ -68,9 +69,11 @@ const levelClass = (level: string) => (level.startsWith("MUST") ? "must" : level
               #{row.id}
             </a>
           </td>
-          <td>
-            <span class={`fg-rule__level fg-rule__level--${levelClass(row.level)}`}>{row.level}</span>
-          </td>
+          {hasLevels && (
+            <td>
+              <span class={`fg-rule__level fg-rule__level--${levelClass(row.level)}`}>{row.level}</span>
+            </td>
+          )}
           <td>{row.title}</td>
           <td>
             {row.pages.map((p, i) => (

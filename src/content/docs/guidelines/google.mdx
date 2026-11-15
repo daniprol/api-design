@@ -1,0 +1,144 @@
+---
+title: Google AIP
+description: How Google's API Improvement Proposals model APIs as resources defined in protocol buffers, how that reads from a REST/JSON shop, the AIPs most worth stealing from, and where this guide chooses differently.
+sources:
+  - label: Google AIP
+    title: "Google API Improvement Proposals"
+    url: https://google.aip.dev/
+    accessed: 2026-11
+  - label: AIP-121
+    title: "Google AIP-121: Resource-oriented design"
+    url: https://google.aip.dev/121
+    accessed: 2026-11
+  - label: AIP-127
+    title: "Google AIP-127: HTTP and gRPC Transcoding"
+    url: https://google.aip.dev/127
+    accessed: 2026-11
+  - label: AIP-134
+    title: "Google AIP-134: Standard methods: Update"
+    url: https://google.aip.dev/134
+    accessed: 2026-11
+  - label: AIP-193
+    title: "Google AIP-193: Errors"
+    url: https://google.aip.dev/193
+    accessed: 2026-11
+  - label: api-linter
+    title: "googleapis/api-linter on GitHub"
+    url: https://github.com/googleapis/api-linter
+    accessed: 2026-11
+---
+
+import RuleIndex from "@components/RuleIndex.astro";
+import { Note, Status } from "@components/kit";
+
+Priya is wiring Fernhill's stock reports into a Google Cloud API and keeps the reference open in a second tab. The cancel call is `POST /v1/…/jobs/123:cancel`. The list call takes a `pageToken` and hands back a `nextPageToken`. The update call wants an `updateMask` in the query string, and every field in the JSON is camelCase. None of it looks like the REST she writes, and none of it is accidental. Each of those choices is written down, numbered and argued for in Google's API Improvement Proposals.
+
+## What AIPs are
+
+An AIP is a short design document with a number, a status and rules in RFC 2119 language: AIP-158 is pagination, AIP-193 is errors, AIP-136 is custom methods. Google publishes them at [aip.dev](https://google.aip.dev/), changes them in public, and enforces them with [`api-linter`](https://github.com/googleapis/api-linter), which reports violations by AIP number. Beyond the general AIPs there are scoped series, for example for client libraries, which most HTTP designers can ignore.
+
+The one fact that explains everything else is that Google designs APIs in **protocol buffers first**. The `.proto` file is the contract; gRPC serves it, and an HTTP/JSON surface is generated from it by transcoding (AIP-127). An annotation on each method says which HTTP verb and path it answers to:
+
+```proto
+rpc CancelOrder(CancelOrderRequest) returns (Order) {
+  option (google.api.http) = {
+    post: "/v1/{name=orders/*}:cancel"
+    body: "*"
+  };
+}
+```
+
+Fields named in the path template come from the URL, the `body` field comes from the JSON body, and every other request field becomes a query parameter. So when an AIP rule sounds odd for HTTP, ask what it means in protobuf first. It almost always makes sense there, and the HTTP shape is the consequence.
+
+## Resources first, then five standard methods
+
+The model is the one this guide teaches, stated more strictly (AIP-121). An API is a hierarchy of named resources and collections, and it shouldn't mirror the database schema behind it. Every resource has a `name` field holding its resource name, a path without the leading slash such as `publishers/123/books/les-miserables` (AIP-122). Collection names are plural and camelCase, and user-chosen IDs follow DNS label rules: letters, digits and hyphens. Fernhill's `ord_42` would have to become `ord-42` to qualify.
+
+Five standard methods carry most of the traffic, and each maps onto HTTP the way you'd expect:
+
+| Standard method | HTTP                       | AIP |
+| --------------- | -------------------------- | --- |
+| Get             | `GET /v1/orders/ord-42`    | 131 |
+| List            | `GET /v1/orders`           | 132 |
+| Create          | `POST /v1/orders`          | 133 |
+| Update          | `PATCH /v1/orders/ord-42`  | 134 |
+| Delete          | `DELETE /v1/orders/ord-42` | 135 |
+
+AIP-130 sets the order of preference: standard methods, then batch and aggregate methods, then custom methods, then streaming. Every resource must support Get, so a client can always check the state after a change, and List, unless it's a singleton. The discipline is the same as Richardson level 2, with a rulebook for the cases level 2 leaves open.
+
+## How it reads from a REST/JSON shop
+
+Most of what looks foreign in a Google API comes from six conventions. Each solves a real problem, and knowing which one makes the reference much faster to read.
+
+**JSON is lowerCamelCase.** Proto fields are `lower_snake_case` (AIP-140), and the standard proto-to-JSON mapping renders them as camelCase, so `create_time` arrives as `createTime`. Enum values are `UPPER_SNAKE_CASE`, and the zero value of every enum is `…_UNSPECIFIED` (AIP-126), because protobuf can't tell "not set" from the first value.
+
+**Custom methods hang off the resource with a colon.** When no standard method fits, the verb follows a `:` at the end of the path, uses `POST` if anything changes and `GET` if nothing does, and matches the RPC name (AIP-136). The colon keeps the verb out of the resource hierarchy: `orders/ord-42:cancel` is the order, plus an action on it, never a resource called `cancel`.
+
+**Pagination is a token in and a token out.** List takes `pageSize` and `pageToken`, and the response carries `nextPageToken`, empty only at the end (AIP-158). Tokens must be opaque and URL-safe, base64 of something readable doesn't count, and a token grants no authorisation of its own. The client sends the same parameters with every page; change one mid-way and the API should answer `INVALID_ARGUMENT`.
+
+**Updates name their fields.** Update uses `PATCH`, and the request carries an `update_mask`, a field mask listing the paths to change (AIP-134, AIP-161). Over HTTP the mask travels as a comma-separated query parameter:
+
+```http
+PATCH /v1/customers/cus-7?updateMask=displayName,phone
+Content-Type: application/json
+
+{ "displayName": "Ada Lovelace", "phone": "" }
+```
+
+Only the two named fields change. `phone` is cleared because the mask names it and the body holds the empty value; a field missing from the mask is left alone whatever the body says. Without a mask, the server treats every populated field as named, and the special mask `*` means full replacement.
+
+**Slow work returns an Operation.** A method that may take more than about ten seconds returns a `google.longrunning.Operation` instead of its result (AIP-151). The client polls the operation until `done` is true, then reads either `response` or `error`; progress lives in `metadata`. Operations are resources with names, served by one shared `Operations` service, so every Google API polls the same way.
+
+**Concurrency control rides in the body.** Resources can carry a server-computed `etag` field (AIP-154). Send it back on an update, and if the resource has changed the request fails with `ABORTED`, which maps to <Status code={409} />.
+
+Errors follow the same pattern. Every error is a `google.rpc.Status` with a canonical code, a developer-facing message and typed `details`, and AIP-193 requires an `ErrorInfo` whose `reason` and `domain` together identify the error for machines. Over HTTP the JSON carries both the HTTP status and the canonical code name, so `NOT_FOUND` arrives as a 404 with `"status": "NOT_FOUND"`.
+
+<Note kind="practice" title="Why Google stopped accepting PUT" source="https://google.aip.dev/134">
+
+AIP-134 says Google APIs generally use `PATCH` only and don't support `PUT`, and it gives the reason as a story. A `Book` resource gains a `rating` field. A client written before the field existed reads a book, changes the title and sends the whole thing back with `PUT`, and the rating it never knew about is wiped. Fernhill's old mobile app did the same to customers' phone numbers ([Methods](/http/methods/)). Google turned the lesson into a rule: partial updates with an explicit mask, so a client can only ever change the fields it names.
+
+</Note>
+
+## The AIPs worth reading first
+
+There are dozens of general AIPs, and many are about protobuf mechanics. These are the ones that teach an HTTP API designer something, with the chapter of this guide that covers the same ground:
+
+| AIP                               | What to take from it                                                                        | Here                                                             |
+| --------------------------------- | ------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| [121](https://google.aip.dev/121) | Resources and collections, not schemas; Get and List on everything                          | [Resources](/modelling/resources/)                               |
+| [122](https://google.aip.dev/122) | One canonical name per resource, stable for life                                            | [URLs](/modelling/urls/)                                         |
+| [136](https://google.aip.dev/136) | A disciplined escape hatch for verbs, used last                                             | [Resources](/modelling/resources/)                               |
+| [134](https://google.aip.dev/134) | Partial updates with an explicit field mask; why `PUT` loses data                           | [Methods](/http/methods/)                                        |
+| [158](https://google.aip.dev/158) | Opaque page tokens: what they must not reveal, grant, or allow to change                    | [Pagination](/collections/pagination/)                           |
+| [160](https://google.aip.dev/160) | One filter expression language for every List method                                        | [Filtering](/collections/filtering/)                             |
+| [154](https://google.aip.dev/154) | Optimistic concurrency with `etag`, strong or weak                                          | [Concurrency](/reliability/concurrency/)                         |
+| [155](https://google.aip.dev/155) | A client-supplied request ID makes any mutation idempotent                                  | [Idempotency](/reliability/idempotency/)                         |
+| [151](https://google.aip.dev/151) | One operation resource for all slow work, polled the same way everywhere                    | [Long-running operations](/reliability/long-running-operations/) |
+| [193](https://google.aip.dev/193) | A machine-readable `(reason, domain)` pair on every error                                   | [Errors](/http/errors/)                                          |
+| [203](https://google.aip.dev/203) | Mark fields `REQUIRED`, `OUTPUT_ONLY`, `IMMUTABLE`, so clients and tools know who owns what | [Authentication and authorization](/security/auth/)              |
+| [180](https://google.aip.dev/180) | Source, wire and semantic compatibility, and a long list of what breaks each                | [Compatibility](/evolution/compatibility/)                       |
+| [185](https://google.aip.dev/185) | Major version in the path, stability channels (`v1beta`) instead of minor versions          | [Versioning](/evolution/versioning/)                             |
+
+AIP-180 alone repays the half hour. Its list of breaking changes includes several that most teams learn the hard way: changing a default value, starting to serialise a field that used to be omitted, and changing the format of an output-only field.
+
+## Where this guide departs from Google
+
+Google's choices fit an organisation that defines every API in protobuf and ships generated clients for each of them. Fernhill publishes JSON over HTTP to partners like Larkspur Logistics, who write their clients by hand, so a few choices land differently. Each departure below is deliberate, and each chapter explains the reasoning.
+
+- **Casing.** Google's JSON is `lowerCamelCase` with `UPPER_SNAKE_CASE` enum values, both inherited from protobuf. This guide uses snake_case for fields and lowercase snake_case for enum values, so a payload reads in one style throughout. See [JSON conventions](/representations/json/).
+- **Custom methods.** The `:verb` suffix is legal HTTP, but Express-style routers, Hono's included, read `:` as the start of a path parameter, and some proxies and OpenAPI tools handle it awkwardly. This guide first turns the action into a resource, such as `POST /orders/ord_42/cancellation`, and keeps verbs for the few operations that resist nouns. See [Resources](/modelling/resources/).
+- **Validation errors and the error format.** Google maps `INVALID_ARGUMENT` to <Status code={400} /> and wraps every error in `google.rpc.Status`. This guide answers <Status code={422} /> for a request that parses but fails validation, keeps <Status code={400} /> for one that doesn't parse, and uses Problem Details, the IETF format that generic HTTP tooling understands. See [Errors](/http/errors/) and [Status codes](/http/status-codes/).
+- **Partial updates.** Google sends `PATCH` with an `update_mask`. This guide uses JSON Merge Patch, where the body itself says what changes: present fields are set, `null` removes, absent fields stay. The mask is more explicit and can clear a field without overloading `null`; Merge Patch needs no second parameter and no library. See [Methods](/http/methods/).
+- **Concurrency.** Google carries the `etag` in the resource body and answers a mismatch with `ABORTED` as <Status code={409} />. This guide uses HTTP's own machinery, an `ETag` header, `If-Match` on writes and <Status code={412} /> or <Status code={428} />, so caches and HTTP libraries understand it too. See [Concurrency](/reliability/concurrency/).
+- **Idempotency.** Google puts a `request_id` field in the request message. This guide sends an `Idempotency-Key` header, which a gateway can enforce without knowing each endpoint's schema. See [Idempotency](/reliability/idempotency/).
+- **Pagination.** Google returns a bare `nextPageToken` and the client rebuilds the next request. This guide returns a complete `next` URL, so the client can't pair a cursor with the wrong filters. See [Pagination](/collections/pagination/).
+- **Long-running work.** A Google method returns an `Operation` in the body of an ordinary response. This guide answers <Status code={202} /> with `Location` and `Retry-After`, so the status line itself says the work isn't done. See [Long-running operations](/reliability/long-running-operations/).
+- **Hiding existence.** AIP-211 answers a caller without permission with <Status code={403} /> and a message saying the resource "might not exist". This guide answers <Status code={404} /> for resources the caller must not learn about. Both refuse to confirm existence; see [Status codes](/http/status-codes/).
+
+On resource orientation, compatibility, opaque tokens and field ownership, the two agree almost word for word. When the guide is silent on a question, an AIP is usually the best-argued answer available.
+
+## AIPs cited in this guide
+
+The chapters cite AIPs next to Zalando's rules where both cover the same point. AIPs carry no single level, since each mixes MUST and SHOULD rules, so the index lists them by number. The same table appears in the [rule index](/reference/rules/).
+
+<RuleIndex guide="google" />

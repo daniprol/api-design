@@ -1,0 +1,584 @@
+---
+title: "Challenge 1: Returns and refunds"
+description: Design self-service returns for Fernhill. Model the return and the refund as separate resources with their own states, let the server compute the money, and keep the slow payment provider out of the request path.
+sources:
+  - label: Stripe refunds
+    title: "Stripe Docs: Refund and cancel payments"
+    url: https://docs.stripe.com/refunds
+    accessed: 2026-11
+  - label: RFC 9457
+    title: "RFC 9457: Problem Details for HTTP APIs"
+    url: https://www.rfc-editor.org/rfc/rfc9457
+    accessed: 2026-11
+  - label: Idempotency-Key draft
+    title: "The Idempotency-Key HTTP Header Field (draft-ietf-httpapi-idempotency-key-header)"
+    url: https://datatracker.ietf.org/doc/draft-ietf-httpapi-idempotency-key-header/
+    accessed: 2026-11
+related:
+  - modelling/resources
+  - representations/data-formats
+  - reliability/idempotency
+  - reliability/long-running-operations
+  - events/event-design
+---
+
+import { InBrief, Note, WorkedProblem, Status } from "@components/kit";
+
+<InBrief>
+
+- **Difficulty:** intermediate. Allow 60 to 90 minutes.
+- **You design:** self-service returns for the mobile app and web shop, plus the tools support and the warehouse use.
+- **It exercises:** [resources and state transitions](/modelling/resources/), partial operations, [money](/representations/data-formats/), [idempotency](/reliability/idempotency/), [long-running work](/reliability/long-running-operations/) and [events](/events/event-design/).
+- **The trap:** treating "return" and "refund" as one thing with one status field.
+
+</InBrief>
+
+## The brief
+
+Last January, Fernhill's returns ran through a shared inbox and a spreadsheet. Two support agents picked up the same email on the same morning, both clicked Refund in the payment provider's dashboard, and the provider paid both. Nobody noticed until the customer, to their credit, wrote in to say they had been paid twice for one pair of boots.
+
+The head of customer service wants that never to happen again, and wants most returns to need no agent at all. A customer should open an order in the mobile app, pick the items going back, print a label and be done. The January returns spike starts the week after Christmas, and app releases take weeks to reach every phone, so the API spec has to be reviewed and frozen by **1 December**. Priya will be on call when it goes live, and she would like the design to give her nothing to read at 3 a.m.
+
+What makes it interesting is the money. Refunds go back to the original payment method through the slow payment provider, which sometimes answers in two seconds, sometimes in two days, and occasionally says no a week later.
+
+## Requirements
+
+1. A signed-in customer can return some or all units of one or more lines of a delivered order, within 30 days of delivery, giving a reason for each line.
+2. Returns within policy are approved at once and come with a prepaid label. Returns the fraud rules flag, or worth more than EUR 300, wait for a support agent to approve or reject them.
+3. A customer can cancel a return until the parcel reaches the warehouse.
+4. The warehouse records what actually arrived and in what condition. The refund covers only what arrived.
+5. The server calculates every refund: the price the customer actually paid for each unit, after discounts. Shipping is refunded only when every unit of the order comes back.
+6. Refunds go to the original payment method through the payment provider. They can take seconds or days, and can fail.
+7. Support agents can issue a goodwill refund without a return, up to whatever has not yet been refunded on the order.
+8. The mobile app retries everything. Nothing may ever be refunded twice.
+9. The email service and accounting learn about every step without polling.
+
+**Constraints.** One currency per order. The carrier's label service already exists: you get a `label_url` back from it and can treat it as given. Customers, support agents and the warehouse all call the same API with different OAuth tokens.
+
+**Non-goals.** Exchanges, store credit and gift cards (those are [challenge 4](/practice/gift-cards/)), carrier integration, and returns of orders placed through partners.
+
+## What to hand in
+
+- The resources and their URLs, and the state machine of every resource that has one.
+- An OpenAPI 3.1 excerpt covering the operations, the request and response schemas, and the security scopes.
+- Two example exchanges: the app creating a return, including what a retry looks like; and a refund going from created to finished.
+- The error cases: each problem `type`, its status code, and any extension members the client needs.
+- The events you publish, and what each carries.
+
+## Hints
+
+Try the whole design first. Open a hint only when you are stuck on the decision it names.
+
+<WorkedProblem kind="Hint" title="1. Is a return a status or a thing?">
+
+An order with `"status": "return_requested"` can't say which items, how many, why, or who approved it, and an order can have more than one return. Every verb in the brief (return, approve, receive, refund, cancel) leaves a record behind with its own data and rules. Ask what that record is called, and whether it can happen once or several times. [Resources and actions](/modelling/resources/) has the three shapes an action can take.
+
+</WorkedProblem>
+
+<WorkedProblem kind="Hint" title="2. Goods and money move on different clocks">
+
+The parcel arrives on Tuesday; the money reaches the customer's card some days later, or doesn't. Goodwill refunds have no parcel at all. If the return and the refund share one resource, its status has to describe two independent processes at once. And notice who supplies the numbers: if the client sends an amount, the client can choose an amount. [Data formats](/representations/data-formats/) covers how to write it down.
+
+</WorkedProblem>
+
+<WorkedProblem kind="Hint" title="3. The provider is slow; your API doesn't have to be">
+
+The warehouse scanner should not hang for two days waiting for a bank. Record the refund at once, answer, and let a worker talk to the provider. Then the client needs something to look at while the money is in flight, and a clear terminal state when it lands or fails. [Long-running operations](/reliability/long-running-operations/) has the pattern; decide whether you need a separate operation resource or whether the refund itself can carry the status.
+
+</WorkedProblem>
+
+<WorkedProblem kind="Hint" title="4. Two agents are not a retry">
+
+An `Idempotency-Key` stops the app's retry from refunding twice, because the retry carries the same key. Last January's two agents would have sent two different keys, and both requests were perfectly valid on their own. What stops them is an invariant ("total refunded never exceeds total paid") checked in the same transaction as the insert. [Idempotency](/reliability/idempotency/) covers the first problem; [concurrency control](/reliability/concurrency/) the second.
+
+</WorkedProblem>
+
+<WorkedProblem kind="Hint" title="5. Who needs to know, and what may they see?">
+
+Email and accounting each care about different steps. Publish an event per transition, from an outbox so it can't be lost when the transaction commits, and carry identifiers rather than the customer's name and address. [Event design](/events/event-design/) and [consuming events](/events/consuming-events/) cover both halves.
+
+</WorkedProblem>
+
+## Model answer
+
+Open this only after you have a design of your own on paper. It is one good answer; the design notes say where another answer would be equally good.
+
+<WorkedProblem kind="Answer" title="Open it once you have a design of your own">
+
+Returns and refunds are two resources with two state machines. Every transition is a sub-resource that records who did what and when; the server computes every amount; and the payment provider is called by a worker, never inside a request.
+
+#### Resources and states
+
+A return is about goods and a refund is about money, so each gets its own collection. Here is the whole surface, followed by the two state machines:
+
+```text
+/returns                            GET list (filter by order), POST create
+/returns/{return_id}                GET
+/returns/{return_id}/decision       POST  support approves or rejects    (at most once)
+/returns/{return_id}/cancellation   POST  customer cancels               (at most once)
+/returns/{return_id}/receipt        POST  warehouse records the parcel   (at most once)
+/refunds                            GET list (filter by order), POST goodwill refund
+/refunds/{refund_id}                GET
+
+return:  requested ──► approved ──► received
+             │             │
+             ├──► rejected └──► cancelled
+             └──► cancelled
+
+refund:  pending ──► succeeded
+             └─────► failed
+```
+
+`status` is read-only on both. It moves only when a transition resource is created, and each transition checks the current state in the same transaction that changes it.
+
+#### OpenAPI excerpt
+
+This is the contract as it would go to review. Notice what the client never sends: a status, a refund amount on a return, or a customer ID. The server derives all three.
+
+```yaml title="returns-api.yaml (excerpt)"
+openapi: 3.1.0
+info:
+  title: Returns API
+  version: 1.0.0
+  contact: { name: Team Aftersales, url: https://wiki.example.com/teams/aftersales }
+  x-api-id: 6b8e2f1a-3c4d-4e5f-8a9b-0c1d2e3f4a5b
+  x-audience: external-public
+paths:
+  /returns:
+    get:
+      security: [{ oauth2: [returns:read] }]
+      parameters:
+        - { name: order_id, in: query, schema: { type: string, example: ord_42 } }
+        - { name: status, in: query, schema: { type: string } }
+        - { $ref: "#/components/parameters/Limit" }
+        - { $ref: "#/components/parameters/Cursor" }
+      responses:
+        "200":
+          {
+            description: A page of returns,
+            content: { application/json: { schema: { $ref: "#/components/schemas/ReturnPage" } } },
+          }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      security: [{ oauth2: [returns:write] }]
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/ReturnCreate" } } }
+      responses:
+        "201":
+          description: Return created; approved at once when within policy
+          headers: { Location: { schema: { type: string, format: uri } } }
+          content: { application/json: { schema: { $ref: "#/components/schemas/Return" } } }
+        "409": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/ValidationProblem" }
+        default: { $ref: "#/components/responses/Problem" }
+  /returns/{return_id}:
+    parameters: [{ $ref: "#/components/parameters/ReturnId" }]
+    get:
+      security: [{ oauth2: [returns:read] }]
+      responses:
+        "200":
+          description: The return
+          headers: { ETag: { schema: { type: string } } }
+          content: { application/json: { schema: { $ref: "#/components/schemas/Return" } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /returns/{return_id}/decision:
+    parameters: [{ $ref: "#/components/parameters/ReturnId" }]
+    post:
+      security: [{ oauth2: [returns:review] }]
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/DecisionCreate" } } }
+      responses:
+        "201":
+          description: Decision recorded
+          headers: { Location: { schema: { type: string, format: uri } } }
+          content: { application/json: { schema: { $ref: "#/components/schemas/Return" } } }
+        "409": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/ValidationProblem" }
+        default: { $ref: "#/components/responses/Problem" }
+  /returns/{return_id}/cancellation:
+    parameters: [{ $ref: "#/components/parameters/ReturnId" }]
+    post:
+      security: [{ oauth2: [returns:write] }]
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      responses:
+        "201":
+          description: Return cancelled
+          headers: { Location: { schema: { type: string, format: uri } } }
+          content: { application/json: { schema: { $ref: "#/components/schemas/Return" } } }
+        "409": { $ref: "#/components/responses/Problem" }
+        default: { $ref: "#/components/responses/Problem" }
+  /returns/{return_id}/receipt:
+    parameters: [{ $ref: "#/components/parameters/ReturnId" }]
+    post:
+      security: [{ oauth2: [returns:receive] }]
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/ReceiptCreate" } } }
+      responses:
+        "201":
+          description: Receipt recorded; the refund is created
+          headers: { Location: { schema: { type: string, format: uri } } }
+          content: { application/json: { schema: { $ref: "#/components/schemas/Return" } } }
+        "409": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/ValidationProblem" }
+        default: { $ref: "#/components/responses/Problem" }
+  /refunds:
+    get:
+      security: [{ oauth2: [refunds:read] }]
+      parameters:
+        - { name: order_id, in: query, required: true, schema: { type: string } }
+        - { $ref: "#/components/parameters/Limit" }
+        - { $ref: "#/components/parameters/Cursor" }
+      responses:
+        "200":
+          {
+            description: A page of refunds for the order,
+            content: { application/json: { schema: { $ref: "#/components/schemas/RefundPage" } } },
+          }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      summary: Issue a goodwill refund without a return
+      security: [{ oauth2: [refunds:write] }]
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/RefundCreate" } } }
+      responses:
+        "201":
+          description: Goodwill refund created; the money is still in flight
+          headers: { Location: { schema: { type: string, format: uri } } }
+          content: { application/json: { schema: { $ref: "#/components/schemas/Refund" } } }
+        "409": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/ValidationProblem" }
+        default: { $ref: "#/components/responses/Problem" }
+  /refunds/{refund_id}:
+    get:
+      security: [{ oauth2: [refunds:read] }]
+      parameters: [{ name: refund_id, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200":
+          description: The refund
+          headers:
+            Retry-After:
+              { description: Present while the refund is pending, schema: { type: integer } }
+          content: { application/json: { schema: { $ref: "#/components/schemas/Refund" } } }
+        default: { $ref: "#/components/responses/Problem" }
+components:
+  securitySchemes:
+    oauth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://auth.example.com/authorize
+          tokenUrl: https://auth.example.com/token
+          scopes:
+            returns:read: Read returns (customers see only their own)
+            returns:write: Create and cancel your own returns
+            refunds:read: Read refunds (customers see only their own)
+        clientCredentials:
+          tokenUrl: https://auth.example.com/token
+          scopes:
+            returns:review: Approve or reject returns (support tool)
+            returns:receive: Record parcels arriving (warehouse)
+            refunds:write: Issue goodwill refunds (support tool)
+  parameters:
+    IdempotencyKey:
+      {
+        name: Idempotency-Key,
+        in: header,
+        required: true,
+        schema: { type: string, maxLength: 255 },
+      }
+    ReturnId:
+      { name: return_id, in: path, required: true, schema: { type: string, example: ret_19 } }
+    Limit:
+      { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+    Cursor: { name: cursor, in: query, schema: { type: string } }
+  responses:
+    Problem:
+      description: Any error
+      content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } }
+    ValidationProblem:
+      description: The body parsed but failed validation; errors lists every failing field
+      content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } }
+  schemas:
+    Money:
+      type: object
+      required: [amount, currency]
+      properties:
+        amount: { type: string, pattern: "^-?[0-9]+(\\.[0-9]+)?$", example: "89.00" }
+        currency: { type: string, pattern: "^[A-Z]{3}$", example: EUR }
+    ReturnCreate:
+      type: object
+      additionalProperties: false
+      required: [order_id, lines]
+      properties:
+        order_id: { type: string, example: ord_42 }
+        lines:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: object
+            additionalProperties: false
+            required: [order_line_id, quantity, reason]
+            properties:
+              order_line_id: { type: string, example: lin_2 }
+              quantity: { type: integer, minimum: 1 }
+              reason:
+                type: string
+                enum: [too_small, too_large, damaged, not_as_described, changed_mind, other]
+        comment: { type: string, maxLength: 1000 }
+    Return:
+      type: object
+      required: [id, order_id, status, lines, refund_estimate, created_at]
+      properties:
+        id: { type: string, example: ret_19 }
+        order_id: { type: string, example: ord_42 }
+        status:
+          type: string
+          description: "One of requested, approved, rejected, cancelled, received. New values may be added; treat unknown values as in progress."
+          example: approved
+        lines:
+          type: array
+          items:
+            type: object
+            properties:
+              order_line_id: { type: string }
+              sku: { type: string, example: sku-1042 }
+              quantity: { type: integer }
+              quantity_received: { type: integer, description: Present once received }
+              reason: { type: string }
+        refund_estimate: { $ref: "#/components/schemas/Money" }
+        label_url: { type: string, format: uri, description: Present once approved }
+        return_by: { type: string, format: date, description: Present once approved }
+        refund_id: { type: string, example: ref_88, description: Present once received }
+        created_at: { type: string, format: date-time }
+    DecisionCreate:
+      type: object
+      additionalProperties: false
+      required: [outcome]
+      properties:
+        outcome: { type: string, enum: [approved, rejected] }
+        note: { type: string, maxLength: 1000 }
+    ReceiptCreate:
+      type: object
+      additionalProperties: false
+      required: [lines]
+      properties:
+        lines:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            additionalProperties: false
+            required: [order_line_id, quantity, condition]
+            properties:
+              order_line_id: { type: string }
+              quantity: { type: integer, minimum: 0 }
+              condition: { type: string, enum: [resaleable, damaged, missing_parts] }
+    RefundCreate:
+      type: object
+      additionalProperties: false
+      required: [order_id, amount, reason]
+      properties:
+        order_id: { type: string, example: ord_42 }
+        amount: { $ref: "#/components/schemas/Money" }
+        reason: { type: string, enum: [late_delivery, damaged_in_transit, service_recovery, other] }
+        note: { type: string, maxLength: 1000 }
+    Refund:
+      type: object
+      required: [id, order_id, amount, status, created_at]
+      properties:
+        id: { type: string, example: ref_88 }
+        order_id: { type: string, example: ord_42 }
+        return_id: { type: string, example: ret_19, description: Absent for goodwill refunds }
+        amount: { $ref: "#/components/schemas/Money" }
+        status:
+          type: string
+          description: "One of pending, succeeded, failed. New values may be added; treat unknown values as pending."
+        failure:
+          { $ref: "#/components/schemas/Problem", description: Present when status is failed }
+        created_at: { type: string, format: date-time }
+        completed_at:
+          { type: string, format: date-time, description: Present once succeeded or failed }
+    ReturnPage:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Return" } }
+        next: { type: string, format: uri }
+    RefundPage:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Refund" } }
+        next: { type: string, format: uri }
+    Problem:
+      type: object
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+        errors:
+          type: array
+          description: Present on validation-error, one entry per failing field
+          items:
+            type: object
+            required: [pointer, detail]
+            properties:
+              pointer: { type: string, example: "#/lines/0/quantity" }
+              detail: { type: string }
+```
+
+#### Exchange 1: the app creates a return, then retries it
+
+A customer returns one of two jackets from `ord_42`. The order is within policy, so the return comes back already approved, with a label. Notice the `refund_estimate`: the server worked it out from what the customer paid, discount included.
+
+```http
+POST /returns HTTP/1.1
+Authorization: Bearer eyJ…
+Idempotency-Key: 9b1f6c2e-5d4a-4f3b-8e7d-1a2b3c4d5e6f
+Content-Type: application/json
+
+{ "order_id": "ord_42",
+  "lines": [ { "order_line_id": "lin_2", "quantity": 1, "reason": "too_small" } ] }
+
+HTTP/1.1 201 Created
+Location: https://api.example.com/returns/ret_19
+ETag: "v2"
+Content-Type: application/json
+
+{ "id": "ret_19", "order_id": "ord_42", "status": "approved",
+  "lines": [ { "order_line_id": "lin_2", "sku": "sku-1042", "quantity": 1, "reason": "too_small" } ],
+  "refund_estimate": { "amount": "89.00", "currency": "EUR" },
+  "label_url": "https://labels.example.com/l/7Q2W9",
+  "return_by": "2026-12-20",
+  "created_at": "2026-12-06T09:14:03Z" }
+```
+
+The train goes into a tunnel and the app never sees that response, so it sends the same request with the same key. The server finds the key, checks the fingerprint matches, and replays the stored `201` byte for byte. If the app had sent the same key with a different body, it would get a <Status code={422} /> `idempotency-key-reused` instead.
+
+#### Exchange 2: the parcel arrives and the money follows
+
+The warehouse scans the parcel. One jacket was expected and one arrived, resaleable, so the receipt creates a refund for exactly that.
+
+```http
+POST /returns/ret_19/receipt HTTP/1.1
+Authorization: Bearer eyJ…   (warehouse token, scope returns:receive)
+Idempotency-Key: rcpt-ret_19
+Content-Type: application/json
+
+{ "lines": [ { "order_line_id": "lin_2", "quantity": 1, "condition": "resaleable" } ] }
+
+HTTP/1.1 201 Created
+Location: https://api.example.com/returns/ret_19/receipt
+
+{ "id": "ret_19", "status": "received", "refund_id": "ref_88", … }
+```
+
+The app follows `refund_id`. While the provider works, the refund says `pending` and `Retry-After` paces the polling; a day later it has finished.
+
+```http
+GET /refunds/ref_88
+→ 200  Retry-After: 3600
+  { "id": "ref_88", "order_id": "ord_42", "return_id": "ret_19",
+    "amount": { "amount": "89.00", "currency": "EUR" }, "status": "pending",
+    "created_at": "2026-12-09T11:02:40Z" }
+
+GET /refunds/ref_88
+→ 200
+  { "id": "ref_88", …, "status": "succeeded", "completed_at": "2026-12-10T08:31:12Z" }
+```
+
+If the provider had refused, `status` would be `failed` and `failure` would carry a full problem object, for example `type: …/problems/refund-declined-by-issuer`, so support can see why and arrange another way to pay.
+
+#### Error cases
+
+The split follows one rule. <Status code={422} /> means "change what you sent". <Status code={409} /> means "re-read the resource; your request doesn't fit its current state".
+
+| Problem `type` (under `/problems/`) | Status                | When                                                      | Extensions                       |
+| ----------------------------------- | --------------------- | --------------------------------------------------------- | -------------------------------- |
+| `validation-error`                  | <Status code={422} /> | Unknown reason, quantity 0, empty `lines`                 | `errors` with JSON Pointers      |
+| `quantity-not-returnable`           | <Status code={422} /> | More units than were bought or are already being returned | `pointer`, `returnable_quantity` |
+| `idempotency-key-reused`            | <Status code={422} /> | Same key, different body                                  | none                             |
+| `order-not-delivered`               | <Status code={409} /> | The order hasn't arrived yet                              | `order_status`                   |
+| `return-window-closed`              | <Status code={409} /> | More than 30 days since delivery                          | `window_closed_at`               |
+| `return-already-decided`            | <Status code={409} /> | A second decision on the same return                      | `status`                         |
+| `return-not-cancellable`            | <Status code={409} /> | The parcel was received, or the return was rejected       | `status`                         |
+| `return-not-receivable`             | <Status code={409} /> | Receipt for a return that isn't approved                  | `status`                         |
+| `refund-exceeds-refundable-amount`  | <Status code={409} /> | Goodwill refund larger than what is left                  | `refundable` (Money)             |
+| `about:blank`                       | <Status code={404} /> | Unknown ID, or another customer's return                  | none                             |
+
+#### Events
+
+Each transition writes one row to an outbox in the same transaction, and a relay publishes it. Every event carries identifiers and a revision, never names, addresses or card details:
+
+```json
+{
+  "metadata": {
+    "eid": "1f0c2b7e-9a4d-4c8e-b6f1-3d2a5e7c9b10",
+    "event_type": "shop.refund-succeeded",
+    "occurred_at": "2026-12-10T08:31:12Z",
+    "version": "1.0.0"
+  },
+  "refund_id": "ref_88",
+  "order_id": "ord_42",
+  "return_id": "ret_19",
+  "revision": 3
+}
+```
+
+The full set is `shop.return-requested`, `shop.return-approved`, `shop.return-rejected`, `shop.return-cancelled`, `shop.return-received`, `shop.refund-created`, `shop.refund-succeeded` and `shop.refund-failed`. Email listens for the customer-facing ones; accounting listens for refunds only.
+
+#### Design notes
+
+**Returns live at the top level, not under the order.** `/orders/ord_42/returns/ret_19` reads nicely, but the warehouse scans a return label and knows only `ret_19`, and support searches returns across orders. A top-level collection with an `order_id` filter serves all three callers, and the order still links to its returns. Nesting would have been fine if only customers used the API.
+
+**Return and refund are separate resources.** They move on different clocks, and one can exist without the other: a goodwill refund has no return, and a rejected return has no refund. Merging them would give one `status` field two processes to describe, and states like `received_refund_pending_failed` follow quickly. The cost is one extra request for the app, which follows `refund_id`.
+
+**Transitions are singular sub-resources.** Decision, cancellation and receipt each happen at most once and record who, when and why, so each is `POST` to a singular noun that answers <Status code={201} /> with `Location`, then <Status code={409} /> on a second attempt. `status` stays read-only, so the state machine is enforced in one place instead of in the validation of a writable field. Because nothing is edited with `PATCH`, there's no `If-Match` here: every transition's precondition is the current state, checked atomically in the transaction that changes it.
+
+**The server computes every amount.** Customers send quantities, never money. The refund for a line is the price actually paid per unit, with order-level discounts spread across lines, and shipping only when the last unit comes back. The only client-supplied amount is a goodwill refund, which needs the `refunds:write` scope that only the support tool's token carries. Amounts are decimal strings with a currency, so no float gets near them.
+
+**A refund answers 201, not 202.** The refund record exists, durably, the moment it is created; only the money is still in flight. So it's a domain resource with a small status machine rather than a separate operation resource. A generic `/operations/op_…` would work too, but accounting wants to list refunds by order for years afterwards, and an operation that expires after seven days can't do that. `Retry-After` on a pending refund sets the polling pace, and the events mean most clients never poll.
+
+**The provider is called from a worker, with its own idempotency key.** Creating the refund writes the row and an outbox entry in one transaction; a worker then calls the provider, passing `ref_88` as the provider's idempotency key. If the worker dies after the provider accepted the refund, the next attempt with the same key gets the original answer instead of paying again.
+
+**Idempotency handles retries; an invariant handles people.** The `Idempotency-Key` makes the app's retries harmless. It does nothing for last January's two agents, who sent two valid requests with two keys. What stops them is a check inside the transaction that inserts the refund, with the order's payment row locked: the sum of refunds not in `failed`, plus this one, must not exceed what was captured. The second agent gets <Status code={409} /> with `refundable: { "amount": "0.00", "currency": "EUR" }` and re-reads the order.
+
+**Scopes follow roles, and ownership is checked on every object.** Customer tokens see only their own returns and refunds, and another customer's `ret_19` answers <Status code={404} />, so its existence doesn't leak. The warehouse token can record receipts but can't issue refunds; only the support tool can, and that's a separate scope because sending money out deserves its own grant.
+
+Stripe's own refund documentation is a good reminder of why the `failed` state and the worker exist.
+
+<Note kind="practice" title="Refunds fail after you've moved on" source="https://docs.stripe.com/refunds">
+
+Stripe documents that a refund can fail when the customer's bank or card issuer can't process it, for instance because the account was closed, and that the money can take up to 30 days to come back. The refund's status moves to `failed`, a `refund.failed` event fires, and the merchant has to pay the customer some other way. A refund that looked finished at the counter can still fail weeks later, so give it a state the client can see and an event someone acts on.
+
+</Note>
+
+</WorkedProblem>
+
+## Review yourself
+
+Answer these against your own design, not the model answer. Each one comes from the [review checklist](/reference/checklist/).
+
+- Can any client write `status` directly? If so, what stops a request from moving a `received` return back to `requested`? [Resources and actions](/modelling/resources/)
+- Does every creation answer <Status code={201} /> with a `Location`, including the transitions? [Status codes](/http/status-codes/)
+- The app's `POST /returns` times out and is retried with the same key. What does the retry return, and what if the body changed? [Idempotency and retries](/reliability/idempotency/)
+- Two agents issue a EUR 50 goodwill refund on a EUR 59.90 order in the same second, with different keys. Walk through exactly what each receives. [Concurrency control](/reliability/concurrency/)
+- Where does each amount come from, and is it a decimal string with a currency everywhere it appears? [Data formats](/representations/data-formats/)
+- What does the app show during the three days the provider takes, and what does a failed refund look like on the wire? [Long-running operations](/reliability/long-running-operations/)
+- Is every error `application/problem+json` with a stable `type`, and do you use 409 and 422 by one consistent rule? [Errors](/http/errors/)
+- Can customer `cus_8` read `ret_19`, which belongs to `cus_7`? Can the warehouse token issue a refund? [Authentication and authorization](/security/auth/)
+- Is the list of returns paginated with a cursor and a maximum `limit` from the first release? [Pagination](/collections/pagination/)
+- Do your events have an `eid`, an `occurred_at` and a revision, and do they carry only identifiers? [Event design](/events/event-design/)
+
+When you're happy with your answers, take on a partner who never upgrades: [Larkspur's inventory sync](/practice/inventory-sync/).

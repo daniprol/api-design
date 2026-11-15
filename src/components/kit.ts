@@ -2,7 +2,7 @@
  * Everything a page needs, in one import:
  *
  *   import { InBrief, Note, Compare, Prefer, Avoid, Rule, RuleGroup, SelfCheck, Question,
- *            WorkedProblem, Solution, GuidesDiffer, Figure, Status, Tabs, TabItem } from "@components/kit";
+ *            WorkedProblem, Solution, GuidesDiffer, Figure, Stepper, Status, Tabs, TabItem } from "@components/kit";
  */
 export {
   Aside,
@@ -27,4 +27,5 @@ export { default as RuleGroup } from "./RuleGroup.astro";
 export { default as SelfCheck } from "./SelfCheck.astro";
 export { default as Solution } from "./Solution.astro";
 export { default as Status } from "./Status.astro";
+export { default as Stepper } from "./Stepper.astro";
 export { default as WorkedProblem } from "./WorkedProblem.astro";

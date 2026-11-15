@@ -1,0 +1,372 @@
+---
+title: Bulk operations
+description: Offer bulk endpoints when clients already work in lists. Model the batch as a resource with a documented cap, report every item by the client's own reference, make each item safe to retry, charge rate limits per item, and go asynchronous past a size threshold.
+sources:
+  - label: RFC 4918 §13
+    title: "RFC 4918: HTTP Extensions for WebDAV, §13 Multi-Status Response"
+    url: https://www.rfc-editor.org/rfc/rfc4918#section-13
+    accessed: 2026-11
+  - label: AIP-231
+    title: "Google AIP-231: Batch methods: Get"
+    url: https://google.aip.dev/231
+    accessed: 2026-11
+  - label: AIP-233
+    title: "Google AIP-233: Batch methods: Create"
+    url: https://google.aip.dev/233
+    accessed: 2026-11
+  - label: Elasticsearch bulk API
+    title: "Elasticsearch Reference: Bulk API"
+    url: https://www.elastic.co/guide/en/elasticsearch/reference/7.8/docs-bulk.html
+    accessed: 2026-11
+  - label: Zalando #152
+    title: "Zalando RESTful API Guidelines: Use code 207 for batch or bulk requests"
+    url: https://opensource.zalando.com/restful-api-guidelines/#152
+    accessed: 2026-11
+related:
+  - reliability/long-running-operations
+  - reliability/idempotency
+  - security/limits
+  - collections/filtering
+---
+
+import {
+  InBrief,
+  Note,
+  Compare,
+  Prefer,
+  Avoid,
+  Rule,
+  RuleGroup,
+  SelfCheck,
+  Question,
+  Status,
+  Tabs,
+  TabItem,
+} from "@components/kit";
+
+<InBrief>
+
+- Offer bulk where clients already hold a list: syncs, imports, reconciliations. Don't offer it to save the client a loop it doesn't have.
+- Model the batch as a resource (`POST /stock-updates`) with an `items` array and a documented maximum, and reject oversized batches whole.
+- Decide atomic or per-item up front. For independent items, report each outcome in request order with <Status code={207} />, as [Long-running operations](/reliability/long-running-operations/) specifies.
+- Have clients send a `ref` per item. It correlates results and makes each item safe to retry on its own.
+- Count every item against the rate limit, go asynchronous above a threshold, and serve bulk reads with `?ids=` up to a cap.
+
+</InBrief>
+
+Every night at 2 a.m., Larkspur Logistics' warehouse system tells Fernhill how much stock it holds: 5,000 SKUs, 5,000 `PATCH /products/sku-…/stock` requests, one after another. At 120 ms a round trip, the sync takes ten minutes on a good night. On a bad one it hits the rate limit at item 1,200, backs off, and is still running when the morning shoppers arrive to find tents marked in stock that sold out yesterday. Larkspur already has the list. The API is making them hand it over one line at a time.
+
+## Offer bulk where the client already holds a list
+
+Bulk is not a general speed-up, and offering it everywhere has a cost. HTTP/2 already multiplexes many small requests over one connection, so connection setup is rarely the bottleneck. What a bulk endpoint buys is fewer round trips in sequence, one authorisation and validation pass instead of thousands, and, most usefully, one place to report what happened to the whole set.
+
+So the test is the client's unit of work. Larkspur's nightly sync, a merchant's CSV import and a finance reconciliation all start from a list, and forcing them into single-item calls makes every one of them write the same retry-and-collate loop, badly. A mobile app that edits one order at a time has no list, and a bulk endpoint would give it nothing but a second way to do the same thing. Items that depend on each other, such as an order and its payment, aren't a batch either: that's a transaction, and it deserves its own resource.
+
+## Model the batch as a resource with a documented cap
+
+A bulk endpoint is a resource like any other: a noun that a `POST` creates. Here's Larkspur's sync as one request. Notice the `ref` on each item: Larkspur chooses it, and it comes back with the result.
+
+```http
+POST /stock-updates
+Content-Type: application/json
+Idempotency-Key: 9f2c7a10-41de-4b8e-a5c3-2d6f0e8b1a77
+
+{
+  "items": [
+    { "ref": "lk-20261115-0001", "sku": "sku-1042", "quantity": 17 },
+    { "ref": "lk-20261115-0002", "sku": "sku-1043", "quantity": 0 },
+    { "ref": "lk-20261115-0003", "sku": "sku-9999", "quantity": 4 }
+  ]
+}
+```
+
+Document the maximum, here 500 items, in the spec as `maxItems` and in prose. A batch over the cap, an empty `items` array or a body that isn't an array at all is a broken request, not a set of item failures, so reject it whole with <Status code={422} /> and a problem body that names the limit. Google's batch AIPs make the same point: the field comment should document the maximum. Fernhill also rejects a batch that repeats a `ref`, because two results with the same reference can't be matched to anything.
+
+Name the resource after what the client asked for. `POST /stock-updates` reads as "create these updates"; `POST /products/batch` works too and keeps the batch next to the collection it touches. Google spells it as a custom method, `:batchCreate`. Pick one style and use it across the API.
+
+## Decide atomic or per-item before writing the schema
+
+The first question a client asks about a batch is what happens when item 3 fails. There are two honest answers, and the schema follows from the one you pick.
+
+| Mode             | Item 3 fails                         | Response                                                         | Fits                                               |
+| ---------------- | ------------------------------------ | ---------------------------------------------------------------- | -------------------------------------------------- |
+| Atomic           | Nothing is applied                   | <Status code={422} /> with pointers such as `#/items/2/quantity` | Items that only make sense together; small batches |
+| Per-item outcome | Items 1, 2, 4… are applied; 3 is not | <Status code={207} /> with a result for every item               | Independent items: stock levels, imports, syncs    |
+
+Atomic is easier to reason about and harder to run: one transaction across 500 rows holds locks for the whole batch, and one bad SKU sends the other 499 back to Larkspur to resend. Google's AIP-233 requires synchronous batch create to be atomic, which suits resources created together. Stock levels for 5,000 unrelated SKUs are the opposite case. One unknown SKU says nothing about the other 4,999, so Fernhill applies each item on its own and reports each outcome.
+
+Whichever you choose, say it in the docs in one sentence. A client that assumes atomic and gets per-item will believe a failed batch changed nothing, and resend items that already succeeded.
+
+## Report every item, in order, by the client's reference
+
+The response shape for per-item outcomes is already decided: <Status code={207} /> with an `items` array in request order, each carrying its own status and either a result or a problem. The [batch section of Long-running operations](/reliability/long-running-operations/) sets out the format and why. Bulk adds one thing to it: echo the client's `ref`, so Larkspur can match results by reference instead of trusting array positions.
+
+```http
+HTTP/1.1 207 Multi-Status
+Content-Type: application/json
+
+{
+  "items": [
+    { "ref": "lk-20261115-0001", "status": 200, "sku": "sku-1042", "quantity": 17 },
+    { "ref": "lk-20261115-0002", "status": 200, "sku": "sku-1043", "quantity": 0 },
+    { "ref": "lk-20261115-0003", "status": 404,
+      "problem": { "type": "https://api.example.com/problems/unknown-sku", "title": "Unknown SKU",
+                   "status": 404, "detail": "No product sku-9999 exists in this catalogue.", "sku": "sku-9999" } }
+  ],
+  "summary": { "succeeded": 2, "failed": 1 }
+}
+```
+
+The `summary` is a courtesy for humans and dashboards; clients should still read every item. Order and `ref` are belt and braces, and the braces matter: a client that sorts or deduplicates its list before sending loses the positions, but never the references.
+
+A per-item status also tells the client what to do next. A <Status code={404} /> or <Status code={422} /> item will fail the same way every time, so fix it or drop it. A <Status code={409} /> or <Status code={503} /> item is worth retrying. That distinction is the whole reason to put HTTP statuses on items rather than a bare `"ok": false`. Elasticsearch has run this design for years, with one extra rail worth copying.
+
+<Note kind="practice" title="Elasticsearch's errors flag" source="https://www.elastic.co/guide/en/elasticsearch/reference/7.8/docs-bulk.html">
+
+Elasticsearch's `_bulk` endpoint has carried per-item results for years: each action reports its own HTTP status, and a top-level `errors` flag is `true` if any of them failed. The documentation is blunt that the failure of one action doesn't affect the others, and that there is no correct batch size, only the one you measure. A client that checks only the outer status sees success and quietly loses documents; the flag gives it one field it can't miss. Your `summary` is the same safety rail.
+
+</Note>
+
+## Make every item safe to retry on its own
+
+Larkspur's sync dies at item 300 when its VPN drops. Did the batch land? The batch-level `Idempotency-Key` answers that for an exact resend: the server replays the stored <Status code={207} /> without touching stock again, exactly as [Idempotency](/reliability/idempotency/) describes. But a smarter client resends only the items that failed, in a new batch with a new key, and now the key can't help.
+
+The item `ref` can. Store each applied `ref` with its outcome, in the same transaction as the item's effect, and treat a known `ref` as a replay. Whether that matters depends on the operation. "Set `sku-1042` to 17" is idempotent already; applying it twice leaves 17. "Adjust `sku-1042` by −3" is not, and without a per-item key, a resent adjustment loses three tents that were never sold. Prefer absolute values in bulk APIs where the domain allows, and require a `ref` where it doesn't.
+
+_Assumes:_ PostgreSQL; a `bulk_item_refs` table unique on `(account_id, ref)` holding each item's stored result; `problem_body()` builds a problem dict, `limiter` is the account's rate limiter, and the batch-level `Idempotency-Key` handling from [Idempotency](/reliability/idempotency/) wraps the handler.
+
+Here's the handler. Watch the transaction boundary: it wraps one item, not the batch, so item 3 failing rolls back only item 3.
+
+<Tabs syncKey="stack">
+<TabItem label="FastAPI">
+
+```python
+MAX_ITEMS = 500
+
+class StockItem(BaseModel):
+    ref: str = Field(min_length=1, max_length=64)
+    sku: str
+    quantity: int = Field(ge=0)
+
+class StockUpdates(BaseModel):
+    items: list[dict[str, Any]] = Field(min_length=1, max_length=MAX_ITEMS)  # the envelope only
+
+@app.post("/stock-updates", status_code=207)
+def update_stock(body: StockUpdates, account: CurrentAccount):
+    refs = [raw.get("ref") for raw in body.items]
+    if len(set(refs)) != len(refs):
+        raise problem(422, "duplicate-item-ref")
+    limiter.consume(account.id, cost=len(body.items))  # raises 429 before any item runs
+    return {"items": [apply_item(account, raw) for raw in body.items]}
+
+def apply_item(account, raw: dict) -> dict:
+    try:
+        item = StockItem.model_validate(raw)
+    except ValidationError as exc:
+        return {"ref": raw.get("ref"), "status": 422, "problem": validation_problem(exc)}
+    with db.begin():  # one transaction per item
+        if (done := item_refs.get(account.id, item.ref)) is not None:
+            return done  # a resent item: replay its stored outcome
+        product = products.get(account.id, item.sku)
+        if product is None:
+            result = {"ref": item.ref, "status": 404,
+                      "problem": problem_body(404, "unknown-sku", sku=item.sku)}
+        else:
+            product.set_stock(item.quantity)
+            result = {"ref": item.ref, "status": 200, "sku": item.sku, "quantity": item.quantity}
+        item_refs.save(account.id, item.ref, result)  # commits with the stock change
+    return result
+```
+
+</TabItem>
+<TabItem label="Django">
+
+```python
+MAX_ITEMS = 500
+
+class StockUpdates(APIView):
+    def post(self, request):
+        raw_items = request.data.get("items")
+        if not isinstance(raw_items, list) or not 1 <= len(raw_items) <= MAX_ITEMS:
+            return problem(422, "invalid-batch", max_items=MAX_ITEMS)
+        refs = [i.get("ref") if isinstance(i, dict) else None for i in raw_items]
+        if len(set(refs)) != len(refs):
+            return problem(422, "duplicate-item-ref")
+        limiter.consume(request.user.account.id, cost=len(raw_items))  # 429 before any work
+        results = [apply_item(request.user.account, raw) for raw in raw_items]
+        return Response({"items": results}, status=207)
+
+def apply_item(account, raw) -> dict:
+    s = StockItemSerializer(data=raw)
+    if not s.is_valid():
+        return {"ref": raw.get("ref") if isinstance(raw, dict) else None,
+                "status": 422, "problem": validation_problem(s.errors)}
+    item = s.validated_data
+    with transaction.atomic():  # one transaction per item
+        if done := BulkItemRef.objects.filter(account=account, ref=item["ref"]).first():
+            return done.result  # a resent item: replay its stored outcome
+        updated = Product.objects.filter(account=account, sku=item["sku"]).update(
+            stock=item["quantity"])
+        result = (
+            {"ref": item["ref"], "status": 200, "sku": item["sku"], "quantity": item["quantity"]}
+            if updated else
+            {"ref": item["ref"], "status": 404,
+             "problem": problem_body(404, "unknown-sku", sku=item["sku"])}
+        )
+        BulkItemRef.objects.create(account=account, ref=item["ref"], result=result)
+    return result
+```
+
+</TabItem>
+<TabItem label="Hono">
+
+```ts
+const MAX_ITEMS = 500;
+const Batch = z.object({ items: z.array(z.record(z.string(), z.unknown())).min(1).max(MAX_ITEMS) });
+const StockItem = z.object({
+  ref: z.string().min(1).max(64),
+  sku: z.string(),
+  quantity: z.number().int().min(0),
+});
+
+app.post("/stock-updates", zValidator("json", Batch), async (c) => {
+  const { items } = c.req.valid("json");
+  const account = c.get("account");
+  if (new Set(items.map((i) => i.ref)).size !== items.length)
+    return problem(c, 422, "duplicate-item-ref");
+  const limited = await limiter.consume(account.id, items.length);
+  if (limited) return limited; // 429 before any item runs
+  const results = [];
+  for (const raw of items) results.push(await applyItem(account, raw));
+  return c.json({ items: results }, 207);
+});
+
+async function applyItem(account: Account, raw: Record<string, unknown>) {
+  const parsed = StockItem.safeParse(raw);
+  if (!parsed.success)
+    return { ref: raw.ref, status: 422, problem: validationProblem(parsed.error) };
+  const item = parsed.data;
+  return db.transaction(async (tx) => {
+    // one transaction per item
+    const done = await itemRefs.get(tx, account.id, item.ref);
+    if (done) return done; // a resent item: replay its stored outcome
+    const updated = await products.setStock(tx, account.id, item.sku, item.quantity);
+    const result = updated
+      ? { ref: item.ref, status: 200, sku: item.sku, quantity: item.quantity }
+      : { ref: item.ref, status: 404, problem: problemBody(404, "unknown-sku", { sku: item.sku }) };
+    await itemRefs.save(tx, account.id, item.ref, result); // commits with the stock change
+    return result;
+  });
+}
+```
+
+</TabItem>
+</Tabs>
+
+Fernhill's line between "reject the batch" and "fail the item" is the envelope. A missing or oversized `items` array is the client's code being wrong, so the whole request fails. Anything about one item, including a negative quantity, is reported on that item, because the other 499 are still worth applying.
+
+## Go asynchronous past a size threshold
+
+Five hundred stock updates finish in a couple of seconds. Fifty thousand catalogue rows from a merchant's spreadsheet don't, and a synchronous response that takes minutes is the export problem from [Long-running operations](/reliability/long-running-operations/) all over again. So set a threshold and switch shape above it: small batches answer <Status code={207} /> inline, large ones go to a separate resource such as `POST /stock-imports` that answers <Status code={202} /> with an operation to poll. The state machine, polling pace and idempotent start are all on that page.
+
+Two things are specific to bulk. First, per-item results for 50,000 items don't belong in the operation body. Put a summary there and serve the details as a paginated sub-collection, `GET /operations/op_91/results?status=failed`, so the client can fetch the failures without downloading the successes. Second, keep the two endpoints distinct rather than letting one endpoint answer either way depending on size. A client that sends 499 items on Monday and 501 on Tuesday shouldn't discover a different protocol on Tuesday.
+
+## Charge rate limits per item, not per request
+
+Here's the loophole. Fernhill allows 100 requests a minute, and `POST /stock-updates` with 500 items counts as one. Larkspur's sync, written by someone who has since left, finds that 50,000 writes a minute go through without a single <Status code={429} />. Any bulk endpoint metered per request is a way round your [limits](/security/limits/).
+
+So charge each item. The limiter takes the batch's item count as the cost, and the decision happens before any item runs: if the account has 120 units left and the batch needs 500, reject the whole batch with <Status code={429} />, `Retry-After` and a `detail` that says how many items would fit. Processing the first 120 and failing the rest would be legal, but it turns a quota decision into 380 per-item failures that Larkspur has to sort from real ones. The `RateLimit` headers then show the remaining quota in items, which is the unit the client is spending.
+
+<Compare>
+<Prefer>
+
+```text
+POST /stock-updates (500 items)  → cost 500 of 1,000 items a minute
+POST /stock-updates (500 items)  → cost 500
+POST /stock-updates (500 items)  → 429, Retry-After: 40
+```
+
+</Prefer>
+<Avoid>
+
+```text
+POST /stock-updates (500 items)  → cost 1 of 100 requests a minute
+… repeated 100 times …          → 50,000 writes, no 429
+```
+
+</Avoid>
+</Compare>
+
+## Read in bulk with ids, up to a limit
+
+The mobile app renders a basket with twelve products and fetches each one separately, so a slow train connection pays twelve round trips. Reads need bulk too, and the cheapest version is a filter on the collection you already have:
+
+```http
+GET /products?ids=sku-1042,sku-1043,sku-1077
+```
+
+Use the comma-separated multi-value format from [Filtering](/collections/filtering/), and cap the list, say at 100, with a <Status code={422} /> above it. Because it's a filter, the answer is a normal page of the collection: products that exist come back, unknown IDs are absent, and the client compares what it sent with what it got. Google's AIP-231 `BatchGet` takes the stricter line, failing the whole call if any resource is missing. That suits APIs where a missing ID is a bug; for a basket, where a product may have been withdrawn since the page loaded, the filter's forgiveness is what the app wants.
+
+Past the cap, or when a URL of 5,000 SKUs would exceed what proxies accept, move the list into a body on a [search resource](/collections/filtering/), `POST /products/search` with `{ "ids": [ … ] }`, and paginate the result. Don't solve it by raising the cap: 5,000 SKUs make a URL tens of kilobytes long, and some proxy will cut it off before Fernhill ever sees it.
+
+<RuleGroup>
+
+<Rule guide="zalando" id="152" level="MUST" title="Use code 207 for batch or bulk requests" />
+<Rule guide="google" id="231" title="Batch methods: Get" />
+<Rule guide="google" id="233" title="Batch methods: Create" />
+
+</RuleGroup>
+
+## What to take away
+
+A bulk endpoint is a promise about every item in it: what happens when one fails, how the client finds out which, and how it retries that one without repeating the rest. Get the per-item reference and the per-item rate-limit charge right and Larkspur's ten-minute sync becomes ten requests. The retry half of that promise rests on [idempotency](/reliability/idempotency/), and the monitoring half on reading inside the <Status code={207} />, which [Observability](/reliability/observability/) covers.
+
+<SelfCheck>
+
+<Question
+  q="A best-effort batch of 500 stock updates contains one unknown SKU and one item with a negative quantity. What should the response be?"
+  answer={2}
+  options={[
+    {
+      text: "422 for the whole batch, because it contains invalid items.",
+      why: "That fits an atomic batch. In a best-effort batch the other 498 items are valid and independent, so rejecting them forces a pointless resend.",
+    },
+    {
+      text: "200 with the 498 successes, leaving out the two failures.",
+      why: "The client can't tell a missing item from a lost one, and never learns what to fix.",
+    },
+    {
+      text: "207 with a result for every item, carrying each item's <code>ref</code>: 404 for the unknown SKU, 422 for the negative quantity.",
+      why: "Every item gets an outcome the client can match by reference and act on.",
+    },
+    {
+      text: "201, because most items succeeded.",
+      why: "Nothing was created, and the two failures disappear.",
+    },
+  ]}
+/>
+
+<Question
+  q="Your rate limit is 100 requests per minute, and each bulk request may carry up to 500 items. How should a bulk request be charged?"
+  answer={1}
+  options={[
+    {
+      text: "As one request, since it is one HTTP call.",
+      why: "Then a bulk endpoint multiplies the effective write limit by 500, and the limit stops protecting anything.",
+    },
+    {
+      text: "By its item count, decided before any item runs, rejecting the whole batch with 429 if the quota can't cover it.",
+      why: "The cost matches the work, and the client gets one clear answer instead of hundreds of per-item quota failures.",
+    },
+    {
+      text: "As one request, but cap the batch at 10 items.",
+      why: "Smaller batches shrink the loophole without closing it, and give up most of the benefit of bulk.",
+    },
+    {
+      text: "By item count, processing items until the quota runs out and failing the rest.",
+      why: "Legal, but it mixes quota exhaustion with real item failures, which the client then has to tell apart.",
+    },
+  ]}
+/>
+
+</SelfCheck>

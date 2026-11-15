@@ -76,7 +76,22 @@ For years, experimental headers wore an `X-` prefix so they wouldn't collide wit
 
 ## Location and Content-Location mean different things
 
-`Location` points somewhere else: the resource just created (with <Status code={201} />), a status monitor (with <Status code={202} />) or a redirect target. `Content-Location` says the enclosed body is a representation of the given URL. You'll rarely need it; its one useful API case is a `POST` that returns the full state of another resource, which then becomes cacheable under that URL.
+The two names look like a pair, and they answer different questions. `Location` points somewhere else: the resource just created (with <Status code={201} />), a status monitor (with <Status code={202} />) or a redirect target. It says "go there". `Content-Location` describes the body in this response: "what you're holding is a representation of that URL". One is a pointer, the other is a label on the parcel.
+
+Here's a create where the two agree. The mobile app posts an order and gets the order back:
+
+```http
+HTTP/1.1 201 Created
+Location: https://api.example.com/orders/ord_42
+Content-Location: https://api.example.com/orders/ord_42
+Content-Type: application/json
+
+{"id": "ord_42", "status": "pending", "total": {"amount": "129.00", "currency": "EUR"}}
+```
+
+`Location` tells the app where the new order lives. `Content-Location` adds the promise that this body is the order's current state, not a receipt or a "created" message, so the app can store it as its copy of `ord_42` without a follow-up `GET` (RFC 9110 §8.7). Without that header, the body could legitimately be anything.
+
+They differ when the body represents a resource other than the one you asked for and nothing has moved. A `GET /customers/cus_7/orders/latest` that answers <Status code={200} /> with `Content-Location: https://api.example.com/orders/ord_42` says "the latest order is this one, and here it is"; there's no `Location`, because the client isn't being sent anywhere. The same goes for a `POST` to a search resource whose results have their own URL. You'll rarely need `Content-Location` beyond these cases, and it never replaces `Location` on a 201. Zalando goes further and discourages `Content-Location` altogether, because its caching semantics are easy to get wrong. If you leave it out, document that the 201 body is the full resource, and clients get the same guarantee from the contract instead of the header.
 
 Make `Location` absolute. Relative references have been allowed since RFC 7231, but clients resolve them against whatever URL they used, and behind a gateway that may not be the URL you think.
 

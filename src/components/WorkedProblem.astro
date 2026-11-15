@@ -2,17 +2,19 @@
 /**
  * A collapsed exercise: "Design" (build something) or "Review" (find the bug).
  * Put the prompt and starter code in the body and the answer in <Solution>.
+ * Practice pages also use "Hint" and "Answer" (a model answer, no <Solution> needed).
  */
 interface Props {
-  kind: "Design" | "Review";
+  kind: "Design" | "Review" | "Hint" | "Answer";
   title: string;
 }
 const { kind, title } = Astro.props;
+const label = kind === "Hint" ? "Hint" : kind === "Answer" ? "Model answer" : `Worked problem · ${kind}`;
 ---
 
-<details class="fg-fold fg-problem">
+<details class="fg-fold fg-problem" data-kind={kind.toLowerCase()}>
   <summary>
-    <span class="fg-fold__title">Worked problem · {kind}</span>
+    <span class="fg-fold__title">{label}</span>
     <span class="fg-fold__meta">{title}</span>
   </summary>
   <div class="fg-fold__body"><slot /></div>

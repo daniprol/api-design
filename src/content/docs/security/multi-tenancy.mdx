@@ -1,0 +1,255 @@
+---
+title: Multi-tenancy
+description: Derive the tenant from the verified token, never from a client-supplied header alone. Put the tenant in every query and let row-level security catch the query that forgets, answer cross-tenant lookups with 404, and give each tenant its own limits and webhook subscriptions.
+sources:
+  - label: PostgreSQL RLS
+    title: "PostgreSQL documentation: Row Security Policies"
+    url: https://www.postgresql.org/docs/current/ddl-rowsecurity.html
+    accessed: 2026-11
+  - label: AWS, 2020
+    title: "Michael Beardsley: Multi-tenant data isolation with PostgreSQL Row Level Security (AWS Database Blog, 2020)"
+    url: https://aws.amazon.com/blogs/database/multi-tenant-data-isolation-with-postgresql-row-level-security/
+    accessed: 2026-11
+  - label: Wiz, 2021
+    title: "Wiz: How we broke the cloud with two lines of code: the full story of ChaosDB (2021)"
+    url: https://www.wiz.io/blog/how-we-broke-the-cloud-with-two-lines-of-code-the-full-story-of-chaosdb
+    accessed: 2026-11
+  - label: Zalando #226
+    title: "Zalando RESTful API Guidelines: Document implicit response filtering"
+    url: https://opensource.zalando.com/restful-api-guidelines/#226
+    accessed: 2026-11
+related:
+  - security/auth
+  - security/attacks
+  - security/limits
+  - events/webhooks
+---
+
+import {
+  InBrief,
+  Note,
+  Compare,
+  Prefer,
+  Avoid,
+  Rule,
+  RuleGroup,
+  SelfCheck,
+  Question,
+  Status,
+  Tabs,
+  TabItem,
+} from "@components/kit";
+
+<InBrief>
+
+- Take the tenant from the verified token. A tenant in the URL path is fine for addressing, but check it against the token's memberships; a client-supplied header alone is never proof.
+- Put `tenant_id` on every tenant-owned row and in every query, and add row-level security so the query that forgets returns nothing.
+- Answer another tenant's object with <Status code={404} />, and make IDs globally unique and unguessable, not per-tenant counters.
+- Key rate limits, concurrency limits and job queues by tenant, so one large customer can't slow everyone else down.
+- Scope webhook subscriptions, signing secrets and events to a tenant, and check the tenant again at delivery time.
+
+</InBrief>
+
+Fernhill launches wholesale accounts: outdoor clubs and small shops buy at trade prices, each organisation with several staff logins. Three weeks in, the buyer for a climbing club in Leeds exports her order history and finds forty orders from a ski shop in Innsbruck. The wholesale portal sends an `X-Tenant-ID` header with every request, the API believed it, and a browser extension that "remembers your last organisation" had remembered the wrong one. Nobody attacked anything. A tenant boundary that a client can name is one a client can cross by accident, and an attacker on purpose.
+
+## Derive the tenant from the token
+
+A tenant is a second ownership layer above the customer. On the single-customer API, [Authentication and authorization](/security/auth/) asks whether `ord_42` is yours. Now the question has two parts: which organisation are you acting for, and is `ord_42` that organisation's? The first part is where most designs go wrong, because there are several places to put the tenant and they differ in who controls them.
+
+| Where the tenant lives      | Who controls it               | Use it when                                                        |
+| --------------------------- | ----------------------------- | ------------------------------------------------------------------ |
+| Token claim (`org_id`)      | Your authorisation server     | Always, as the source of truth                                     |
+| URL path (`/orgs/org_14/…`) | The client, checked by you    | A user belongs to several organisations and must pick one per call |
+| Subdomain (`org14.api.…`)   | The client, checked by you    | Branded portals; the same membership check applies                 |
+| Header (`X-Tenant-ID`)      | The client, and nobody checks | Never as proof; at most as a hint you verify against the token     |
+
+The token wins because it's the only one the client can't edit: the authorisation server put the claim there and signed it. The path is a reasonable way for an accountant who works for three clubs to say which one she means today, but it's a request, not a credential. Check it against the memberships in the token, or `/orgs/org_15/orders` is BOLA with an extra step. The header has the same problem as the path and none of its benefits: it's invisible in URLs and access logs, and it's exactly the kind of value a proxy or a well-meaning browser extension fills in.
+
+<Compare>
+<Prefer>
+
+```text
+Authorization: Bearer eyJ…   (claims: sub=usr_3, org_id=org_14)
+GET /orders
+→ the tenant is org_14, because the signed token says so
+```
+
+</Prefer>
+<Avoid>
+
+```text
+Authorization: Bearer eyJ…   (claims: sub=usr_3)
+X-Tenant-ID: org_15
+GET /orders
+→ the tenant is whatever the client typed
+```
+
+</Avoid>
+</Compare>
+
+_Assumes:_ verified JWTs carrying `org_id` (the active organisation) and `org_ids` (all memberships); authentication keeps the verified `claims` on the principal (in DRF, on `request.auth`).
+
+Here's the resolution in one place. Notice that a path tenant the caller doesn't belong to produces the same 404 as one that doesn't exist.
+
+<Tabs syncKey="stack">
+<TabItem label="FastAPI">
+
+```python
+def tenant(org_id: str | None = None, me: Principal = Depends(principal)) -> str:
+    """org_id comes from the path on /orgs/{org_id}/… routes, else from the token."""
+    if org_id is None:
+        return me.claims["org_id"]
+    if org_id not in me.claims.get("org_ids", []):
+        raise problem(404, "organisation-not-found")  # same answer as a typo
+    return org_id
+
+@app.get("/orgs/{org_id}/orders")
+def list_orders(t: str = Depends(tenant)):
+    return orders.list_for_tenant(t)  # every query takes the tenant as its first argument
+```
+
+</TabItem>
+<TabItem label="Django">
+
+```python
+class OrderViewSet(viewsets.ReadOnlyModelViewSet):
+    serializer_class = OrderSerializer
+
+    def get_queryset(self):
+        claims = self.request.auth.claims  # set by the JWT authentication class
+        org_id = self.kwargs.get("org_id")  # present on /orgs/<org_id>/… routes
+        if org_id is None:
+            org_id = claims["org_id"]
+        elif org_id not in claims.get("org_ids", []):
+            raise NotFound()  # same answer as a typo
+        return Order.objects.filter(tenant_id=org_id)
+```
+
+</TabItem>
+<TabItem label="Hono">
+
+```ts
+app.use("/orgs/:orgId/*", async (c, next) => {
+  const { org_ids = [] } = c.get("jwtPayload");
+  const orgId = c.req.param("orgId");
+  if (!org_ids.includes(orgId)) return problem(c, 404, "organisation-not-found");
+  c.set("tenant", orgId);
+  await next();
+});
+
+app.get("/orgs/:orgId/orders", async (c) => c.json(await orders.listForTenant(c.get("tenant"))));
+```
+
+</TabItem>
+</Tabs>
+
+## Scope every query, and let the database catch the one that forgets
+
+Once the tenant is known, every tenant-owned table carries a `tenant_id` and every query filters on it. That's the same discipline as scoping by customer, and it fails the same way: by one forgotten `WHERE` in a reporting query written at 6 p.m. on a Friday. So add a layer that doesn't depend on the query author. PostgreSQL's row-level security attaches a policy to the table, and the database adds the condition to every statement, including the one written on Friday.
+
+Here's the policy. Notice `FORCE`: without it, the table's owner bypasses the policy, and applications often connect as the owner.
+
+```sql
+ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE orders FORCE ROW LEVEL SECURITY;  -- the owner is subject to it too
+
+CREATE POLICY tenant_isolation ON orders
+  USING      (tenant_id = current_setting('app.tenant_id', true))
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+```
+
+The application sets the tenant at the start of each transaction with `SELECT set_config('app.tenant_id', $1, true)`. The final `true` makes it local to the transaction, so a pooled connection can't carry one tenant's setting into the next request, which is the bug a session-level `SET` invites. If a code path forgets to set it, the setting is empty or unset and the policy matches no rows: the failure is an empty list, not someone else's orders. Connect as a role that neither owns the tables nor has `BYPASSRLS`, and keep migrations and support tooling on separate, audited roles.
+
+Row-level security is the backstop, not the plan. Keep the explicit `tenant_id` filter in queries too: it's what the indexes are built on, and it makes intent visible in review. Put `tenant_id` first in composite indexes and inside unique constraints, so one club's `order_reference` can't collide with another's.
+
+Isolation is a spectrum, and shared tables with row-level security sit at the cheap end. A schema or database per tenant costs more to run and migrate, and buys a stronger boundary and per-tenant backups. Most shops start shared and move their largest or most regulated tenants out later. The API shouldn't change when they do, which is one more reason the tenant comes from the token rather than from a hostname that encodes where the data lives.
+
+That boundary is only as strong as the weakest shared component, and Microsoft learnt it on a managed database.
+
+<Note kind="incident" title="ChaosDB" year="2021" source="https://www.wiz.io/blog/how-we-broke-the-cloud-with-two-lines-of-code-the-full-story-of-chaosdb">
+
+In August 2021, researchers at Wiz reported that a Jupyter Notebook feature, enabled automatically on Azure Cosmos DB accounts, let them escalate privileges inside the shared infrastructure. From there they obtained credentials that gave full access to other customers' databases: several thousand Azure customers, many in the Fortune 500. Microsoft mitigated it within 48 hours, but customers still had to rotate keys themselves. Every shared component that can see more than one tenant is part of the boundary.
+
+</Note>
+
+## Answer 404 across tenants, and never number per tenant
+
+When the club in Leeds asks for `ord_9310`, which belongs to the shop in Innsbruck, the answer is <Status code={404} />, exactly as if the order didn't exist. A <Status code={403} /> confirms that the ID is real and lets a curious tenant map a competitor's order volume. [Status codes](/http/status-codes/) has the general rule; across tenants it's not optional.
+
+The IDs themselves need two properties. They must be unguessable, as [Attacks](/security/attacks/) shows, and they must be globally unique, not unique within a tenant. Per-tenant counters are tempting because every club gets a tidy order 1. Then a support engineer pastes `ord_1` into the admin tool, a cache keyed by ID serves one tenant's order to another, a log line can't say which order it means, and a tenant moved to its own database brings IDs that collide on the way back. Give tenants a human-friendly `order_number` if they want one, scoped and displayed per tenant, and keep the API's `ord_` IDs global.
+
+## Give each tenant its own limits
+
+The ski shop in Innsbruck integrates its till system and, on the first morning, imports two years of history through `POST /orders` with forty API keys. Every other wholesale customer's requests slow to a crawl. Per-client rate limits didn't help, because each of the forty keys was within its own quota. This is the noisy neighbour, and the fix is to count by the thing that should be fair: the tenant.
+
+Key rate limits on the tenant as well as the client, so forty keys share one budget. Give expensive endpoints a per-tenant concurrency limit, and run background work through per-tenant queues or a fair scheduler, so a big import waits its turn instead of starving everyone else's order confirmations. Plans can then differ per tenant, which is how wholesale tiers usually get priced anyway. [Abuse and resource limits](/security/limits/) covers the mechanics and the <Status code={429} /> response; [Bulk operations](/collections/bulk/) gives the till import a better door than forty keys.
+
+## Scope webhooks and events to the tenant
+
+Larkspur Logistics now ships for a dozen wholesale customers, and wants `order.shipped` webhooks for all of them. The tempting design is one subscription, owned by Larkspur, that receives every tenant's events. Then a club ends its contract with Larkspur, and Larkspur keeps receiving its orders, because the subscription was authorised once and never asked again.
+
+Make each subscription belong to a tenant, created with that tenant's grant, and signed with a per-tenant secret, so revoking one relationship revokes exactly one stream. Put `tenant_id` in every event envelope. And check at delivery time, not only at subscribe time, that the subscription's tenant matches the event's and that the grant still exists. [Webhooks](/events/webhooks/) covers signing and delivery; tenancy adds one question to the sender's loop: whose event is this, and are they still allowed to hear it?
+
+<RuleGroup>
+
+<Rule guide="zalando" id="226" level="MUST" title="Document implicit response filtering">
+
+A tenant-scoped `GET /orders` returns only the caller's organisation's orders. Say so in the API description, so nobody mistakes a filtered list for a complete one.
+
+</Rule>
+
+</RuleGroup>
+
+## What to take away
+
+The tenant is part of the caller's identity, so it comes from the token and nowhere else, and every layer below re-checks it: the query, the database policy, the limiter, the webhook sender. Do that, and an accidental header or a forgotten `WHERE` produces an empty list instead of an incident. Tenants also outlive the API version they integrated against, and changing a contract under hundreds of them without breaking one is [compatibility](/evolution/compatibility/).
+
+<SelfCheck>
+
+<Question
+  q="A user belongs to organisations <code>org_14</code> and <code>org_15</code>. Which design lets them choose which one they act for, safely?"
+  answer={3}
+  options={[
+    {
+      text: "An <code>X-Tenant-ID</code> header that the API trusts.",
+      why: "Nothing ties the header to the caller; any value works, including organisations they don't belong to.",
+    },
+    {
+      text: "A path segment <code>/orgs/{org_id}/</code>, with no further check because the user is authenticated.",
+      why: "Authentication says who they are, not which organisations they belong to. This is BOLA one level up.",
+    },
+    {
+      text: "Separate API keys per organisation, with the tenant taken from a query parameter.",
+      why: "The query parameter is as forgeable as a header, and keys don't help if the tenant isn't derived from them.",
+    },
+    {
+      text: "A path segment checked against the token's <code>org_ids</code> claim, with 404 when it isn't listed.",
+      why: "The client picks; the signed token decides whether the pick is allowed.",
+    },
+  ]}
+/>
+
+<Question
+  q="A reporting query forgets <code>WHERE tenant_id = …</code>. The table has row-level security with <code>FORCE</code>, and the request set <code>app.tenant_id</code> with <code>set_config(…, true)</code>. What happens?"
+  answer={0}
+  options={[
+    {
+      text: "The policy adds the tenant condition, and the report shows only the caller's rows.",
+      why: "That's the backstop working: the database applies the policy to every statement.",
+    },
+    {
+      text: "Every tenant's rows are returned, because the policy only applies to writes.",
+      why: "<code>USING</code> filters reads; <code>WITH CHECK</code> covers writes.",
+    },
+    {
+      text: "The query fails with a syntax error.",
+      why: "The query is valid; row-level security changes what it can see.",
+    },
+    {
+      text: "Every tenant's rows are returned, because the application owns the table.",
+      why: "<code>FORCE ROW LEVEL SECURITY</code> applies the policy to the owner too.",
+    },
+  ]}
+/>
+
+</SelfCheck>

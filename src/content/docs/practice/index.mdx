@@ -1,0 +1,81 @@
+---
+title: How the challenges work
+description: Four design challenges set at Fernhill, each with a brief, hints and a model answer. Design first, then compare, then review your own work with the checklist.
+related:
+  - foundations/principles
+  - evolution/specs-in-ci
+---
+
+import { InBrief, Steps, CardGrid, LinkCard } from "@components/kit";
+
+<InBrief>
+
+- Reading about idempotency keys is not the same as deciding where one goes. These four challenges make you decide.
+- Each one is a real request from Fernhill, with a deadline, constraints and things deliberately out of scope.
+- Write your design before you open anything collapsed. The hints are for when you are stuck, not for when you are curious.
+- Every model answer follows the house conventions to the letter, and explains each choice and what it cost.
+- A finished design, with its trade-offs written down, is a better portfolio piece than any certificate.
+
+</InBrief>
+
+You can read the whole Guide, nod at every page, and still freeze in front of an empty `openapi.yaml` on a Tuesday afternoon. Recognising a good design and producing one are different skills, and only the second gets you through a design review. These challenges are where you practise it: the same shop, the same partners and the same slow payment provider as the rest of the Guide, but this time the decisions are yours.
+
+## Work through a challenge in five passes
+
+Give each challenge an hour or two. The order matters more than the time: the value is in committing to a design before you see someone else's.
+
+<Steps>
+
+1. **Read the brief twice.** The first time for what Fernhill wants; the second for what it didn't say. The constraints and the non-goals cut the problem down to something you can finish.
+
+2. **Write it down.** An OpenAPI 3.1 excerpt is ideal, because it forces you to name every field and status code. Request and response sketches in plain HTTP are fine too. Hand in what the brief asks for: usually the resources and their URLs, the main operations, two example exchanges and the error cases.
+
+3. **Open the hints only when you are stuck.** Each hint nudges one decision and links the Guide topic behind it. Open one, go back to your design, and open the next only if you need it.
+
+4. **Compare with the model answer.** It is one good answer, not the only one. Where yours differs, read the design note for that choice and decide whether your trade-off is worse, different, or better for a reason you can state.
+
+5. **Review yourself.** Each challenge ends with targeted questions taken from the [review checklist](/reference/checklist/). Answer them against your own design, not the model answer. Anything you can't answer is the next page to read.
+
+</Steps>
+
+If you want a feel for how a review goes before you start, read the [annotated design review](/guide/design-review/) first. It is the same exercise run backwards: a finished draft, and twenty findings against it.
+
+## The four challenges
+
+They grow in difficulty, and each leans on a different part of the Guide. You can do them in any order, but the later ones assume you are comfortable with the ideas the earlier ones exercise.
+
+| Challenge                                                 | Difficulty   | Topics it exercises                                                                                     |
+| --------------------------------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------- |
+| [1. Returns and refunds](/practice/returns/)              | Intermediate | Resources and state transitions, partial operations, money, idempotency, long-running work, events      |
+| [2. Larkspur's inventory sync](/practice/inventory-sync/) | Intermediate | Bulk operations, idempotency, revisions and concurrency, compatibility, rate limits, partner versioning |
+| [3. Back-in-stock alerts](/practice/back-in-stock/)       | Advanced     | Subscriptions as resources, webhooks, streaming, consuming events, privacy                              |
+| [4. Gift cards](/practice/gift-cards/)                    | Advanced     | Money, atomic updates and `If-Match`, idempotency, enumeration, BOLA, business-flow abuse               |
+
+<CardGrid>
+
+<LinkCard
+  title="1. Returns and refunds"
+  description="A customer sends back half an order, and the refund has to survive the slow payment provider."
+  href="/practice/returns/"
+/>
+<LinkCard
+  title="2. Larkspur's inventory sync"
+  description="Forty thousand stock levels every night, from a partner that never upgrades."
+  href="/practice/inventory-sync/"
+/>
+<LinkCard
+  title="3. Back-in-stock alerts"
+  description="Customers, partners and the mobile app all want to know the moment the tent is back."
+  href="/practice/back-in-stock/"
+/>
+<LinkCard
+  title="4. Gift cards"
+  description="Bearer money with a printed code: spend it partially, never twice, and never let a bot guess it."
+  href="/practice/gift-cards/"
+/>
+
+</CardGrid>
+
+## What to take away
+
+The Guide tells you what good looks like; these challenges tell you whether you can produce it under a deadline. Start with [returns and refunds](/practice/returns/): it touches the most topics at moderate depth, and the refund half of it comes back in the gift card challenge.

@@ -45,12 +45,16 @@ One line per decision, in the order a reviewer meets them. Each section links to
 - [ ] Opaque cursors and a `next` link; total counts are opt-in.
 - [ ] Conventional filter and `sort` parameters; complex searches as a resource. [Filtering and sorting](/collections/filtering/)
 - [ ] Compression on; `ETag` and explicit `Cache-Control` on cacheable reads. [Caching](/collections/caching/)
+- [ ] Bulk endpoints document a maximum item count, report a result per item keyed by the client's reference, and charge rate limits per item. [Bulk operations](/collections/bulk/)
 
 ## Reliability
 
 - [ ] Every unsafe `POST` is idempotent through a natural key or an `Idempotency-Key`. [Idempotency](/reliability/idempotency/)
 - [ ] Concurrent writes are protected with `ETag` and `If-Match`, answering `412` or `428`. [Concurrency control](/reliability/concurrency/)
 - [ ] Slow work returns `202` and an operation resource; batches report per item. [Long-running operations](/reliability/long-running-operations/)
+- [ ] Every response carries a trace ID, in a header and in problem bodies. [Observability](/reliability/observability/)
+- [ ] Metrics are labelled by route template and client ID; SLOs are measured at the edge.
+- [ ] Logs never contain tokens, `Authorization` headers, card data or personal data from query strings.
 
 ## Security
 
@@ -58,8 +62,13 @@ One line per decision, in the order a reviewer meets them. Each section links to
 - [ ] Every object access checks that this caller may see this object.
 - [ ] Input models list writable fields explicitly and reject unknown ones.
 - [ ] Page size, body size, array lengths and execution time are bounded. [Limits](/security/limits/)
-- [ ] Rate limits per client, `429` with `Retry-After`, and quotas in `RateLimit` headers.
+- [ ] Rate limits per client, `429` with `Retry-After`, and quotas in `RateLimit` and `RateLimit-Policy` headers in the current draft syntax.
+- [ ] Secrets such as gift card codes and tokens never appear in URLs, and failed guesses are limited per account across every endpoint that accepts them. [Gift cards challenge](/practice/gift-cards/)
 - [ ] Sensitive business flows have flow-level limits.
+- [ ] A cross-account test covers every route that takes an object ID. [Attacks](/security/attacks/)
+- [ ] Outbound requests to client-supplied URLs go through an egress proxy that checks the resolved IP, with redirects off.
+- [ ] The tenant comes from the token, never from a header alone; cross-tenant access answers `404`. [Multi-tenancy](/security/multi-tenancy/)
+- [ ] Tenant isolation is enforced below the application too, for example with row-level security, and limits apply per tenant.
 
 ## Evolution
 
@@ -68,9 +77,12 @@ One line per decision, in the order a reviewer meets them. Each section links to
 - [ ] If versioned: major versions only, with a published support window. [Versioning](/evolution/versioning/)
 - [ ] Deprecations are in the spec and on the wire, with usage measured by client. [Deprecation](/evolution/deprecation/)
 
-## Events and webhooks
+## Events, webhooks and streams
 
 - [ ] Event types are registered, owned and versioned, with `eid`, `event_type`, `occurred_at` and a schema version. [Event design](/events/event-design/)
 - [ ] Events are published through an outbox, partitioned by entity, with an ordering field.
 - [ ] Events carry identifiers, not personal data. [Consuming events](/events/consuming-events/)
 - [ ] Webhooks are signed over ID, timestamp and body, retried for days, and sent from workers that can't reach internal networks. [Webhooks](/events/webhooks/)
+- [ ] Streams use Server-Sent Events unless traffic is genuinely two-way; every event has an `id` so clients resume with `Last-Event-ID`. [Streaming](/events/streaming/)
+- [ ] Streams check auth before the first byte, send heartbeats, send a jittered `retry`, cap connections per client, and report mid-stream errors as events.
+- [ ] No long-lived tokens in stream URLs.

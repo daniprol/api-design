@@ -1,0 +1,591 @@
+---
+title: "Challenge 3: Back-in-stock alerts"
+description: Design back-in-stock alerts for customers, partners and the mobile app. Make each alert a resource keyed by customer and SKU, sign thin webhooks for partners, stream coarse availability to the app, and keep personal data inside Fernhill.
+sources:
+  - label: RFC 8058
+    title: "RFC 8058: Signaling One-Click Functionality for List Email Headers (2017)"
+    url: https://www.rfc-editor.org/rfc/rfc8058
+    accessed: 2026-11
+  - label: Standard Webhooks
+    title: "Standard Webhooks specification"
+    url: https://www.standardwebhooks.com/
+    accessed: 2026-11
+  - label: HTML SSE
+    title: "HTML Living Standard: Server-sent events"
+    url: https://html.spec.whatwg.org/multipage/server-sent-events.html
+    accessed: 2026-11
+  - label: RFC 7396
+    title: "RFC 7396: JSON Merge Patch"
+    url: https://www.rfc-editor.org/rfc/rfc7396
+    accessed: 2026-11
+related:
+  - modelling/resources
+  - events/webhooks
+  - events/streaming
+  - events/consuming-events
+  - reliability/concurrency
+  - security/limits
+---
+
+import { InBrief, Note, WorkedProblem, Status } from "@components/kit";
+
+<InBrief>
+
+- **Difficulty:** advanced. Allow 90 to 120 minutes.
+- **You design:** "Notify me" alerts for customers, webhooks for partners, and live availability for the mobile app, all driven by stock changes.
+- **It exercises:** [subscriptions as resources](/modelling/resources/), [webhooks](/events/webhooks/), [streaming](/events/streaming/), [consuming events](/events/consuming-events/) and privacy.
+- **The trap:** one stock event, 4,000 emails, three tents.
+
+</InBrief>
+
+## The brief
+
+Fernhill's best-selling two-person tent sold out in September. Since then, four thousand customers have written in asking when it's back, and marketing has kept their email addresses in a spreadsheet that nobody is comfortable about. The next delivery reaches Larkspur's warehouse on 2 March, and marketing wants a "Notify me" button in the app and on the web shop before it does. The spec has to be ready by **1 February**.
+
+Two more teams have joined the queue since. A gear-comparison site and a climbing club's shop both want a webhook when Fernhill products they list come back in stock. And the app team wants product pages to flip from "Sold out" to "Add to basket" while the customer is looking at them, because the last delivery sold out again in eleven minutes and people who had the page open never saw it change. Priya has one request of her own: whatever you design, it must not send four thousand emails for three tents.
+
+## Requirements
+
+1. A signed-in customer can ask to be told when a SKU is back, by email, by push or both, and can list and cancel their alerts.
+2. An alert fires at most once. Customers who want another one ask again.
+3. Tapping "Notify me" twice, or on two devices, must not create two alerts or send two messages.
+4. Stock that flickers back for a minute, such as one returned unit sold again at once, must not trigger a wave of messages.
+5. When 200 units arrive for 4,000 subscribers, notifications go out in a way that doesn't make 3,800 people angry.
+6. Partners choose which SKUs they follow and get a webhook when one becomes available or sells out.
+7. Product pages in the app update within a few seconds while open, including after the connection drops on a train.
+8. Partners never learn who subscribed. Email unsubscribe takes one click. Alerts are deleted 180 days after they fire or are cancelled, and when the customer deletes their account.
+
+**Constraints.** Stock changes reach you as `shop.stock-level-changed` events from [challenge 2](/practice/inventory-sync/): `{ warehouse_id, sku, revision }`, delivered at least once and not always in order. Email and push go through Fernhill's existing notification service, which you call internally. Product availability is public information; exact stock counts are not.
+
+**Non-goals.** Price-drop alerts, SMS, holding a unit for notified customers, and partners subscribing on behalf of their own users.
+
+## What to hand in
+
+- The resources and URLs for customer alerts, partner webhook endpoints and live availability.
+- An OpenAPI 3.1 excerpt for the customer and partner operations, and a description of the stream format.
+- Two example exchanges: a customer subscribing (twice); and a partner webhook delivery.
+- The error cases.
+- A short description of the pipeline from a stock event to a sent message: deduplication, ordering, debouncing, fan-out.
+- What personal data goes where, and what never leaves Fernhill.
+
+## Hints
+
+Have a go first. Each fold below unlocks one decision.
+
+<WorkedProblem kind="Hint" title="1. The alert already has a name">
+
+A customer can follow a SKU once. That pair, customer and SKU, is a natural key, and a natural key in the URL makes `PUT` idempotent for free: GitHub's star button is the classic example in [resources and actions](/modelling/resources/). Ask what a second tap should return, and what "ask again after it fired" looks like on the wire.
+
+</WorkedProblem>
+
+<WorkedProblem kind="Hint" title="2. Stock events are a hint, not the truth">
+
+Events arrive twice and out of order. A consumer that acts on each one as it comes will email people about stock that was already sold again. Deduplicate on `eid`, drop anything older than the revision you hold, and when in doubt read the current state instead of trusting the payload. [Consuming events](/events/consuming-events/) has every piece.
+
+</WorkedProblem>
+
+<WorkedProblem kind="Hint" title="3. Partners get the event, not the people">
+
+A partner webhook needs a signature, a stable message ID, retries for days and a sender that can't be pointed at Fernhill's internal network. It doesn't need anyone's email address, or even how many people are waiting. Keep the payload thin. [Webhooks](/events/webhooks/) covers delivery; ask yourself what an endpoint's list of followed SKUs looks like when two people at the partner edit it at once, and read [concurrency control](/reliability/concurrency/).
+
+</WorkedProblem>
+
+<WorkedProblem kind="Hint" title="4. Availability is state, so stream state">
+
+The app doesn't need every flicker it missed in a tunnel; it needs to know whether the tent is available now. That changes how you resume a dropped stream. And think about what you stream: an exact count of 3 invites scrapers and changes every few seconds, while "low stock" is honest and calm. [Streaming and real-time](/events/streaming/) compares the transports.
+
+</WorkedProblem>
+
+<WorkedProblem kind="Hint" title="5. Unsubscribe links get clicked by robots">
+
+Mail scanners fetch every link in a message to check it for malware. If a `GET` on your unsubscribe link cancels the alert, the scanner unsubscribes your customers before they read the email. There's a standard for one-click unsubscribe that solves exactly this, and [methods](/http/methods/) explains why `GET` must never change state.
+
+</WorkedProblem>
+
+## Model answer
+
+Commit to your own design before opening this. The design notes give the reasoning and the road not taken for each choice.
+
+<WorkedProblem kind="Answer" title="Open it once you have a design of your own">
+
+A stock alert is a resource identified by customer and SKU, created and re-armed with `PUT`. Partners register webhook endpoints that follow a list of SKUs and receive thin, signed events. The app opens one Server-Sent Events stream of coarse availability for the products on screen, which starts with a snapshot on every connection. Behind all three sits one consumer that turns stock events into availability changes, debounces them, and fans alerts out in waves.
+
+#### Resources
+
+Three audiences, three families of resource. Notice that the customer alert has no ID of its own: the customer and the SKU already identify it.
+
+```text
+/customers/{customer_id}/stock-alerts               GET    list a customer's alerts
+/customers/{customer_id}/stock-alerts/{sku}         PUT    create or re-arm → 201 or 200
+                                                    GET    one alert
+                                                    DELETE cancel → 204
+/stock-alert-unsubscriptions/{token}                POST   one-click unsubscribe (RFC 8058)
+
+/webhook-endpoints                                  GET, POST   partner endpoints
+/webhook-endpoints/{endpoint_id}                    GET, PATCH (If-Match), DELETE
+
+/product-availability?sku=sku-1042,sku-2001         GET    JSON snapshot, or an SSE stream
+                                                           with Accept: text/event-stream
+
+alert:  active ──► notified ──(PUT again)──► active
+```
+
+#### OpenAPI excerpt
+
+Here's the contract for the customer and partner operations. Watch the `PUT`: two success codes, one for creating and one for re-arming or repeating.
+
+```yaml title="stock-alerts-api.yaml (excerpt)"
+openapi: 3.1.0
+info:
+  title: Stock Alerts API
+  version: 1.0.0
+  contact: { name: Team Storefront, url: https://wiki.example.com/teams/storefront }
+  x-api-id: 8c1e3a5b-7d9f-4b2c-a4e6-1f3b5d7a9c2e
+  x-audience: external-public
+paths:
+  /customers/{customer_id}/stock-alerts:
+    parameters: [{ $ref: "#/components/parameters/CustomerId" }]
+    get:
+      security: [{ oauth2: [stock_alerts:read] }]
+      parameters:
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 100, default: 20 },
+          }
+        - { name: cursor, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: A page of the customer's alerts
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/StockAlertPage" } }
+        default: { $ref: "#/components/responses/Problem" }
+  /customers/{customer_id}/stock-alerts/{sku}:
+    parameters:
+      - { $ref: "#/components/parameters/CustomerId" }
+      - { name: sku, in: path, required: true, schema: { type: string, example: sku-1042 } }
+    put:
+      summary: Create an alert, or re-arm one that has fired
+      description: Idempotent. Repeating the same request returns 200 and changes nothing.
+      security: [{ oauth2: [stock_alerts:write] }]
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: "#/components/schemas/StockAlertPut" } }
+      responses:
+        "201":
+          description: Alert created
+          headers: { Location: { schema: { type: string, format: uri } } }
+          content: { application/json: { schema: { $ref: "#/components/schemas/StockAlert" } } }
+        "200":
+          description: Alert re-armed, or already active; nothing else changed
+          content: { application/json: { schema: { $ref: "#/components/schemas/StockAlert" } } }
+        "409": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/ValidationProblem" }
+        default: { $ref: "#/components/responses/Problem" }
+    get:
+      security: [{ oauth2: [stock_alerts:read] }]
+      responses:
+        "200":
+          description: The alert
+          content: { application/json: { schema: { $ref: "#/components/schemas/StockAlert" } } }
+        default: { $ref: "#/components/responses/Problem" }
+    delete:
+      security: [{ oauth2: [stock_alerts:write] }]
+      responses:
+        "204": { description: Alert cancelled and deleted }
+        default: { $ref: "#/components/responses/Problem" }
+  /webhook-endpoints:
+    get:
+      security: [{ oauth2: [webhooks:read] }]
+      parameters:
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 100, default: 20 },
+          }
+        - { name: cursor, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: A page of the caller's webhook endpoints
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/WebhookEndpointPage" } }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      security: [{ oauth2: [webhooks:write] }]
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: "#/components/schemas/WebhookEndpointCreate" } }
+      responses:
+        "201":
+          description: Created. The response is the only time signing_secret is returned.
+          headers: { Location: { schema: { type: string, format: uri } } }
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/WebhookEndpointCreated" } }
+        "422": { $ref: "#/components/responses/ValidationProblem" }
+        default: { $ref: "#/components/responses/Problem" }
+  /webhook-endpoints/{endpoint_id}:
+    parameters:
+      - { name: endpoint_id, in: path, required: true, schema: { type: string, example: whe_12 } }
+    get:
+      security: [{ oauth2: [webhooks:read] }]
+      responses:
+        "200":
+          description: The webhook endpoint
+          headers: { ETag: { schema: { type: string } } }
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/WebhookEndpoint" } }
+        default: { $ref: "#/components/responses/Problem" }
+    patch:
+      security: [{ oauth2: [webhooks:write] }]
+      parameters:
+        - { name: If-Match, in: header, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            { schema: { $ref: "#/components/schemas/WebhookEndpointPatch" } }
+      responses:
+        "200":
+          description: Endpoint updated
+          headers: { ETag: { schema: { type: string } } }
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/WebhookEndpoint" } }
+        "412": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/ValidationProblem" }
+        "428": { $ref: "#/components/responses/Problem" }
+        default: { $ref: "#/components/responses/Problem" }
+    delete:
+      security: [{ oauth2: [webhooks:write] }]
+      responses:
+        "204": { description: Endpoint removed; no further deliveries }
+        default: { $ref: "#/components/responses/Problem" }
+  /product-availability:
+    get:
+      summary: Availability of up to 50 SKUs, as a snapshot or a live stream
+      description: >
+        With Accept: application/json, returns the current availability once.
+        With Accept: text/event-stream, opens a Server-Sent Events stream that starts
+        with one availability event per SKU and then sends one per change.
+      security: []
+      parameters:
+        - name: sku
+          in: query
+          required: true
+          style: form
+          explode: false
+          schema: { type: array, minItems: 1, maxItems: 50, items: { type: string } }
+      responses:
+        "200":
+          description: Current availability, as one JSON snapshot or a live stream
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/AvailabilitySnapshot" } }
+            text/event-stream:
+              {
+                schema:
+                  {
+                    type: string,
+                    description: "Events named availability; data is an Availability object",
+                  },
+              }
+        "422": { $ref: "#/components/responses/ValidationProblem" }
+        "429": { $ref: "#/components/responses/Problem" }
+        default: { $ref: "#/components/responses/Problem" }
+components:
+  securitySchemes:
+    oauth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://auth.example.com/authorize
+          tokenUrl: https://auth.example.com/token
+          scopes:
+            stock_alerts:read: Read your own stock alerts
+            stock_alerts:write: Create, re-arm and cancel your own stock alerts
+        clientCredentials:
+          tokenUrl: https://auth.example.com/token
+          scopes:
+            webhooks:read: Read your organisation's webhook endpoints
+            webhooks:write: Manage your organisation's webhook endpoints
+  parameters:
+    CustomerId:
+      { name: customer_id, in: path, required: true, schema: { type: string, example: cus_7 } }
+    IdempotencyKey:
+      {
+        name: Idempotency-Key,
+        in: header,
+        required: true,
+        schema: { type: string, maxLength: 255 },
+      }
+  responses:
+    Problem:
+      description: Any error
+      content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } }
+    ValidationProblem:
+      description: The body parsed but failed validation; errors lists every failing field
+      content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } }
+  schemas:
+    StockAlertPut:
+      type: object
+      additionalProperties: false
+      required: [channels]
+      properties:
+        channels:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { type: string, enum: [email, push] }
+    StockAlert:
+      type: object
+      required: [customer_id, sku, channels, status, created_at]
+      properties:
+        customer_id: { type: string, example: cus_7 }
+        sku: { type: string, example: sku-1042 }
+        channels: { type: array, items: { type: string } }
+        status:
+          type: string
+          description: "One of active, notified. New values may be added; treat unknown values as active."
+        created_at: { type: string, format: date-time }
+        armed_at: { type: string, format: date-time }
+        notified_at: { type: string, format: date-time, description: Present once notified }
+    StockAlertPage:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/StockAlert" } }
+        next: { type: string, format: uri }
+    WebhookEndpointCreate:
+      type: object
+      additionalProperties: false
+      required: [url, event_types, skus]
+      properties:
+        url:
+          {
+            type: string,
+            format: uri,
+            pattern: "^https://",
+            example: https://partner.example.net/hooks/fernhill,
+          }
+        event_types:
+          type: array
+          minItems: 1
+          items: { type: string, enum: [product.back_in_stock, product.sold_out] }
+        skus:
+          { type: array, minItems: 1, maxItems: 5000, uniqueItems: true, items: { type: string } }
+        description: { type: string, maxLength: 200 }
+    WebhookEndpointPatch:
+      type: object
+      additionalProperties: false
+      description: JSON Merge Patch. Arrays are replaced whole, so send the complete skus list.
+      properties:
+        url: { type: string, format: uri, pattern: "^https://" }
+        event_types:
+          type: array
+          minItems: 1
+          items: { type: string, enum: [product.back_in_stock, product.sold_out] }
+        skus:
+          { type: array, minItems: 1, maxItems: 5000, uniqueItems: true, items: { type: string } }
+        description: { type: string, maxLength: 200 }
+    WebhookEndpoint:
+      type: object
+      required: [id, url, event_types, skus, status, created_at]
+      properties:
+        id: { type: string, example: whe_12 }
+        url: { type: string, format: uri }
+        event_types: { type: array, items: { type: string } }
+        skus: { type: array, items: { type: string } }
+        status:
+          type: string
+          description: "One of enabled, disabled. Disabled after three days of failed deliveries. New values may be added."
+        description: { type: string }
+        created_at: { type: string, format: date-time }
+    WebhookEndpointCreated:
+      allOf:
+        - { $ref: "#/components/schemas/WebhookEndpoint" }
+        - type: object
+          required: [signing_secret]
+          properties:
+            signing_secret: { type: string, example: whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw }
+    WebhookEndpointPage:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/WebhookEndpoint" } }
+        next: { type: string, format: uri }
+    Availability:
+      type: object
+      required: [sku, availability, revision]
+      properties:
+        sku: { type: string, example: sku-1042 }
+        availability:
+          type: string
+          description: "One of in_stock, low_stock, out_of_stock. New values may be added; treat unknown values as out_of_stock."
+        revision: { type: integer, description: Increases on every change for this SKU }
+    AvailabilitySnapshot:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Availability" } }
+    Problem:
+      type: object
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+        errors:
+          type: array
+          description: Present on validation-error, one entry per failing field
+          items:
+            type: object
+            required: [pointer, detail]
+            properties:
+              pointer: { type: string, example: "#/channels/0" }
+              detail: { type: string }
+```
+
+#### Exchange 1: the customer taps "Notify me", twice
+
+The first tap creates the alert. The second, from the customer's tablet a minute later, finds it and changes nothing. Notice the status codes: <Status code={201} /> with `Location` the first time, <Status code={200} /> after.
+
+```http
+PUT /customers/cus_7/stock-alerts/sku-1042 HTTP/1.1
+Authorization: Bearer eyJ…
+Content-Type: application/json
+
+{ "channels": ["push", "email"] }
+
+HTTP/1.1 201 Created
+Location: https://api.example.com/customers/cus_7/stock-alerts/sku-1042
+
+{ "customer_id": "cus_7", "sku": "sku-1042", "channels": ["push", "email"],
+  "status": "active", "created_at": "2026-02-04T19:12:44Z", "armed_at": "2026-02-04T19:12:44Z" }
+
+PUT /customers/cus_7/stock-alerts/sku-1042        (same body, from the tablet)
+→ 200 OK   { …, "status": "active", "armed_at": "2026-02-04T19:12:44Z" }
+```
+
+After the alert fires its `status` is `notified`. The next `PUT` returns <Status code={200} />, sets `status` back to `active` and moves `armed_at`, which is all "ask again" means.
+
+#### Exchange 2: a partner hears the tent is back
+
+The delivery is booked in at 07:40 on 2 March. Five minutes later, once the stock has held, the gear-comparison site's endpoint receives this. It's signed with Standard Webhooks headers and carries only the SKU and a revision:
+
+```http
+POST /hooks/fernhill HTTP/1.1
+Host: partner.example.net
+Content-Type: application/json
+webhook-id: msg_2uY7bF0kQe3Lm9Rt
+webhook-timestamp: 1772437500
+webhook-signature: v1,Hc8xq5Yt3pQ0e6Zs1rWbN4mJ7kV2aF9uLdG0cT8iE5o=
+
+{ "type": "product.back_in_stock", "timestamp": "2026-03-02T07:45:00Z",
+  "data": { "sku": "sku-1042", "revision": 412 } }
+
+HTTP/1.1 204 No Content
+```
+
+The partner verifies the signature over the raw body, deduplicates on `webhook-id`, and calls `GET /product-availability?sku=sku-1042` if it wants the current state. It never sees how many people were waiting, let alone who.
+
+#### The live stream
+
+The app opens one stream for the products on screen. Here's what it receives; notice that it begins with the current state of every SKU, so a reconnect needs nothing from the last connection.
+
+```http
+GET /product-availability?sku=sku-1042,sku-2001 HTTP/1.1
+Accept: text/event-stream
+
+HTTP/1.1 200 OK
+Content-Type: text/event-stream
+Cache-Control: no-cache
+
+retry: 5000
+
+event: availability
+data: {"sku":"sku-1042","availability":"out_of_stock","revision":409}
+
+event: availability
+data: {"sku":"sku-2001","availability":"in_stock","revision":77}
+
+: keep-alive
+
+event: availability
+data: {"sku":"sku-1042","availability":"low_stock","revision":412}
+```
+
+A comment line goes out every 15 seconds so proxies don't close an idle stream, and each connection gets its own jittered `retry` (5,000 milliseconds here) so a deploy doesn't reconnect every phone in the same second. When the train leaves the tunnel, the app reconnects after the `retry` delay and the snapshot puts the page right.
+
+#### Error cases
+
+| Problem `type` (under `/problems/`) | Status                | When                                                                | Extensions     |
+| ----------------------------------- | --------------------- | ------------------------------------------------------------------- | -------------- |
+| `validation-error`                  | <Status code={422} /> | Empty `channels`, unknown channel, more than 50 SKUs, `http://` URL | `errors`       |
+| `sku-not-alertable`                 | <Status code={409} /> | The SKU is in stock now, or discontinued                            | `availability` |
+| `push-not-registered`               | <Status code={409} /> | `push` requested but the customer has no device registered          | none           |
+| `webhook-url-not-allowed`           | <Status code={422} /> | URL resolves to a private, loopback or link-local address           | `pointer`      |
+| `precondition-failed`               | <Status code={412} /> | The endpoint changed since the client read it                       | none           |
+| `precondition-required`             | <Status code={428} /> | `PATCH` without `If-Match`                                          | none           |
+| `too-many-streams`                  | <Status code={429} /> | More than 2 open streams for this client; `Retry-After`             | none           |
+| `about:blank`                       | <Status code={404} /> | Unknown alert, or another customer's alerts                         | none           |
+
+#### From stock event to message
+
+One consumer reads `shop.stock-level-changed`. Every step below exists because of a specific way the naive version fails.
+
+1. **Deduplicate and order.** Record the event's `eid` in the same transaction as any effect, and ignore events whose `revision` is not newer than the one held for that warehouse and SKU.
+2. **Read the truth.** Recompute the SKU's availability from current stock levels across warehouses, rather than from the event payload. Map it to `in_stock`, `low_stock` (5 or fewer) or `out_of_stock`, and if it didn't change, stop.
+3. **Publish availability.** Push the change to open streams and enqueue partner webhooks through an outbox, one `webhook-id` per change per endpoint.
+4. **Debounce alerts.** On `out_of_stock` to anything else, schedule a check five minutes later. If the SKU is still available then, fire; a returned unit that sells again in a minute triggers nothing.
+5. **Fan out in waves.** Take the oldest active alerts, up to ten times the available units, and in one transaction set each to `notified` and insert a notification row keyed by customer, SKU and `armed_at`. Fifteen minutes later, if stock remains, take the next wave.
+
+The notification row's key makes the notification service's work idempotent: a redelivered stock event, a retried wave or a crashed worker can't email the same customer twice for the same arming.
+
+#### Where personal data goes
+
+Alerts store a `customer_id`, a SKU and channels, nothing more. The notification service looks up the email address or push token at send time, so a changed address is respected and an erased customer is skipped. Partners receive SKU-level events only. Stock events, availability streams and webhooks never contain a customer identifier. Every message carries `List-Unsubscribe` with a single-purpose token URL and `List-Unsubscribe-Post: List-Unsubscribe=One-Click`, and a nightly job deletes alerts 180 days after they fired or were cancelled.
+
+#### Design notes
+
+**The alert is keyed by customer and SKU, and created with `PUT`.** The pair is a natural key, so the URL can name the alert before it exists, and `PUT` makes the second tap harmless by definition: no idempotency key, no duplicate check. The alternative, `POST /stock-alerts` returning `alr_…` IDs, needs a unique constraint and a <Status code={409} /> or <Status code={303} /> for duplicates, and a second identifier for the same thing. The cost is that the customer's ID is in the path, so every request checks it against the token's subject, and a mismatch answers <Status code={404} />.
+
+**"Fire once" is a state, and "ask again" is the same `PUT`.** `active` and `notified` are the only states, and `PUT` always leaves the alert `active`. Cancelling is `DELETE`, which removes the alert outright rather than parking it as `cancelled`, because a cancelled alert is personal data with no purpose.
+
+**Partner events are thin and signed.** `product.back_in_stock` and `product.sold_out` use the dotted `resource.event` style that [Webhooks](/events/webhooks/) recommends for public event types, carry a SKU and a revision, and are signed with the Standard Webhooks scheme. Receivers fetch current availability if they care about the latest state, which also makes reordering their problem to solve with the revision, not yours to prevent. Deliveries retry with backoff for three days, then the endpoint is disabled and the partner's contact is emailed.
+
+**Endpoint URLs are checked at registration and at delivery.** `https://` only, and the sender resolves the host and refuses private, loopback and link-local addresses every time it delivers, because DNS can change after registration. Delivery workers run in a network segment that can't reach Fernhill's internal services anyway.
+
+**Editing a SKU list needs `If-Match`.** JSON Merge Patch replaces arrays whole. Two people at the climbing club each add a SKU to `skus` from the same starting list, and without a precondition the second save silently drops the first one's addition. Requiring `If-Match` turns that into a <Status code={412} /> and a re-read; omitting it is a <Status code={428} />. Separate `/webhook-endpoints/{id}/skus/{sku}` sub-resources would avoid the conflict entirely, at the cost of 5,000 requests to set up a large list.
+
+**The app streams coarse state with Server-Sent Events.** The data flows one way, the app already speaks HTTP, and `EventSource` reconnects by itself, so WebSockets would add a protocol for nothing. Because every connection starts with a snapshot, the stream needs no event IDs and no `Last-Event-ID` replay buffer. That departs from the resume-from-a-log default in [Streaming and real-time](/events/streaming/#make-reconnects-resume-not-restart) on purpose: a log is for facts that must not be lost, and availability is state, so the app needs where things stand now, not every flicker it missed. The trade-off is that a client can't reconstruct history from the stream, which no requirement asked for. `in_stock`, `low_stock` and `out_of_stock` change far less often than counts and give scrapers nothing precise. Streams are capped at 50 SKUs and 2 per client, because each one holds a connection open on Fernhill's servers.
+
+**Waves trade speed for fairness.** Notifying all 4,000 subscribers at once for 200 tents guarantees 3,800 disappointed people and a load spike in checkout. Waves of ten times the available stock, oldest alert first, keep the odds reasonable and stop when stock runs out. It's a policy choice, so it lives in the consumer, not in the API contract.
+
+RFC 8058 is the reason the unsubscribe link is a `POST`, and it's worth knowing for any API that sends email.
+
+<Note kind="practice" title="One-click unsubscribe is a POST" year="2017" source="https://www.rfc-editor.org/rfc/rfc8058">
+
+RFC 8058 standardised one-click unsubscribe in January 2017. The message carries an HTTPS URI in `List-Unsubscribe` and the exact header `List-Unsubscribe-Post: List-Unsubscribe=One-Click`; the mail client then sends a `POST` with that key and value. The RFC explains why: anti-spam software often fetches every URL in a message's headers, and a sender can't tell those fetches from a person. A `GET` that changes state will be triggered by something that isn't a person.
+
+</Note>
+
+</WorkedProblem>
+
+## Review yourself
+
+Answer each question for your own design. All of them trace back to the [review checklist](/reference/checklist/).
+
+- The customer taps "Notify me" on two devices at once. How many alerts exist afterwards, and what did each device receive? [Idempotency and retries](/reliability/idempotency/)
+- Is every subscription a resource a client can list, read and delete, or is any of it a side effect of another call? [Resources and actions](/modelling/resources/)
+- A stock event is delivered twice, and an older one arrives after a newer one. Does anyone get two messages, or a message about stock that's already gone? [Consuming events](/events/consuming-events/)
+- Are your webhooks signed over the ID, the timestamp and the body, retried for days, and sent from workers that can't reach internal networks? [Webhooks](/events/webhooks/)
+- Two admins at a partner edit the same endpoint's SKU list at the same time. Whose change survives? [Concurrency control](/reliability/concurrency/)
+- The app's stream drops in a tunnel for three minutes. What does it do when it reconnects, and what does it show in the meantime? [Streaming and real-time](/events/streaming/)
+- What stops one client from opening a thousand streams, or following a million SKUs? [Abuse and resource limits](/security/limits/)
+- List every place a customer's email address is stored or sent. Does any event, webhook or stream carry personal data? [Consuming events](/events/consuming-events/)
+- What does a mail scanner's automatic `GET` on your unsubscribe link do? [Methods](/http/methods/)
+- Can customer `cus_8` read or delete `cus_7`'s alerts? [Authentication and authorization](/security/auth/)
+
+The last challenge puts money back in the picture, and adds people actively trying to steal it: [gift cards](/practice/gift-cards/).

@@ -1,0 +1,422 @@
+---
+/**
+ * A step-through SVG figure: one frame at a time, with Prev, Next and Reset.
+ * Frames live as data in src/data/figures/ and are registered by name.
+ *
+ *   <Figure n={1} caption="…"><Stepper figure="pagination-drift" /></Figure>
+ *
+ * Without JavaScript every frame renders, stacked, each with its caption, so
+ * the whole sequence still reads top to bottom (and prints).
+ */
+import { figures, toSvg, type FigureName } from "@data/figures";
+
+interface Props {
+  figure: FigureName;
+}
+
+const { figure: name } = Astro.props;
+const fig = figures[name];
+const total = fig.frames.length;
+const uid = `fg-stepper-${name}`;
+/** Backticks in captions become <code>. */
+const parts = (caption: string) => caption.split("`").map((text, i) => ({ text, code: i % 2 === 1 }));
+---
+
+<fg-stepper class="fg-stepper not-content" role="group" aria-label={fig.label}>
+  <ol class="fg-stepper__frames">
+    {
+      fig.frames.map((frame, i) => (
+        <li class:list={["fg-stepper__frame", { "is-active": i === 0 }]}>
+          <svg
+            class="fg-stepper__svg"
+            viewBox={`0 0 ${fig.width} ${fig.height}`}
+            role="img"
+            aria-labelledby={`${uid}-${i}`}
+            set:html={frame.shapes.map(toSvg).join("")}
+          />
+          <p class="fg-stepper__caption" id={`${uid}-${i}`}>
+            <span class="fg-stepper__n">
+              Step {i + 1} of {total}.
+            </span>{" "}
+            <span class="fg-stepper__text">
+              {parts(frame.caption).map((p) => (p.code ? <code>{p.text}</code> : p.text))}
+            </span>
+          </p>
+        </li>
+      ))
+    }
+  </ol>
+  <div class="fg-stepper__bar" hidden>
+    <div class="fg-stepper__progress" aria-hidden="true">
+      {fig.frames.map((_, i) => <span class:list={["fg-stepper__pip", { "is-done": i === 0 }]} />)}
+    </div>
+    <span class="fg-stepper__count">Step <span data-count>1</span> of {total}</span>
+    <span class="fg-stepper__buttons">
+      <button type="button" data-action="reset" disabled>Reset</button>
+      <button type="button" data-action="prev" disabled>Prev</button>
+      <button type="button" data-action="next" class="is-primary">Next</button>
+    </span>
+  </div>
+  <p class="fg-stepper__live" aria-live="polite"></p>
+</fg-stepper>
+
+<script>
+  class FgStepper extends HTMLElement {
+    connectedCallback() {
+      if (this.classList.contains("is-ready")) return;
+      const frames = [...this.querySelectorAll<HTMLElement>(".fg-stepper__frame")];
+      const pips = [...this.querySelectorAll<HTMLElement>(".fg-stepper__pip")];
+      const bar = this.querySelector<HTMLElement>(".fg-stepper__bar");
+      const live = this.querySelector<HTMLElement>(".fg-stepper__live");
+      const count = this.querySelector<HTMLElement>("[data-count]");
+      const button = (action: string) =>
+        this.querySelector<HTMLButtonElement>(`[data-action="${action}"]`);
+      const prev = button("prev");
+      const next = button("next");
+      const reset = button("reset");
+      if (!frames.length || !bar || !live || !count || !prev || !next || !reset) return;
+
+      const last = frames.length - 1;
+      let at = 0;
+
+      const show = (index: number) => {
+        at = Math.max(0, Math.min(last, index));
+        frames.forEach((frame, i) => {
+          frame.classList.toggle("is-active", i === at);
+          frame.inert = i !== at;
+        });
+        pips.forEach((pip, i) => pip.classList.toggle("is-done", i <= at));
+        count.textContent = String(at + 1);
+        prev.disabled = reset.disabled = at === 0;
+        next.disabled = at === last;
+        // Never strand keyboard focus on a button that just became disabled.
+        const focused = document.activeElement;
+        if (focused instanceof HTMLButtonElement && focused.disabled && this.contains(focused)) {
+          (next.disabled ? prev : next).focus();
+        }
+      };
+
+      const go = (index: number) => {
+        this.classList.add("has-moved");
+        show(index);
+        const text = frames[at].querySelector(".fg-stepper__text")?.textContent ?? "";
+        live.textContent = `Step ${at + 1} of ${frames.length}. ${text.trim()}`;
+      };
+
+      prev.addEventListener("click", () => go(at - 1));
+      next.addEventListener("click", () => go(at + 1));
+      reset.addEventListener("click", () => go(0));
+      this.addEventListener("keydown", (event) => {
+        if (!(event.target instanceof HTMLButtonElement)) return;
+        const target = { ArrowLeft: at - 1, ArrowRight: at + 1, Home: 0, End: last }[event.key];
+        if (target === undefined) return;
+        event.preventDefault();
+        go(target);
+      });
+
+      bar.hidden = false;
+      this.classList.add("is-ready");
+      show(0);
+    }
+  }
+  if (!customElements.get("fg-stepper")) customElements.define("fg-stepper", FgStepper);
+</script>
+
+<style>
+  .fg-stepper {
+    display: block;
+  }
+
+  /* ---------- Frames: stacked without JS, one at a time with it ---------- */
+  .fg-stepper__frames {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .fg-stepper__frame {
+    margin: 0;
+  }
+
+  .fg-stepper__frame + .fg-stepper__frame {
+    margin-top: 1.25rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid var(--fg-hairline);
+  }
+
+  .fg-stepper.is-ready .fg-stepper__frames {
+    display: grid;
+  }
+
+  .fg-stepper.is-ready .fg-stepper__frame {
+    grid-area: 1 / 1;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    opacity: 0;
+    visibility: hidden;
+    transition:
+      opacity 220ms ease,
+      visibility 0s linear 220ms;
+  }
+
+  .fg-stepper.is-ready .fg-stepper__frame.is-active {
+    opacity: 1;
+    visibility: visible;
+    transition:
+      opacity 220ms ease,
+      visibility 0s;
+  }
+
+  .fg-stepper.is-ready .fg-stepper__n {
+    display: none;
+  }
+
+  .fg-stepper__svg {
+    display: block;
+    width: 100%;
+    max-width: 30rem;
+    height: auto;
+    margin-inline: auto;
+    overflow: visible;
+  }
+
+  .fg-stepper__caption {
+    max-width: 38rem;
+    margin: 0.85rem auto 0;
+    font-size: 0.9rem;
+    line-height: 1.6;
+    color: var(--sl-color-gray-2);
+  }
+
+  .fg-stepper__caption code {
+    font-family: var(--sl-font-mono);
+    font-size: 0.85em;
+    color: var(--sl-color-gray-1);
+  }
+
+  .fg-stepper__n {
+    font-weight: 600;
+    color: var(--sl-color-gray-1);
+  }
+
+  /* ---------- Controls ---------- */
+  .fg-stepper__bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.6rem 1rem;
+    max-width: 38rem;
+    margin: 1rem auto 0;
+  }
+
+  .fg-stepper__bar[hidden] {
+    display: none;
+  }
+
+  .fg-stepper__progress {
+    display: flex;
+    flex-basis: 100%;
+    gap: 4px;
+  }
+
+  .fg-stepper__pip {
+    flex: 1;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--fg-hairline);
+    transition: background-color 220ms ease;
+  }
+
+  .fg-stepper__pip.is-done {
+    background: var(--sl-color-accent);
+  }
+
+  .fg-stepper__count {
+    font-family: var(--sl-font-mono);
+    font-size: 0.78rem;
+    font-variant-numeric: tabular-nums;
+    color: var(--sl-color-gray-3);
+  }
+
+  .fg-stepper__buttons {
+    display: flex;
+    gap: 0.4rem;
+    margin-inline-start: auto;
+  }
+
+  .fg-stepper__buttons button {
+    min-height: 2rem;
+    padding: 0.25rem 0.85rem;
+    border: 1px solid var(--fg-hairline);
+    border-radius: 999px;
+    background: var(--fg-surface);
+    color: var(--sl-color-gray-1);
+    font: inherit;
+    font-size: 0.82rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition:
+      border-color var(--fg-t),
+      color var(--fg-t),
+      opacity var(--fg-t);
+  }
+
+  .fg-stepper__buttons button:hover:not(:disabled) {
+    border-color: var(--sl-color-accent);
+    color: var(--sl-color-white);
+  }
+
+  .fg-stepper__buttons button.is-primary:not(:disabled) {
+    border-color: var(--sl-color-accent);
+    background: var(--sl-color-accent-low);
+    color: var(--sl-color-accent-high);
+  }
+
+  .fg-stepper__buttons button:focus-visible {
+    outline: 2px solid var(--sl-color-accent);
+    outline-offset: 2px;
+  }
+
+  .fg-stepper__buttons button:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+
+  .fg-stepper__live {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  /* ---------- SVG vocabulary (shapes come from src/data/figures/svg.ts) ---------- */
+  .fg-stepper__svg :global(.t-text) {
+    --c: var(--sl-color-gray-1);
+  }
+  .fg-stepper__svg :global(.t-muted) {
+    --c: var(--sl-color-gray-3);
+  }
+  .fg-stepper__svg :global(.t-faint) {
+    --c: var(--sl-color-gray-4);
+  }
+  .fg-stepper__svg :global(.t-line) {
+    --c: var(--sl-color-gray-5);
+  }
+  .fg-stepper__svg :global(.t-accent) {
+    --c: var(--sl-color-accent);
+  }
+  .fg-stepper__svg :global(.t-good) {
+    --c: var(--fg-good);
+  }
+  .fg-stepper__svg :global(.t-bad) {
+    --c: var(--fg-bad);
+  }
+  .fg-stepper__svg :global(.t-warn) {
+    --c: var(--fg-warn);
+  }
+
+  .fg-stepper__svg :global(.s-rect) {
+    stroke: var(--c);
+    stroke-width: 1;
+    fill: none;
+  }
+  .fg-stepper__svg :global(.s-rect.f-surface) {
+    fill: var(--fg-surface);
+  }
+  .fg-stepper__svg :global(.s-rect.f-tint) {
+    fill: var(--fg-surface);
+    fill: color-mix(in srgb, var(--c) 13%, var(--fg-surface));
+  }
+  .fg-stepper__svg :global(.s-rect.is-strong) {
+    stroke-width: 1.5;
+  }
+  .fg-stepper__svg :global(.s-rect.is-dashed) {
+    stroke-dasharray: 4 3;
+  }
+
+  .fg-stepper__svg :global(.s-text) {
+    fill: var(--c);
+    font-family: var(--sl-font);
+  }
+  .fg-stepper__svg :global(.s-text.is-mono) {
+    font-family: var(--sl-font-mono);
+  }
+  .fg-stepper__svg :global(.s-text.is-bold) {
+    font-weight: 600;
+  }
+  .fg-stepper__svg :global(.s-text.is-caps) {
+    letter-spacing: 0.08em;
+  }
+
+  .fg-stepper__svg :global(.s-line) {
+    stroke: var(--c);
+    stroke-width: 1.2;
+    stroke-linecap: round;
+  }
+  .fg-stepper__svg :global(.s-line.is-strong) {
+    stroke-width: 1.6;
+  }
+  .fg-stepper__svg :global(.s-line.is-dashed) {
+    stroke-dasharray: 3 3;
+  }
+  .fg-stepper__svg :global(.s-head) {
+    fill: var(--c);
+  }
+
+  /* What changed in this frame eases in, once the reader starts stepping. */
+  .fg-stepper.has-moved .fg-stepper__frame.is-active :global(.is-enter) {
+    animation: fg-stepper-enter 380ms ease 80ms both;
+  }
+
+  @keyframes fg-stepper-enter {
+    from {
+      opacity: 0;
+      transform: translateY(-5px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .fg-stepper.is-ready .fg-stepper__frame,
+    .fg-stepper.is-ready .fg-stepper__frame.is-active,
+    .fg-stepper__pip {
+      transition: none;
+    }
+    .fg-stepper.has-moved .fg-stepper__frame.is-active :global(.is-enter) {
+      animation: none;
+    }
+  }
+
+  /* Win back the figure's padding on phones, where every pixel of text counts. */
+  @media (max-width: 30rem) {
+    .fg-stepper__svg {
+      width: calc(100% + 1.5rem);
+      max-width: none;
+      margin-inline: -0.75rem;
+    }
+  }
+
+  /* Print every frame, as the no-JS view does. */
+  @media print {
+    .fg-stepper__bar {
+      display: none;
+    }
+    .fg-stepper.is-ready .fg-stepper__frames {
+      display: block;
+    }
+    .fg-stepper.is-ready .fg-stepper__frame {
+      opacity: 1;
+      visibility: visible;
+    }
+    .fg-stepper.is-ready .fg-stepper__n {
+      display: inline;
+    }
+  }
+</style>

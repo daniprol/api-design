@@ -1,0 +1,174 @@
+---
+title: GitHub
+description: GitHub runs a REST API and a GraphQL API over one platform, versions REST by date in a header, and makes well-behaved clients cheaper to run. Copy its free conditional requests and its published support windows; sign your webhooks more thoroughly than it does.
+sources:
+  - label: GitHub pagination
+    title: "GitHub Docs: Using pagination in the REST API"
+    url: https://docs.github.com/en/rest/using-the-rest-api/using-pagination-in-the-rest-api
+    accessed: 2026-11
+  - label: GitHub REST vs GraphQL
+    title: "GitHub Docs: Comparing GitHub's REST API and GraphQL API"
+    url: https://docs.github.com/en/rest/about-the-rest-api/comparing-githubs-rest-api-and-graphql-api
+    accessed: 2026-11
+  - label: GitHub GraphQL limits
+    title: "GitHub Docs: Rate limits and query limits for the GraphQL API"
+    url: https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api
+    accessed: 2026-11
+  - label: GitHub API versions
+    title: "GitHub Docs: API versions"
+    url: https://docs.github.com/en/rest/about-the-rest-api/api-versions
+    accessed: 2026-11
+  - label: GitHub, 2022
+    title: "GitHub Blog: To infinity and beyond: enabling the future of GitHub's REST API with API versioning (2022)"
+    url: https://github.blog/developer-skills/github/to-infinity-and-beyond-enabling-the-future-of-githubs-rest-api-with-api-versioning/
+    accessed: 2026-11
+  - label: GitHub, 2021
+    title: "GitHub Changelog: REST API preview promotions (2021)"
+    url: https://github.blog/changelog/2021-10-14-rest-api-preview-promotions/
+    accessed: 2026-11
+  - label: GitHub best practices
+    title: "GitHub Docs: Best practices for using the REST API"
+    url: https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api
+    accessed: 2026-11
+  - label: GitHub REST limits
+    title: "GitHub Docs: Rate limits for the REST API"
+    url: https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api
+    accessed: 2026-11
+  - label: GitHub troubleshooting
+    title: "GitHub Docs: Troubleshooting the REST API"
+    url: https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api
+    accessed: 2026-11
+  - label: GitHub webhooks
+    title: "GitHub Docs: Validating webhook deliveries"
+    url: https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries
+    accessed: 2026-11
+related:
+  - collections/caching
+  - evolution/versioning
+  - foundations/rest-and-alternatives
+  - security/limits
+---
+
+import { InBrief, Note, Status } from "@components/kit";
+
+<InBrief>
+
+- REST pages through the standard `Link` header; GraphQL uses connections with `first` and `after`. Both have their own rate limit.
+- REST versions are dates in `X-GitHub-Api-Version`, and each one is supported for at least 24 months after its successor ships.
+- A conditional request answered with <Status code={304} /> doesn't count against the primary rate limit, so caching clients get more headroom.
+- Validation failures are <Status code={422} />, unparseable JSON is <Status code={400} />, and private resources you can't see are <Status code={404} />, not <Status code={403} />.
+- Webhooks carry an HMAC-SHA256 of the body in `X-Hub-Signature-256`, with no timestamp.
+
+</InBrief>
+
+Your CI bot checks every open pull request once a minute. By lunchtime it has burnt through 5,000 requests and the afternoon's builds sit waiting for the rate-limit window to reset. Then someone adds `If-None-Match` to the polling loop, and the bot spends almost nothing: most pull requests haven't changed, and an unchanged answer costs zero. GitHub serves millions of integrations it didn't write, from shell scripts to large apps, and much of its API design is about making the polite client also the cheap one.
+
+## Pages come in the Link header
+
+A list response carries its navigation in a standard header rather than in the body:
+
+```http
+link: <https://api.github.com/repositories/1300192/issues?page=2>; rel="prev",
+      <https://api.github.com/repositories/1300192/issues?page=4>; rel="next",
+      <https://api.github.com/repositories/1300192/issues?page=515>; rel="last",
+      <https://api.github.com/repositories/1300192/issues?page=1>; rel="first"
+```
+
+Depending on the endpoint, the URLs use `page`, `before` and `after`, or `since`, and `per_page` goes up to 100 for most endpoints. The docs are blunt: don't parse these URLs or construct pagination queries yourself; follow the links.
+
+**Why it fits GitHub.** The body stays a plain array of issues, identical whether or not there's another page, and RFC 8288 link relations are something every HTTP library can already parse.
+
+**Against this Guide.** We agree on the important half: the server owns the URL, and clients follow it. We put the `next` link in a page object in the body instead, as [Pagination](/collections/pagination/) explains, because a header is easy to drop when a response passes through a logging or caching layer, and a bare array leaves no room for metadata later. The `rel="last"` link on a page-numbered endpoint also implies a count the server must compute. [Links](/representations/links/) has the longer version of this argument.
+
+## REST and GraphQL, side by side
+
+GitHub runs both a REST API and a GraphQL API over the same platform. Its docs say to use whichever fits your needs, and that you don't need to use one exclusively. In GraphQL, one query can fetch exactly the fields a screen needs:
+
+```graphql
+query {
+  repository(owner: "octocat", name: "Hello-World") {
+    pullRequests(first: 20, states: OPEN) {
+      nodes {
+        number
+        title
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+  rateLimit {
+    remaining
+    resetAt
+  }
+}
+```
+
+The GraphQL limit is counted in points: 5,000 per hour per user, worked out from the number of requests each connection would need, divided by 100. `first` and `last` must be between 1 and 100, and one call can't ask for more than 500,000 nodes. REST has its own, separate primary limit.
+
+**Why it fits GitHub.** Repositories, issues, pull requests and users form a dense graph, and a mobile client that needs six fields from four objects shouldn't make four round trips. GitHub's docs call out exactly that case.
+
+**Against this Guide.** [REST and alternatives](/foundations/rest-and-alternatives/) suggests GraphQL when many clients need differently shaped reads and you own those clients. GitHub doesn't own its clients, and pays for that with a cost model, node limits and a second rate limit to explain. For a platform this size the bill is worth it. For Fernhill, with a handful of partners, it isn't.
+
+## Versions are dates in a header
+
+In 2022 GitHub named its existing REST API version `2022-11-28` and started selecting versions with a header:
+
+```http
+GET /repos/octocat/Hello-World/pulls HTTP/1.1
+Accept: application/vnd.github+json
+X-GitHub-Api-Version: 2022-11-28
+```
+
+A request without the header gets `2022-11-28`. When a new version ships, GitHub supports the previous one for at least 24 more months. The docs now list `2026-03-10` alongside it, with `2022-11-28` ending on 10 March 2028.
+
+**Why it fits GitHub.** Its 2022 announcement says the old API lacked the tools and processes to make occasional breaking changes while giving users a smooth migration path. A date in a header changes nothing for anyone who doesn't send it.
+
+**Against this Guide.** This is close to what [Versioning](/evolution/versioning/) recommends: dates or majors only, and the support window published on launch day, not on retirement day. The one wrinkle is the default. A client that never sends the header gets `2022-11-28` for as long as that version lives, so the docs, not the request, say what it receives.
+
+## Preview media types came and went
+
+Before dated versions, GitHub shipped experimental features behind custom media types. To try reactions, you sent `Accept: application/vnd.github.squirrel-girl-preview+json`; repository topics were `mercy-preview`. Each preview could change based on feedback, and the docs warned that changes might arrive without advance notice.
+
+<Note kind="history" title="The previews graduate at once" year="2021" source="https://github.blog/changelog/2021-10-14-rest-api-preview-promotions/">
+
+In October 2021 GitHub promoted almost all of its remaining REST previews to the main API in a single changelog entry. From then on, clients no longer needed the preview header for those features. A year later, dated versions arrived as the official way to ship breaking changes.
+
+</Note>
+
+**Against this Guide.** Opt-in previews are a good idea with a known failure: once enough production code depends on a "preview", it isn't one. [Versioning](/evolution/versioning/) accepts pre-release channels if their weaker promise is explicit. GitHub's experience says to add an end date to that promise as well.
+
+## Polite clients get a bigger budget
+
+Most REST responses carry an `ETag`, and many a `Last-Modified`. Send the validator back and an unchanged resource returns <Status code={304} />, which, in GitHub's words, "does not count against your primary rate limit" when the request is correctly authorised:
+
+```http
+GET /repos/octocat/Hello-World/pulls/42 HTTP/1.1
+Authorization: Bearer …
+If-None-Match: "644b5b0155e6404a9cc4bd9d8b1ae730"
+
+HTTP/1.1 304 Not Modified
+```
+
+Limits themselves are reported in `x-ratelimit-limit`, `x-ratelimit-remaining`, `x-ratelimit-used`, `x-ratelimit-reset` and `x-ratelimit-resource`. The primary limit is 5,000 requests an hour for an authenticated user and 60 for anonymous traffic, and secondary limits cap concurrency at 100 requests and content creation at 80 requests a minute. Exceeding either returns <Status code={403} /> or <Status code={429} />.
+
+**Why it fits GitHub.** Polling is how most integrations watch a repository. Making the unchanged answer free turns caching from a courtesy into a client's own interest.
+
+**Against this Guide.** [Caching](/collections/caching/) and [Abuse and resource limits](/security/limits/) cover `ETag` and <Status code={429} />, but not this incentive, and it's worth stealing. Where we differ is the signal: we'd answer rate limiting with <Status code={429} /> only and publish the standard `RateLimit` headers. A <Status code={403} /> for "slow down" looks exactly like "not allowed" to a client that only reads the status.
+
+## Errors protect privacy before clarity
+
+Ask for a private repository you can't see and GitHub answers <Status code={404} />, not <Status code={403} />, so that the response doesn't confirm the repository exists. Invalid JSON gets <Status code={400} /> "Problems parsing JSON"; a valid request that fails validation gets <Status code={422} /> "Validation Failed" with an `errors` array whose `code` is one of `missing`, `missing_field`, `invalid`, `already_exists`, `unprocessable` or `custom`.
+
+**Against this Guide.** The status codes match ours exactly, down to the 400 versus 422 split in [Status codes](/http/status-codes/), and hiding existence behind a 404 is what [Authentication and authorization](/security/auth/) recommends. The body is GitHub's own shape rather than [Problem Details](/http/errors/), which is the usual cost of an API older than RFC 7807.
+
+## Webhooks sign the body, and only the body
+
+Each delivery carries `X-Hub-Signature-256: sha256=…`, an HMAC-SHA256 hex digest of the payload using your webhook secret. The older `X-Hub-Signature` header uses SHA-1 and remains for legacy purposes. The docs insist on a constant-time comparison: "Never use a plain `==` operator."
+
+**Against this Guide.** [Webhooks](/events/webhooks/) asks for a signature over the delivery ID, a timestamp and the body. GitHub's signature covers the body alone, so the docs give a receiver nothing signed with which to reject an old, captured delivery replayed later. If you receive GitHub webhooks, deduplicate deliveries yourself; if you send webhooks, sign the timestamp.
+
+## What to take away
+
+GitHub's API is a public utility for code it didn't write, and its best ideas reward good behaviour: free <Status code={304} /> responses, links you follow instead of build, and support windows published in advance. Its weakest spots are the older ones it hasn't changed. Next, [Shopify](/in-the-wild/shopify/) shows what happens when a platform decides GraphQL is the API and REST is legacy.

@@ -1,0 +1,611 @@
+---
+title: "Challenge 4: Gift cards"
+description: Design Fernhill's gift cards. Treat the code as a secret and the card ID as an identifier, redeem with one atomic conditional update, keep every movement in a ledger, and limit failed guesses per account, not per request.
+sources:
+  - label: OWASP API6:2023
+    title: "OWASP API Security Top 10 2023: API6 Unrestricted Access to Sensitive Business Flows"
+    url: https://owasp.org/API-Security/editions/2023/en/0xa6-unrestricted-access-to-sensitive-business-flows/
+    accessed: 2026-11
+  - label: OWASP API1:2023
+    title: "OWASP API Security Top 10 2023: API1 Broken Object Level Authorization"
+    url: https://owasp.org/API-Security/editions/2023/en/0xa1-broken-object-level-authorization/
+    accessed: 2026-11
+  - label: SecurityWeek, 2017
+    title: "SecurityWeek: Botnet Pummels Retail Websites in Hunt for Gift Card Balances (2017)"
+    url: https://www.securityweek.com/botnet-pummels-retail-websites-hunt-gift-card-balances/
+    accessed: 2026-11
+  - label: RFC 9110 §13.1.1
+    title: "RFC 9110: HTTP Semantics, §13.1.1 If-Match"
+    url: https://www.rfc-editor.org/rfc/rfc9110#section-13.1.1
+    accessed: 2026-11
+related:
+  - representations/data-formats
+  - reliability/concurrency
+  - reliability/idempotency
+  - security/attacks
+  - security/limits
+  - security/multi-tenancy
+---
+
+import { InBrief, Note, WorkedProblem, Status } from "@components/kit";
+
+<InBrief>
+
+- **Difficulty:** advanced. Allow 90 to 120 minutes.
+- **You design:** issuing, checking, redeeming and reversing gift cards, plus the ledger finance audits.
+- **It exercises:** [money](/representations/data-formats/), [atomic updates and `If-Match`](/reliability/concurrency/), [idempotency](/reliability/idempotency/), [attacks](/security/attacks/) (BOLA, enumeration, business-flow abuse), [limits](/security/limits/) and, optionally, [multi-tenancy](/security/multi-tenancy/).
+- **The trap:** a balance-check endpoint that answers anyone who asks, as often as they like.
+
+</InBrief>
+
+## The brief
+
+Finance wants gift cards on sale for Christmas, and the printed cards are already on a lorry. That leaves two weeks: the spec has to be agreed by **1 December**. The finance lead has exactly one question for you, and she asks it in every meeting: what stops someone spending the same card twice?
+
+Fernhill's security reviewer has a second question. In 2017 a botnet spent months trying gift card numbers against retailers' balance-check pages, and every one of those pages did what it was designed to do: tell whoever asked whether a code was worth anything. A gift card is cash with a password printed on it, and your API is about to become the place where people check passwords.
+
+Priya, who will be on call over Christmas, would like a third thing: when a customer phones to say their card is empty and they never spent it, she wants to see every movement on that card, who made it and when, without opening a database console.
+
+## Requirements
+
+1. Fernhill's order system issues a card when one is bought, for EUR 10 to EUR 500. Support can issue replacement cards. The buyer sees the card's code once, at issue.
+2. A signed-in customer can check a card's balance and expiry by entering its code.
+3. At checkout, any amount up to the balance can be redeemed against an order; the rest stays on the card for later.
+4. A family sharing one card can check out at the same moment on two phones. Together they must never spend more than the balance.
+5. The mobile app retries every request. A retry must never redeem twice.
+6. When an order is cancelled, or a return refunded (see [challenge 1](/practice/returns/)), the gift card part goes back on the card.
+7. Support can block a card reported stolen and extend a card's expiry as a goodwill gesture.
+8. Support and finance can see every movement on a card.
+9. Finding a valid code by guessing must be impractical through every endpoint, not only the balance check.
+10. **Optional stretch:** Fernhill launches a second storefront brand next year. Cards belong to one brand and must not work, or be discoverable, at the other.
+
+**Constraints.** The printed codes are 16 characters from a 32-character alphabet (A to Z without I and O, and 2 to 9): 15 random characters and a check character. Cards expire three years after issue. One currency, EUR, for now.
+
+**Non-goals.** Buying gift cards (that's an ordinary order), moving balance between cards, currency conversion, and activating plastic cards at shop tills.
+
+## What to hand in
+
+- The resources and their URLs, and which identifier each one uses: the code, an ID, or both.
+- An OpenAPI 3.1 excerpt, with security scopes per operation.
+- Two example exchanges: a balance check; and the family's two simultaneous redemptions.
+- The error cases, and which of them an attacker could learn something from.
+- Your defences against guessing, written as concrete limits with numbers.
+
+## Hints
+
+Design first, then open a hint if you are stuck on the decision it names.
+
+<WorkedProblem kind="Hint" title="1. The code is a password, not an ID">
+
+Anything in a URL ends up in access logs, browser history, analytics and `Referer` headers. A card that can be spent by anyone who reads its URL is a card waiting to be spent by a log aggregator. Give each card an ordinary opaque ID for the people who manage it, and treat the code like a password: sent in bodies, shown once, stored hashed. [Data formats](/representations/data-formats/) covers identifiers; [authentication and authorization](/security/auth/) covers who may use which.
+
+</WorkedProblem>
+
+<WorkedProblem kind="Hint" title="2. The database knows the rule better than the client">
+
+Two phones read a balance of EUR 50 and each redeem EUR 40. With `If-Match`, the second gets <Status code={412} />, re-reads, and tries again with a smaller amount: correct, but every checkout now needs a read first. The rule "balance never goes below zero" fits in one `UPDATE … WHERE balance >= :amount`. Read [concurrency control](/reliability/concurrency/) and decide which tool fits redemption and which fits a support agent editing a card.
+
+</WorkedProblem>
+
+<WorkedProblem kind="Hint" title="3. Retries and reversals are both about money moving once">
+
+The app's retry needs an `Idempotency-Key`, stored with the redemption in the same transaction. A reversal has a different danger: a refund for EUR 30 on a EUR 20 redemption. Reversals need their own cap, enforced the same way redemption enforces the balance. [Idempotency](/reliability/idempotency/) has the first half; the second is the same atomic trick as hint 2.
+
+</WorkedProblem>
+
+<WorkedProblem kind="Hint" title="4. Count the failures, and count them per person">
+
+A limit of 1,000 requests a minute per API key lets a bot try 1.4 million codes a day. What matters is how many wrong codes one account, device or IP can try, across every endpoint that accepts a code, including redemption. Then do the arithmetic on 15 random characters from 32. [Abuse and resource limits](/security/limits/) and [the bot that skips the website](/security/attacks/#attack-four-the-bot-that-skips-the-website) have the patterns.
+
+</WorkedProblem>
+
+<WorkedProblem kind="Hint" title="5. A ledger answers Priya's 3 a.m. question">
+
+A `balance` column tells you where a card is, not how it got there. If every movement is an immutable row with an amount, a type, a reference and the balance after it, support can answer "where did my money go?" from one list, and finance can reconcile from the same rows. Remember the list needs [pagination](/collections/pagination/) like every other.
+
+</WorkedProblem>
+
+## Model answer
+
+You know the drill: your own design first. The design notes explain each decision and its price.
+
+<WorkedProblem kind="Answer" title="Open it once you have a design of your own">
+
+Each card has an opaque ID, `gft_31`, used by staff, and a code used by customers, which is sent only in request bodies and stored only as a keyed hash. Customers check and redeem by code; redemption is one conditional `UPDATE` that can't overspend; every movement is a ledger row. Wrong codes are limited per account, device and IP across every endpoint that accepts a code.
+
+#### Resources and identifiers
+
+Customers never see a card ID and staff never need a code. Here's the surface, with the identifier each route takes:
+
+```text
+Customer (by code, in the body)
+/gift-card-lookups                                  POST   check balance → 200
+/gift-card-redemptions                              POST   redeem against an order → 201
+/gift-card-redemptions/{redemption_id}              GET
+
+Fernhill systems and staff (by ID)
+/gift-cards                                         POST   issue → 201, code returned once
+/gift-cards/{gift_card_id}                          GET, PATCH (If-Match: expires_at only)
+/gift-cards/{gift_card_id}/block                    PUT    block → 201 or 200; DELETE unblock → 204
+/gift-cards/{gift_card_id}/transactions             GET    the ledger, cursor-paginated
+/gift-card-redemptions/{redemption_id}/reversals    POST   put money back → 201
+```
+
+#### OpenAPI excerpt
+
+The contract, trimmed to what matters. Notice where `code` appears: only in request bodies, and in one response, the one that issues the card.
+
+```yaml title="gift-cards-api.yaml (excerpt)"
+openapi: 3.1.0
+info:
+  title: Gift Cards API
+  version: 1.0.0
+  contact: { name: Team Payments, url: https://wiki.example.com/teams/payments }
+  x-api-id: 4a6c8e0b-2d4f-4a1c-8e3b-5d7f9a1c3e5b
+  x-audience: external-public
+paths:
+  /gift-card-lookups:
+    post:
+      summary: Check a card's balance by its code
+      description: >
+        Nothing is created, so a successful lookup returns 200. Every lookup with a wrong
+        code counts against the caller's failure limit.
+      security: [{ oauth2: [gift_cards:redeem] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/CodeOnly" } } }
+      responses:
+        "200":
+          description: The card's balance and expiry
+          headers:
+            Cache-Control: { schema: { type: string, const: no-store } }
+            RateLimit: { $ref: "#/components/headers/RateLimit" }
+            RateLimit-Policy: { $ref: "#/components/headers/RateLimitPolicy" }
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/GiftCardBalance" } }
+        "409": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/ValidationProblem" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        default: { $ref: "#/components/responses/Problem" }
+  /gift-card-redemptions:
+    post:
+      security: [{ oauth2: [gift_cards:redeem] }]
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: "#/components/schemas/RedemptionCreate" } }
+      responses:
+        "201":
+          description: Redeemed; the balance is already reduced
+          headers: { Location: { schema: { type: string, format: uri } } }
+          content: { application/json: { schema: { $ref: "#/components/schemas/Redemption" } } }
+        "409": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/ValidationProblem" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        default: { $ref: "#/components/responses/Problem" }
+  /gift-card-redemptions/{redemption_id}:
+    parameters: [{ $ref: "#/components/parameters/RedemptionId" }]
+    get:
+      security: [{ oauth2: [gift_cards:redeem] }, { oauth2: [gift_cards:read] }]
+      responses:
+        "200":
+          description: The redemption
+          content: { application/json: { schema: { $ref: "#/components/schemas/Redemption" } } }
+        default: { $ref: "#/components/responses/Problem" }
+  /gift-card-redemptions/{redemption_id}/reversals:
+    parameters: [{ $ref: "#/components/parameters/RedemptionId" }]
+    post:
+      security: [{ oauth2: [gift_cards:reverse] }]
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/ReversalCreate" } } }
+      responses:
+        "201":
+          description: Reversed; the money is back on the card
+          headers: { Location: { schema: { type: string, format: uri } } }
+          content: { application/json: { schema: { $ref: "#/components/schemas/Reversal" } } }
+        "409": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/ValidationProblem" }
+        default: { $ref: "#/components/responses/Problem" }
+  /gift-cards:
+    post:
+      security: [{ oauth2: [gift_cards:issue] }]
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/GiftCardCreate" } } }
+      responses:
+        "201":
+          description: Issued. This is the only response that ever contains the code.
+          headers:
+            Location: { schema: { type: string, format: uri } }
+            Cache-Control: { schema: { type: string, const: no-store } }
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/GiftCardIssued" } }
+        "422": { $ref: "#/components/responses/ValidationProblem" }
+        default: { $ref: "#/components/responses/Problem" }
+  /gift-cards/{gift_card_id}:
+    parameters: [{ $ref: "#/components/parameters/GiftCardId" }]
+    get:
+      security: [{ oauth2: [gift_cards:read] }]
+      responses:
+        "200":
+          description: The gift card
+          headers: { ETag: { schema: { type: string, example: '"v12"' } } }
+          content: { application/json: { schema: { $ref: "#/components/schemas/GiftCard" } } }
+        default: { $ref: "#/components/responses/Problem" }
+    patch:
+      security: [{ oauth2: [gift_cards:manage] }]
+      parameters:
+        - { name: If-Match, in: header, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json: { schema: { $ref: "#/components/schemas/GiftCardPatch" } }
+      responses:
+        "200":
+          description: Gift card updated
+          headers: { ETag: { schema: { type: string } } }
+          content: { application/json: { schema: { $ref: "#/components/schemas/GiftCard" } } }
+        "412": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/ValidationProblem" }
+        "428": { $ref: "#/components/responses/Problem" }
+        default: { $ref: "#/components/responses/Problem" }
+  /gift-cards/{gift_card_id}/block:
+    parameters: [{ $ref: "#/components/parameters/GiftCardId" }]
+    put:
+      security: [{ oauth2: [gift_cards:manage] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/BlockPut" } } }
+      responses:
+        "201":
+          description: Blocked
+          headers: { Location: { schema: { type: string, format: uri } } }
+        "200": { description: Already blocked; reason updated }
+        default: { $ref: "#/components/responses/Problem" }
+    delete:
+      security: [{ oauth2: [gift_cards:manage] }]
+      responses:
+        "204": { description: Unblocked }
+        default: { $ref: "#/components/responses/Problem" }
+  /gift-cards/{gift_card_id}/transactions:
+    parameters: [{ $ref: "#/components/parameters/GiftCardId" }]
+    get:
+      security: [{ oauth2: [gift_cards:read] }]
+      parameters:
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 100, default: 20 },
+          }
+        - { name: cursor, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: A page of ledger rows, oldest first
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/TransactionPage" } }
+        default: { $ref: "#/components/responses/Problem" }
+components:
+  securitySchemes:
+    oauth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://auth.example.com/authorize
+          tokenUrl: https://auth.example.com/token
+          scopes:
+            gift_cards:redeem: Check and redeem gift cards against your own orders
+        clientCredentials:
+          tokenUrl: https://auth.example.com/token
+          scopes:
+            gift_cards:issue: Issue gift cards (order system, support tool)
+            gift_cards:read: Read any gift card and its ledger (support, finance)
+            gift_cards:manage: Block cards and extend expiry (support tool)
+            gift_cards:reverse: Return redeemed money to a card (refunds service)
+  parameters:
+    IdempotencyKey:
+      {
+        name: Idempotency-Key,
+        in: header,
+        required: true,
+        schema: { type: string, maxLength: 255 },
+      }
+    GiftCardId:
+      { name: gift_card_id, in: path, required: true, schema: { type: string, example: gft_31 } }
+    RedemptionId:
+      { name: redemption_id, in: path, required: true, schema: { type: string, example: gcr_9 } }
+  headers:
+    RateLimit: { schema: { type: string, example: '"code-failures";r=4;t=3600' } }
+    RateLimitPolicy: { schema: { type: string, example: '"code-failures";q=5;w=3600' } }
+  responses:
+    Problem:
+      description: Any error
+      content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } }
+    ValidationProblem:
+      description: The body parsed but failed validation
+      content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } }
+    TooManyRequests:
+      description: Too many wrong codes, or too many requests
+      headers: { Retry-After: { schema: { type: integer } } }
+      content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } }
+  schemas:
+    Money:
+      type: object
+      required: [amount, currency]
+      properties:
+        amount: { type: string, pattern: "^-?[0-9]+(\\.[0-9]+)?$", example: "50.00" }
+        currency: { type: string, pattern: "^[A-Z]{3}$", example: EUR }
+    Code:
+      type: string
+      description: 16 characters from A-H, J-N, P-Z and 2-9. Hyphens and spaces are ignored.
+      writeOnly: true
+      example: K7QM-4RXT-9PWC-2HNB
+    CodeOnly:
+      type: object
+      additionalProperties: false
+      required: [code]
+      properties: { code: { $ref: "#/components/schemas/Code" } }
+    GiftCardBalance:
+      type: object
+      required: [code_last4, balance, expires_at]
+      properties:
+        code_last4: { type: string, example: 2HNB }
+        balance: { $ref: "#/components/schemas/Money" }
+        expires_at: { type: string, format: date-time }
+    RedemptionCreate:
+      type: object
+      additionalProperties: false
+      required: [code, order_id, amount]
+      properties:
+        code: { $ref: "#/components/schemas/Code" }
+        order_id: { type: string, example: ord_42 }
+        amount: { $ref: "#/components/schemas/Money" }
+    Redemption:
+      type: object
+      required: [id, order_id, code_last4, amount, balance_after, created_at]
+      properties:
+        id: { type: string, example: gcr_9 }
+        order_id: { type: string, example: ord_42 }
+        code_last4: { type: string, example: 2HNB }
+        amount: { $ref: "#/components/schemas/Money" }
+        amount_reversed: { $ref: "#/components/schemas/Money" }
+        balance_after: { $ref: "#/components/schemas/Money" }
+        created_at: { type: string, format: date-time }
+    ReversalCreate:
+      type: object
+      additionalProperties: false
+      required: [amount, reason]
+      properties:
+        amount: { $ref: "#/components/schemas/Money" }
+        reason: { type: string, enum: [order_cancelled, return_refunded, other] }
+        refund_id: { type: string, example: ref_88 }
+    Reversal:
+      type: object
+      required: [id, redemption_id, amount, reason, created_at]
+      properties:
+        id: { type: string, example: gcv_4 }
+        redemption_id: { type: string, example: gcr_9 }
+        amount: { $ref: "#/components/schemas/Money" }
+        reason: { type: string }
+        created_at: { type: string, format: date-time }
+    GiftCardCreate:
+      type: object
+      additionalProperties: false
+      required: [initial_balance, reason]
+      properties:
+        initial_balance: { $ref: "#/components/schemas/Money" }
+        reason: { type: string, enum: [purchase, replacement, promotion] }
+        order_id: { type: string, description: Required when reason is purchase }
+        replaces_gift_card_id: { type: string, description: Required when reason is replacement }
+    GiftCard:
+      type: object
+      required: [id, code_last4, status, balance, initial_balance, expires_at, created_at]
+      properties:
+        id: { type: string, example: gft_31 }
+        code_last4: { type: string, example: 2HNB }
+        status:
+          type: string
+          description: "One of active, blocked, expired. New values may be added; treat unknown values as not redeemable."
+        balance: { $ref: "#/components/schemas/Money" }
+        initial_balance: { $ref: "#/components/schemas/Money" }
+        expires_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+    GiftCardIssued:
+      allOf:
+        - { $ref: "#/components/schemas/GiftCard" }
+        - type: object
+          required: [code]
+          properties: { code: { type: string, example: K7QM-4RXT-9PWC-2HNB } }
+    GiftCardPatch:
+      type: object
+      additionalProperties: false
+      properties:
+        expires_at: { type: string, format: date-time, description: May only move later }
+    BlockPut:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason: { type: string, enum: [reported_stolen, suspected_fraud, other] }
+        note: { type: string, maxLength: 1000 }
+    Transaction:
+      type: object
+      required: [id, type, amount, balance_after, created_at]
+      properties:
+        id: { type: string, example: gct_207 }
+        type:
+          type: string
+          description: "One of issued, redeemed, reversed, expired. New values may be added."
+        amount: { $ref: "#/components/schemas/Money" }
+        balance_after: { $ref: "#/components/schemas/Money" }
+        redemption_id: { type: string }
+        order_id: { type: string }
+        actor:
+          {
+            type: string,
+            description: The client or staff member that caused it,
+            example: "support:agent_14",
+          }
+        created_at: { type: string, format: date-time }
+    TransactionPage:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Transaction" } }
+        next: { type: string, format: uri }
+    Problem:
+      type: object
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+        errors:
+          type: array
+          description: Present on validation-error, one entry per failing field
+          items:
+            type: object
+            required: [pointer, detail]
+            properties:
+              pointer: { type: string, example: "#/amount/amount" }
+              detail: { type: string }
+```
+
+#### Exchange 1: checking a balance
+
+A customer enters the code from a birthday card. Notice the `RateLimit` header: it reports how many wrong codes this account has left this hour, and a correct code doesn't spend any.
+
+```http
+POST /gift-card-lookups HTTP/1.1
+Authorization: Bearer eyJ…   (customer cus_7, scope gift_cards:redeem)
+Content-Type: application/json
+
+{ "code": "K7QM-4RXT-9PWC-2HNB" }
+
+HTTP/1.1 200 OK
+Cache-Control: no-store
+RateLimit-Policy: "code-failures";q=5;w=3600
+RateLimit: "code-failures";r=5;t=3600
+Content-Type: application/json
+
+{ "code_last4": "2HNB", "balance": { "amount": "50.00", "currency": "EUR" },
+  "expires_at": "2029-11-20T23:59:59Z" }
+```
+
+A wrong code returns <Status code={422} /> `invalid-gift-card-code`, identical whether the code is mistyped, unknown, blocked or from the other brand, and `r` drops by one. After five wrong codes in an hour, the next attempt returns <Status code={429} /> with `Retry-After`, even if its code is right.
+
+#### Exchange 2: two phones, one card, one second
+
+Both phones read EUR 50 a minute ago. Both now try to pay EUR 40 of different orders. Each request runs one statement, and the database decides who was first:
+
+```sql
+UPDATE gift_cards
+SET    balance = balance - :amount, version = version + 1
+WHERE  code_hmac = :code_hmac AND brand_id = :brand_id
+  AND  status = 'active' AND expires_at > now()
+  AND  balance >= :amount
+RETURNING id, balance;
+```
+
+The first phone's statement matches and commits, along with the redemption row, the ledger row and its idempotency key, all in one transaction:
+
+```http
+POST /gift-card-redemptions HTTP/1.1
+Idempotency-Key: 3c9e1f7a-2b4d-4e6f-8a1c-5d7e9f0b2c4d
+Content-Type: application/json
+
+{ "code": "K7QM-4RXT-9PWC-2HNB", "order_id": "ord_42",
+  "amount": { "amount": "40.00", "currency": "EUR" } }
+
+HTTP/1.1 201 Created
+Location: https://api.example.com/gift-card-redemptions/gcr_9
+
+{ "id": "gcr_9", "order_id": "ord_42", "code_last4": "2HNB",
+  "amount": { "amount": "40.00", "currency": "EUR" },
+  "balance_after": { "amount": "10.00", "currency": "EUR" },
+  "created_at": "2026-12-24T16:02:11Z" }
+```
+
+The second phone's `UPDATE` matches no row, because EUR 10 is less than EUR 40. It gets a conflict that says exactly what's left, so the app can offer "use EUR 10 and pay the rest by card":
+
+```http
+HTTP/1.1 409 Conflict
+Content-Type: application/problem+json
+
+{ "type": "https://api.example.com/problems/insufficient-gift-card-balance",
+  "title": "Not enough left on the gift card",
+  "status": 409,
+  "detail": "The card ending 2HNB has EUR 10.00 left; this redemption asked for EUR 40.00.",
+  "available": { "amount": "10.00", "currency": "EUR" } }
+```
+
+#### Error cases
+
+The last column is the one the security reviewer will read first.
+
+| Problem `type` (under `/problems/`) | Status                | When                                                             | What an attacker learns                 |
+| ----------------------------------- | --------------------- | ---------------------------------------------------------------- | --------------------------------------- |
+| `invalid-gift-card-code`            | <Status code={422} /> | Malformed, unknown, blocked or other-brand code                  | Nothing; all four look the same         |
+| `gift-card-expired`                 | <Status code={409} /> | Valid code, past `expires_at`                                    | That an expired, worthless code existed |
+| `insufficient-gift-card-balance`    | <Status code={409} /> | Valid code, balance below `amount`; extension `available`        | The balance, but only with a valid code |
+| `amount-exceeds-order-total`        | <Status code={422} /> | Redeeming more than the order still owes                         | Nothing                                 |
+| `currency-mismatch`                 | <Status code={422} /> | `amount.currency` differs from the card's                        | Nothing                                 |
+| `reversal-exceeds-redemption`       | <Status code={409} /> | Reversals would exceed what was redeemed; extension `reversible` | Staff-only endpoint                     |
+| `idempotency-key-reused`            | <Status code={422} /> | Same key, different body                                         | Nothing                                 |
+| `rate-limited`                      | <Status code={429} /> | Too many wrong codes; `Retry-After`                              | That they are being counted             |
+| `about:blank`                       | <Status code={404} /> | An `order_id` or `gcr_` that isn't the caller's                  | Nothing; same as nonexistent            |
+
+#### Limits on guessing
+
+Every endpoint that accepts a code counts wrong codes against the same budgets: five per account per hour and twenty per day, twenty per device fingerprint per day, and fifty per IP address per day. After three wrong codes in a session, the web shop shows a CAPTCHA. When the share of wrong codes across all traffic doubles its usual level, an alert pages whoever is on call, because a distributed attack stays under every per-client budget.
+
+Now the arithmetic. Fifteen random characters from 32 is 2⁷⁵, about 3.8 × 10²² codes. With a million live cards, one guess has a chance of roughly 3 in 10¹⁷. Even at four million guesses an hour, the rate GiftGhostBot reached against some retailers, a whole year of guessing finds a card with a probability of about one in a million, and that's before any limit above applies. The limits are there for the cards whose codes leak some other way: photographed, phished, or read off a receipt.
+
+#### Design notes
+
+**The code is a secret, so it never appears in a URL or a log.** It travels only in request bodies, the issue response is `Cache-Control: no-store`, and the server stores an HMAC of the code with a key from the secrets manager, indexed for lookup, plus the last four characters for display. A database dump without the key yields nothing spendable. Staff work with `gft_31`, which is worth nothing on its own. The alternative, `GET /gift-cards/{code}`, is shorter, and it writes every customer's card into every proxy log between the phone and the database.
+
+**Lookup is a `POST` that returns 200.** It reads, so `GET` would be the natural method, but `GET` would put the code in the URL. Nothing is created, so it answers <Status code={200} />, not <Status code={201} />. It's the same reasoning as a search resource in [filtering](/collections/filtering/).
+
+**Redemption is one conditional `UPDATE`, so there's no `If-Match`.** The invariant, balance never below zero, fits in a `WHERE` clause, so the database enforces it atomically and no client has to read first. `If-Match` would also be correct, but it would turn every checkout into a read, a write and sometimes a <Status code={412} /> and a retry. `If-Match` is the right tool where the writer's intent depends on what they read: a support agent extending `expires_at` from a screen that may be stale, so `PATCH /gift-cards/{id}` requires it and answers <Status code={428} /> without it.
+
+**Redemptions name an exact amount, not "up to".** A `max_amount` that redeems whatever is available would remove the family's conflict, but checkout would then learn the split between gift card and bank card only after the fact, and the order total would depend on a race. An exact amount with a <Status code={409} /> carrying `available` keeps the payment split explicit and still lets the app offer the remainder in one tap.
+
+**Every movement is a ledger row.** Issue, redeem, reverse and expire each insert an immutable `gct_` row with the amount, the balance after, the reference and the actor, in the same transaction as the balance change. The `balance` column is a cache of the ledger that the same transaction updates. Priya's 3 a.m. question is one paginated `GET`.
+
+**Reversals are capped like redemptions.** The refunds service from [challenge 1](/practice/returns/) creates a reversal with its own `Idempotency-Key` and the `ref_` it belongs to, and a conditional update keeps `amount_reversed` at or below `amount`. Reversals only return money already redeemed, so they can't be used to mint balance.
+
+**Ownership is checked on the order, and staff routes need staff scopes.** A customer can redeem only against an order that is theirs and still unpaid; another customer's `ord_` answers <Status code={404} />. Card IDs and ledgers need `gift_cards:read`, which no customer token carries. That's the [BOLA](/security/attacks/) defence: `gft_31` in a customer's hands opens nothing.
+
+**Brands are a filter on every query, taken from the token.** For the stretch requirement, each storefront's client carries its brand, and every statement filters by `brand_id`. A code from the other brand is indistinguishable from a wrong one, failure limits are counted per brand, and each brand has its own HMAC key, so even a shared database can't match codes across brands.
+
+The botnet the security reviewer mentioned is worth reading about, because it attacked exactly the endpoint this design restricts.
+
+<Note kind="incident" title="GiftGhostBot" year="2017" source="https://www.securityweek.com/botnet-pummels-retail-websites-hunt-gift-card-balances/">
+
+In February 2017, Distil Networks detected a botnet it named GiftGhostBot running card-cracking attacks against the gift card balance-check pages of nearly 1,000 retailers. It tested lists of possible card numbers, peaking at over 4 million requests an hour on some sites, and rotated user agents, hosting providers and, once blocked, switched to mobile device profiles. Distil's advice was a CAPTCHA on balance checks and rate limits on gift card pages. An endpoint that confirms a secret is an endpoint someone will brute-force.
+
+</Note>
+
+</WorkedProblem>
+
+## Review yourself
+
+These questions are drawn from the [review checklist](/reference/checklist/). Answer them for your design, honestly.
+
+- Does a gift card code ever appear in a URL, a log line, an event or a response other than the one that issued it? [Data formats](/representations/data-formats/)
+- Two redemptions of EUR 40 hit a EUR 50 card in the same millisecond. Trace both through your design. Where exactly is the decision made? [Concurrency control](/reliability/concurrency/)
+- The app retries a redemption after a timeout. What prevents a second redemption, and is the key stored in the same transaction as the money movement? [Idempotency and retries](/reliability/idempotency/)
+- Is every amount a decimal string with its currency, including balances, reversals and ledger rows? [Data formats](/representations/data-formats/)
+- Can customer `cus_8` redeem against `cus_7`'s order, or read a redemption that isn't theirs? What does the response reveal? [Attacks, told as stories](/security/attacks/)
+- Name every endpoint that would tell a caller whether a code is valid. Are wrong codes limited on all of them, per account rather than per request? [Abuse and resource limits](/security/limits/)
+- Can a refund put more money on a card than was taken from it, and is each reversal a record with its own rules? [Resources and actions](/modelling/resources/)
+- Could finance rebuild any card's balance from your API alone? [Pagination](/collections/pagination/)
+- Which operation uses `If-Match`, and why not redemption? Does the server answer <Status code={428} /> when it's missing? [Concurrency control](/reliability/concurrency/)
+- If you did the stretch: is the brand taken from the token or the request, and can a code from one brand be told apart from a wrong code at the other? [Multi-tenancy](/security/multi-tenancy/)
+
+That's the last challenge. If you want more practice, take the [annotated design review](/guide/design-review/) and run it the other way: write your own first draft of an orders API, then hold it against the twenty findings.

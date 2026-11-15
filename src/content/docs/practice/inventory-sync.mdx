@@ -1,0 +1,410 @@
+---
+title: "Challenge 2: Larkspur's inventory sync"
+description: Design the API Larkspur Logistics uses to push nightly stock counts for tens of thousands of SKUs. Accept counts as dated observations in bounded batches, report per item, let newer counts win, and freeze the contract a partner that never upgrades depends on.
+sources:
+  - label: Shopify, 2025
+    title: "Shopify developer changelog: Compare and swap redesign for inventory set quantities (2025)"
+    url: https://shopify.dev/changelog/compare-and-swap-redesign-for-inventory-set-quantities
+    accessed: 2026-11
+  - label: RFC 4918 §13
+    title: "RFC 4918: HTTP Extensions for WebDAV, §13 Multi-Status Response"
+    url: https://www.rfc-editor.org/rfc/rfc4918#section-13
+    accessed: 2026-11
+  - label: RateLimit draft
+    title: "RateLimit header fields for HTTP (draft-ietf-httpapi-ratelimit-headers)"
+    url: https://datatracker.ietf.org/doc/draft-ietf-httpapi-ratelimit-headers/
+    accessed: 2026-11
+related:
+  - collections/bulk
+  - reliability/idempotency
+  - reliability/concurrency
+  - evolution/compatibility
+  - evolution/versioning
+  - security/limits
+---
+
+import { InBrief, Note, WorkedProblem, Status } from "@components/kit";
+
+<InBrief>
+
+- **Difficulty:** intermediate. Allow 60 to 90 minutes.
+- **You design:** the endpoint a logistics partner pushes nightly stock counts to, and the reads that go with it.
+- **It exercises:** [bulk operations](/collections/bulk/), [idempotency](/reliability/idempotency/), [revisions and concurrency](/reliability/concurrency/), [compatibility](/evolution/compatibility/), [rate limits](/security/limits/) and [partner versioning](/evolution/versioning/).
+- **The trap:** "replace all stock with this file", where a missing row means zero.
+
+</InBrief>
+
+## The brief
+
+Larkspur Logistics runs Fernhill's northern warehouse, and every night since 2019 it has dropped a CSV of stock levels on an SFTP server. In October the transfer died at 60%. The import job read the truncated file as the whole truth, treated every SKU missing from it as sold out, and Fernhill opened for business with 18,000 products showing "out of stock". Priya spent the morning restoring yesterday's numbers by hand.
+
+Larkspur has agreed to move to an API. Once. Their contractor has a week of budget for it in January, and their contract says the integration then runs unchanged for the life of the agreement, which is five years. Anything you get wrong in this spec, you live with until 2032. Fernhill has promised the spec to Larkspur by **15 December**.
+
+## Requirements
+
+1. Every night at about 02:00, Larkspur reports the counted on-hand quantity of every SKU in its warehouse: about 40,000 today, perhaps 120,000 in three years.
+2. During the day, Larkspur sends corrections for individual SKUs: a damaged pallet, a recount, a found box.
+3. Larkspur's job retries anything that fails, sometimes hours later, and occasionally re-runs a whole night by mistake.
+4. An older count must never overwrite a newer one, whatever order they arrive in.
+5. Fernhill's checkout reserves stock all day. Larkspur's numbers must not wipe out reservations that Larkspur doesn't know about.
+6. One bad row, such as an unknown SKU or a negative quantity, must not reject the other 39,999, and Larkspur must find out exactly which rows failed.
+7. The nightly push must not slow down the order export that runs at the same time, and Larkspur's job must be able to tell how fast it may go.
+8. The integration must keep working, unchanged, for five years.
+
+**Constraints.** Larkspur's client speaks JSON over HTTPS, gets tokens with the OAuth client credentials grant, and retries <Status code={429} /> and <Status code={503} /> with backoff, honouring `Retry-After`. That's all it does. Its response parser is strict: a field it doesn't expect makes it fail the whole run.
+
+**Non-goals.** Fernhill's other warehouses, product catalogue data, inbound deliveries, and the order export itself.
+
+## What to hand in
+
+- The resources and their URLs, and what each stock number means and who owns it.
+- An OpenAPI 3.1 excerpt for the nightly push and the reads.
+- Two example exchanges: a batch where some rows succeed and some don't; and a retry or replay arriving late.
+- The error cases, both for the whole request and for individual rows.
+- Your plan for keeping Larkspur working for five years: what you promise, what you test, and what happens if a breaking change is ever unavoidable.
+
+## Hints
+
+Sketch your design first. Each hint unlocks one decision.
+
+<WorkedProblem kind="Hint" title="1. What is Larkspur actually telling you?">
+
+"Set sku-1042 to 14" is a command. "We counted 14 of sku-1042 at 02:00" is an observation, and it carries its own timestamp. Observations can be compared with each other, replayed and ignored when they're old; commands can't. And absolute values beat deltas for the same reason "set to X" beats "add X" in [consuming events](/events/consuming-events/).
+
+</WorkedProblem>
+
+<WorkedProblem kind="Hint" title="2. Forty thousand rows is a batch problem">
+
+One request with 40,000 rows is a 4 MB body that fails as a whole. 40,000 requests with one row each is a self-inflicted denial of service. Pick a batch size, cap it, and decide whether the batch is atomic or best effort. Requirement 6 decides that for you, and [bulk operations](/collections/bulk/) and [per-item results with 207](/reliability/long-running-operations/#report-batch-outcomes-per-item-with-207) show the response shape.
+
+</WorkedProblem>
+
+<WorkedProblem kind="Hint" title="3. Who owns which number?">
+
+Larkspur can see what's on the shelf. It can't see the 30 units sitting in customers' baskets at checkout. If both systems write the same `quantity` field, one of them will overwrite the other, and no `If-Match` will save you at 40,000 rows a night. Split the number so each writer owns its own part, and derive the one customers see. [Concurrency control](/reliability/concurrency/) covers the conflict you are avoiding.
+
+</WorkedProblem>
+
+<WorkedProblem kind="Hint" title="4. Make a replay boring">
+
+If re-sending Tuesday's batch on Wednesday afternoon is harmless by construction, you don't need to store anything to detect it. Look for the natural key in each row before reaching for an `Idempotency-Key`. [Idempotency](/reliability/idempotency/#let-the-domain-supply-the-key-when-it-can) covers both options.
+
+</WorkedProblem>
+
+<WorkedProblem kind="Hint" title="5. A client that never changes changes the rules">
+
+The usual advice is to add fields freely because clients ignore what they don't know. Larkspur doesn't ignore anything. Decide which parts of the contract you freeze, how you would notice if you broke them, and where a genuinely new version would live. [Compatibility](/evolution/compatibility/), [versioning](/evolution/versioning/) and [specs in CI](/evolution/specs-in-ci/) between them have the tools.
+
+</WorkedProblem>
+
+## Model answer
+
+Write yours down before you open this. The design notes explain each choice and the alternative it beat.
+
+<WorkedProblem kind="Answer" title="Open it once you have a design of your own">
+
+Larkspur posts **stock counts**: dated observations of what's on the shelf, in best-effort batches of up to 1,000, answered synchronously with <Status code={207} /> and a result per row. A count is applied only if it's newer than the one already held, so replays are harmless without an idempotency key. Larkspur owns `on_hand`, checkout owns `reserved`, and nobody writes `available`.
+
+#### Resources and the numbers they hold
+
+One write endpoint and two reads. Notice that the write is a collection of observations, not a `PUT` on the stock level itself:
+
+```text
+/warehouses/{warehouse_id}/stock-counts          POST  a batch of up to 1,000 counts → 207
+/warehouses/{warehouse_id}/stock-levels          GET   list, cursor-paginated
+/warehouses/{warehouse_id}/stock-levels/{sku}    GET   one, with ETag and revision
+```
+
+A stock level holds three numbers, and each has exactly one owner:
+
+| Field       | Meaning                                            | Owned by                                        |
+| ----------- | -------------------------------------------------- | ----------------------------------------------- |
+| `on_hand`   | Units on the shelf at `counted_at`                 | Larkspur, through stock counts                  |
+| `reserved`  | Units in placed orders Larkspur hasn't shipped yet | Fernhill checkout; released when Larkspur ships |
+| `available` | `on_hand - reserved`, never below zero             | Nobody: derived on read                         |
+
+#### OpenAPI excerpt
+
+Here's the contract Larkspur receives. Notice `maxItems` on `counts`, `additionalProperties: false` on everything Larkspur sends, and that the result item is a closed, documented shape.
+
+```yaml title="stock-api.yaml (excerpt)"
+openapi: 3.1.0
+info:
+  title: Stock API
+  version: 1.0.0
+  contact: { name: Team Fulfilment, url: https://wiki.example.com/teams/fulfilment }
+  x-api-id: 2d4f6a8c-1b3e-4c5d-9e7f-0a1b2c3d4e5f
+  x-audience: external-partner
+paths:
+  /warehouses/{warehouse_id}/stock-counts:
+    parameters: [{ $ref: "#/components/parameters/WarehouseId" }]
+    post:
+      summary: Report counted stock for up to 1,000 SKUs
+      description: >
+        Best effort: each count is applied or rejected on its own, and the response lists
+        one result per count, in request order. A count is applied only if its counted_at
+        is later than the count already held for that SKU, so sending the same batch again
+        is always safe. SKUs not in the batch are left unchanged.
+      security: [{ oauth2: [stock:write] }]
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { $ref: "#/components/schemas/StockCountBatch" } }
+      responses:
+        "207":
+          description: Every count was processed; check each item's status
+          headers:
+            RateLimit: { $ref: "#/components/headers/RateLimit" }
+            RateLimit-Policy: { $ref: "#/components/headers/RateLimitPolicy" }
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/StockCountResults" } }
+        "413": { $ref: "#/components/responses/Problem" }
+        "422": { $ref: "#/components/responses/ValidationProblem" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+        default: { $ref: "#/components/responses/Problem" }
+  /warehouses/{warehouse_id}/stock-levels:
+    parameters: [{ $ref: "#/components/parameters/WarehouseId" }]
+    get:
+      security: [{ oauth2: [stock:read] }]
+      parameters:
+        - { name: counted_before, in: query, schema: { type: string, format: date-time } }
+        - {
+            name: limit,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 1000, default: 100 },
+          }
+        - { name: cursor, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: A page of stock levels
+          content:
+            application/json: { schema: { $ref: "#/components/schemas/StockLevelPage" } }
+        default: { $ref: "#/components/responses/Problem" }
+  /warehouses/{warehouse_id}/stock-levels/{sku}:
+    parameters:
+      - { $ref: "#/components/parameters/WarehouseId" }
+      - { name: sku, in: path, required: true, schema: { type: string, example: sku-1042 } }
+    get:
+      security: [{ oauth2: [stock:read] }]
+      responses:
+        "200":
+          description: The stock level
+          headers: { ETag: { schema: { type: string, example: '"v8"' } } }
+          content: { application/json: { schema: { $ref: "#/components/schemas/StockLevel" } } }
+        default: { $ref: "#/components/responses/Problem" }
+components:
+  securitySchemes:
+    oauth2:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://auth.example.com/token
+          scopes:
+            stock:read: Read stock levels of the warehouses this client operates
+            stock:write: Report stock counts for the warehouses this client operates
+  parameters:
+    WarehouseId:
+      { name: warehouse_id, in: path, required: true, schema: { type: string, example: whs_3 } }
+  headers:
+    RateLimit: { schema: { type: string, example: '"stock";r=540;t=42' } }
+    RateLimitPolicy: { schema: { type: string, example: '"stock";q=10000;w=60' } }
+  responses:
+    Problem:
+      description: Any error
+      content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } }
+    ValidationProblem:
+      description: The batch as a whole is invalid; errors lists every failing field
+      content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } }
+    TooManyRequests:
+      description: Slow down
+      headers: { Retry-After: { schema: { type: integer } } }
+      content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } }
+    ServiceUnavailable:
+      description: Temporarily unavailable; retry after the given delay
+      headers: { Retry-After: { schema: { type: integer } } }
+      content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } }
+  schemas:
+    StockCountBatch:
+      type: object
+      additionalProperties: false
+      required: [counts]
+      properties:
+        counts:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          items:
+            type: object
+            additionalProperties: false
+            required: [sku, on_hand, counted_at]
+            properties:
+              sku: { type: string, example: sku-1042 }
+              on_hand: { type: integer, minimum: 0, example: 14 }
+              counted_at: { type: string, format: date-time, example: "2026-11-15T02:00:00Z" }
+    StockCountResults:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          description: One result per submitted count, in request order.
+          items:
+            type: object
+            additionalProperties: false
+            required: [sku, status]
+            properties:
+              sku: { type: string }
+              status:
+                {
+                  type: integer,
+                  description: "200 if the count was accepted (see outcome), 409 or 422 if rejected",
+                }
+              outcome:
+                type: string
+                enum: [applied, unchanged, stale]
+                description: >
+                  Present when status is 200. applied: the count changed the stock level.
+                  unchanged: this exact count was already held. stale: a later count is already held.
+                  All three mean the count needs no further action.
+              problem: { $ref: "#/components/schemas/Problem" }
+    StockLevel:
+      type: object
+      required: [warehouse_id, sku, on_hand, reserved, available, revision]
+      properties:
+        warehouse_id: { type: string, example: whs_3 }
+        sku: { type: string, example: sku-1042 }
+        on_hand: { type: integer, minimum: 0 }
+        reserved: { type: integer, minimum: 0 }
+        available: { type: integer, minimum: 0 }
+        counted_at: { type: string, format: date-time }
+        revision: { type: integer, description: Increases by one on every change }
+    StockLevelPage:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/StockLevel" } }
+        next: { type: string, format: uri }
+    Problem:
+      type: object
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+        errors:
+          type: array
+          description: Present on validation-error, one entry per failing field
+          items:
+            type: object
+            required: [pointer, detail]
+            properties:
+              pointer: { type: string, example: "#/counts/0/on_hand" }
+              detail: { type: string }
+```
+
+#### Exchange 1: a batch with something for everyone
+
+At 02:14 the job sends batch 17 of 40. Four rows are shown; the real request has 1,000. One count is new; one was already applied by an earlier attempt of this batch that timed out; one is a row from yesterday's run that the job is still retrying, older than a correction sent yesterday afternoon; and one names a SKU Fernhill has never heard of.
+
+```http
+POST /warehouses/whs_3/stock-counts HTTP/1.1
+Authorization: Bearer eyJ…   (Larkspur client, scope stock:write)
+Content-Type: application/json
+
+{ "counts": [
+    { "sku": "sku-1042", "on_hand": 14, "counted_at": "2026-11-15T02:00:00Z" },
+    { "sku": "sku-1043", "on_hand": 3,  "counted_at": "2026-11-15T02:00:00Z" },
+    { "sku": "sku-1044", "on_hand": 0,  "counted_at": "2026-11-14T02:00:00Z" },
+    { "sku": "sku-9999", "on_hand": 6,  "counted_at": "2026-11-15T02:00:00Z" } ] }
+
+HTTP/1.1 207 Multi-Status
+Content-Type: application/json
+RateLimit-Policy: "stock";q=10000;w=60
+RateLimit: "stock";r=7000;t=41
+
+{ "items": [
+    { "sku": "sku-1042", "status": 200, "outcome": "applied" },
+    { "sku": "sku-1043", "status": 200, "outcome": "unchanged" },
+    { "sku": "sku-1044", "status": 200, "outcome": "stale" },
+    { "sku": "sku-9999", "status": 422,
+      "problem": { "type": "https://api.example.com/problems/unknown-sku",
+                   "title": "Unknown SKU", "status": 422,
+                   "detail": "sku-9999 is not a Fernhill product. Check the SKU mapping." } } ] }
+```
+
+Larkspur's job only has to know one rule: `200` rows are done, whatever the `outcome`; anything else goes on the report a human reads in the morning. Fernhill sees the same failures on a per-client dashboard, so `sku-9999` doesn't wait for Larkspur to mention it.
+
+#### Exchange 2: Tuesday's night, replayed on Wednesday afternoon
+
+Someone at Larkspur re-runs the wrong night. Every row carries `counted_at` from Tuesday, and every SKU already holds Wednesday's count, so nothing changes. The replay costs Fernhill 40 requests and costs the shop nothing.
+
+```http
+POST /warehouses/whs_3/stock-counts
+{ "counts": [ { "sku": "sku-1042", "on_hand": 19, "counted_at": "2026-11-14T02:00:00Z" }, … ] }
+
+→ 207 { "items": [ { "sku": "sku-1042", "status": 200, "outcome": "stale" }, … ] }
+```
+
+Compare the CSV import, where the same mistake would have set every SKU back a day and sold stock that was no longer on the shelf.
+
+#### Error cases
+
+Whole-request errors use ordinary status codes; row errors live inside the <Status code={207} />.
+
+| Problem `type` (under `/problems/`) | Status                | Scope   | When                                                               |
+| ----------------------------------- | --------------------- | ------- | ------------------------------------------------------------------ |
+| `validation-error`                  | <Status code={422} /> | Request | More than 1,000 counts, a SKU twice, unknown fields                |
+| `payload-too-large`                 | <Status code={413} /> | Request | Body over 512 KB                                                   |
+| `about:blank`                       | <Status code={404} /> | Request | A warehouse this client doesn't operate                            |
+| `rate-limited`                      | <Status code={429} /> | Request | Over 10,000 counts a minute or 4 requests in flight; `Retry-After` |
+| `about:blank`                       | <Status code={503} /> | Request | Maintenance or overload; `Retry-After`                             |
+| `unknown-sku`                       | <Status code={422} /> | Row     | The SKU isn't in Fernhill's catalogue                              |
+| `invalid-count`                     | <Status code={422} /> | Row     | Negative `on_hand`, or `counted_at` in the future                  |
+| `conflicting-count`                 | <Status code={409} /> | Row     | Same SKU and `counted_at` as a held count, different `on_hand`     |
+
+#### Design notes
+
+**Counts are observations, not commands.** Each row says what Larkspur saw and when. That one choice settles requirements 3 and 4 together: the server applies a count only if its `counted_at` is later than the held one, in a single conditional `UPDATE … WHERE counted_at < :counted_at`, so an old count arriving late is ignored instead of winning. Deltas ("12 more of sku-1042") were the alternative, and a replayed delta adds the stock twice.
+
+**Absent means "not reported", never zero.** A SKU missing from tonight's batches keeps its last count. To report that something is gone, Larkspur sends `on_hand: 0` explicitly. That kills October's incident at the design level, because a truncated run now leaves stock a day old instead of empty. To notice a run that never finished, Fernhill alerts when any SKU's `counted_at` is more than 30 hours old; `counted_before` on the list endpoint lets Priya find them.
+
+**Replays are idempotent by construction, so there's no `Idempotency-Key`.** This is a deliberate departure from the house default, and [Idempotency and retries](/reliability/idempotency/#let-the-domain-supply-the-key-when-it-can) allows exactly this case: when the domain supplies a key, take it. The natural key is the SKU plus `counted_at`. A repeat of an applied count answers `unchanged`; an older count answers `stale`; neither changes anything. A key would cost Fernhill 40 stored responses a night and protect only exact resends: as [bulk operations](/collections/bulk/) shows, a client that resends only its failed rows in a new batch, under a new key, gets no help from it, while a dated count is safe in any batch. The price is that a replay doesn't return the identical response (`applied` becomes `unchanged`), which is why the contract says all three outcomes mean "done".
+
+**Each number has one owner, so there's no `If-Match`.** Larkspur writes `on_hand`, checkout writes `reserved`, and `available` is derived. Optimistic concurrency with `If-Match` would have meant 40,000 reads to collect ETags before writing, and a <Status code={412} /> every time checkout reserved a tent in between. The producer's `counted_at` is the precondition instead, carried in every row. It's a clock rather than a counter, which [consuming events](/events/consuming-events/) warns about; here there's exactly one producer, Larkspur's warehouse system, and the timestamp means something to the business. Readers who do edit stock levels get a strong `ETag` and an integer `revision` that increases on every change, and the `shop.stock-level-changed` event carries the same revision.
+
+**Batches of 1,000, best effort, answered synchronously.** At about 70 bytes a row, 1,000 counts is 70 KB and applies in well under a second, so 40 requests finish the night and 120 still will in 2029. An asynchronous `202` with an operation resource would let Larkspur send everything at once, but it adds a polling loop whose terminal states Larkspur's client would have to know forever; a synchronous `207` gives the answer in the same response. The batch is best effort because requirement 6 says so; atomic batches would turn one unknown SKU into 999 rejected rows. Each result echoes its `sku`, which is unique within a batch, so Larkspur matches results by SKU rather than trusting array positions, the job a client `ref` does in [bulk operations](/collections/bulk/).
+
+**Limits are published, not discovered.** Every response carries `RateLimit-Policy` and `RateLimit`. The quota is charged per count, not per request, because a bulk endpoint metered per request is a hole in every other limit: 10,000 counts a minute and 4 concurrent requests get the night done in four minutes and leave the order export plenty of room. A batch that doesn't fit the remaining quota is refused whole with <Status code={429} />, rather than half-applied. Larkspur's client already backs off on <Status code={429} /> with `Retry-After`, which is the one behaviour this design relies on.
+
+**Version one is frozen, tested, and owned.** Requests reject unknown fields with <Status code={422} />, and the result item is `additionalProperties: false`, which is a promise in both directions: Fernhill won't add fields to it. New information goes into new resources, never into this response. Recorded Larkspur requests and responses run as contract tests in CI, so a change that would break them fails the build, not the warehouse. There's no version in the URL, because there's only one version; if a breaking change is ever unavoidable, it ships as a new media type, `application/x.shop.stock-counts+json;version=2`, while version 1 keeps running for Larkspur until 2032. Per-client metrics show who calls which version, because Larkspur reads email, not `Deprecation` headers.
+
+**The token is bound to its warehouse.** Larkspur's client credentials carry `stock:write` for `whs_3` only. A request for another warehouse answers <Status code={404} />, not <Status code={403} />, so the token can't be used to discover which warehouses exist.
+
+Shopify reached a similar conclusion about absolute stock writes needing a precondition, and recently made it harder to forget.
+
+<Note kind="practice" title="Shopify's compare-and-swap for stock" year="2025" source="https://shopify.dev/changelog/compare-and-swap-redesign-for-inventory-set-quantities">
+
+In December 2025 Shopify redesigned the `inventorySetQuantities` mutation for API version 2026-01. Two fields, `compareQuantity` and `ignoreCompareQuantity`, gave way to one, `changeFromQuantity`: send the quantity you believe is current and the write succeeds only if it matches, or send `null` to skip the check on purpose. The changelog asks developers not to opt out unless their use case justifies it. An absolute write without a precondition is a lost update waiting for its moment.
+
+</Note>
+
+</WorkedProblem>
+
+## Review yourself
+
+Answer these about your own design. Each one maps to a line of the [review checklist](/reference/checklist/).
+
+- Is the batch capped in items and bytes, and do you say what happens beyond the cap? [Abuse and resource limits](/security/limits/)
+- Is the batch atomic or best effort, is that documented, and does each row get its own status and problem? [Bulk operations](/collections/bulk/)
+- Larkspur re-sends last night's run at 15:00. What changes in the shop? Which key makes that safe? [Idempotency and retries](/reliability/idempotency/)
+- A correction sent at 14:00 arrives after the 02:00 count for the same SKU, which itself was delayed. Which one wins, and where is that decided? [Concurrency control](/reliability/concurrency/)
+- Checkout reserves three tents while the nightly count for that SKU is being applied. Does anyone's number get lost?
+- What does a SKU missing from the batch mean in your design, and how would you notice a run that stopped halfway? [Observability](/reliability/observability/)
+- How does Larkspur's job learn its rate limit before it hits it, and what does it do with a <Status code={429} />? [Abuse and resource limits](/security/limits/)
+- Which parts of the contract have you promised never to change, and what in CI would catch you breaking that promise? [Specs in CI](/evolution/specs-in-ci/)
+- If a breaking change becomes unavoidable in 2028, where does version 2 live, and how do you know whether Larkspur still calls version 1? [Versioning](/evolution/versioning/)
+- Can Larkspur's token read or write a warehouse it doesn't run? [Authentication and authorization](/security/auth/)
+
+The `shop.stock-level-changed` events your design now emits are exactly what the next challenge consumes: [back-in-stock alerts](/practice/back-in-stock/).
